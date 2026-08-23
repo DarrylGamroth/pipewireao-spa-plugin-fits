@@ -38,6 +38,9 @@
 #define SERIAL_SIZE 128u
 #define PROFILE_SIZE (sizeof("sha256:") - 1u + PROFILE_DIGEST_CHARACTERS + 1u)
 #define ACTUATOR_COUNT_TEXT_SIZE 16u
+#define DAQ_FREQUENCY_MIN 1000u
+#define DAQ_FREQUENCY_MAX 20000000u
+#define DAQ_FREQUENCY_TEXT_SIZE 16u
 #define NODE_NAME_SIZE (sizeof("alpao_sink.") - 1u + SERIAL_SIZE)
 
 SPA_LOG_TOPIC_DEFINE_STATIC(log_topic, "spa.alpao.sink");
@@ -62,16 +65,18 @@ struct impl {
 	uint64_t info_all;
 	struct spa_node_info info;
 	struct spa_dict node_props;
-	struct spa_dict_item node_items[8];
+	struct spa_dict_item node_items[9];
 	char backend_name[BACKEND_NAME_SIZE];
 	char serial[SERIAL_SIZE];
 	char profile[PROFILE_SIZE];
 	char actuator_count_text[ACTUATOR_COUNT_TEXT_SIZE];
+	char daq_frequency_text[DAQ_FREQUENCY_TEXT_SIZE];
 	char node_name[NODE_NAME_SIZE];
 	struct alpao_backend *backend;
 	struct spa_buffer_latest *latest;
 	struct input_port input;
 	uint32_t actuator_count;
+	uint32_t daq_frequency;
 	size_t command_bytes;
 	bool started;
 };
@@ -115,6 +120,8 @@ static int read_options(struct impl *self, const struct spa_dict *info)
 			spa_dict_lookup(info, SPA_KEY_API_ALPAO_ACTUATOR_COUNT);
 	const char *profile = info == NULL ? NULL :
 			spa_dict_lookup(info, SPA_KEY_API_ALPAO_PROFILE);
+	const char *daq_frequency = info == NULL ? NULL :
+			spa_dict_lookup(info, SPA_KEY_API_ALPAO_DAQ_FREQUENCY);
 	int res;
 
 	if (backend == NULL || (strcmp(backend, "mock") != 0 &&
@@ -128,6 +135,11 @@ static int read_options(struct impl *self, const struct spa_dict *info)
 		return -EINVAL;
 	if (!valid_profile(profile))
 		return -EINVAL;
+	if (daq_frequency != NULL &&
+			(!spa_atou32(daq_frequency, &self->daq_frequency, 10) ||
+			 self->daq_frequency < DAQ_FREQUENCY_MIN ||
+			 self->daq_frequency > DAQ_FREQUENCY_MAX))
+		return -EINVAL;
 	if ((res = copy_string(self->backend_name, sizeof(self->backend_name),
 				backend)) < 0 ||
 			(res = copy_string(self->serial, sizeof(self->serial),
@@ -135,6 +147,10 @@ static int read_options(struct impl *self, const struct spa_dict *info)
 			(res = copy_string(self->profile, sizeof(self->profile), profile)) < 0 ||
 			(res = copy_string(self->actuator_count_text,
 				sizeof(self->actuator_count_text), count)) < 0)
+		return res;
+	if (daq_frequency != NULL &&
+			(res = copy_string(self->daq_frequency_text,
+				sizeof(self->daq_frequency_text), daq_frequency)) < 0)
 		return res;
 	self->command_bytes = (size_t)self->actuator_count * sizeof(double);
 	return alpao_backend_new(self->backend_name, &self->backend);
@@ -484,7 +500,7 @@ static int send_command(void *object, const struct spa_command *command)
 		if (self->started)
 			return 0;
 		if ((res = alpao_backend_start(self->backend, self->serial,
-				self->actuator_count)) < 0)
+				self->actuator_count, self->daq_frequency)) < 0)
 			return res;
 		if ((res = spa_buffer_latest_worker_begin(self->latest)) < 0) {
 			(void)alpao_backend_stop(self->backend);
@@ -643,6 +659,9 @@ static void configure_node_props(struct impl *self)
 			"ALPAO normalized actuator command sink");
 	ADD_ITEM(SPA_KEY_API_ALPAO_BACKEND, self->backend_name);
 	ADD_ITEM(SPA_KEY_API_ALPAO_ACTUATOR_COUNT, self->actuator_count_text);
+	if (self->daq_frequency != 0)
+		ADD_ITEM(SPA_KEY_API_ALPAO_DAQ_FREQUENCY,
+				self->daq_frequency_text);
 	if (self->serial[0] != '\0')
 		ADD_ITEM(SPA_KEY_API_ALPAO_SERIAL, self->serial);
 #undef ADD_ITEM

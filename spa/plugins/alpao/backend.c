@@ -12,17 +12,19 @@
 struct mock_backend {
 	struct alpao_backend backend;
 	uint32_t actuator_count;
+	uint32_t daq_frequency;
 	uint64_t send_count;
 	bool started;
 };
 
 static int mock_start(struct alpao_backend *backend, const char *serial,
-		uint32_t actuator_count)
+		uint32_t actuator_count, uint32_t daq_frequency)
 {
 	struct mock_backend *mock = (struct mock_backend *)backend;
 
 	(void)serial;
 	mock->actuator_count = actuator_count;
+	mock->daq_frequency = daq_frequency;
 	mock->started = true;
 	return 0;
 }

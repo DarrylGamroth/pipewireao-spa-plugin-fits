@@ -128,15 +128,16 @@ static int exercise(const struct spa_handle_factory *factory,
 		const char *backend)
 {
 	const char *serial = spa_streq(backend, "asdk") ? "SIM001" : "";
-	const struct spa_dict_item items[] = {
+	struct spa_dict_item items[5] = {
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_BACKEND, backend),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_SERIAL, serial),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_ACTUATOR_COUNT, "8"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_PROFILE, profile),
 	};
-	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
-	const size_t size = spa_handle_factory_get_size(factory, &info);
-	struct spa_handle *handle = calloc(1, size);
+	uint32_t n_items = 4;
+	struct spa_dict info;
+	size_t size;
+	struct spa_handle *handle;
 	struct spa_node *node = NULL;
 	struct spa_hook listener;
 	struct param_capture capture = { .expected = SPA_ID_INVALID };
@@ -157,6 +158,12 @@ static int exercise(const struct spa_handle_factory *factory,
 	uint32_t completed = SPA_ID_INVALID;
 	int initialized;
 
+	if (spa_streq(backend, "mock"))
+		items[n_items++] = SPA_DICT_ITEM_INIT(
+				SPA_KEY_API_ALPAO_DAQ_FREQUENCY, "20000");
+	info = SPA_DICT_INIT(items, n_items);
+	size = spa_handle_factory_get_size(factory, &info);
+	handle = calloc(1, size);
 	spa_assert_se(handle != NULL);
 	initialized = spa_handle_factory_init(factory, handle, &info, NULL, 0);
 	if (initialized == -ENOTSUP && spa_streq(backend, "asdk")) {
@@ -243,6 +250,25 @@ static int exercise(const struct spa_handle_factory *factory,
 	return 0;
 }
 
+static void expect_invalid_daq_frequency(
+		const struct spa_handle_factory *factory)
+{
+	const struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_BACKEND, "mock"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_ACTUATOR_COUNT, "8"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_DAQ_FREQUENCY, "999"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_PROFILE, profile),
+	};
+	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	const size_t size = spa_handle_factory_get_size(factory, &info);
+	struct spa_handle *handle = calloc(1, size);
+
+	spa_assert_se(handle != NULL);
+	spa_assert_se(spa_handle_factory_init(factory, handle, &info,
+			NULL, 0) == -EINVAL);
+	free(handle);
+}
+
 static void expect_mock_unavailable(const struct spa_handle_factory *factory)
 {
 	const struct spa_dict_item items[] = {
@@ -281,8 +307,11 @@ int main(int argc, char **argv)
 	spa_assert_se(enumerate(&factory, &index) == 0);
 	if (spa_streq(argv[2], "factory"))
 		expect_mock_unavailable(factory);
-	else
+	else {
+		if (spa_streq(argv[2], "mock"))
+			expect_invalid_daq_frequency(factory);
 		result = exercise(factory, argv[2]);
+	}
 	spa_assert_se(dlclose(library) == 0);
 	return result;
 }

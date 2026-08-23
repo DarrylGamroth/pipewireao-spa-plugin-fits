@@ -48,20 +48,26 @@ validate electronics, timing, packets, or mirror motion.
 
 ## ALPAO sink
 
-Factory construction requires these properties:
+Factory construction accepts these properties:
 
 | Property | Value |
 | --- | --- |
 | `api.alpao.backend` | `asdk` in the installed plugin; the non-installed test plugin accepts `mock`. |
 | `api.alpao.actuator-count` | Positive decimal actuator count. |
+| `api.alpao.daq-frequency` | Optional DEv7 `daqFreq` override in integer hertz, from 1,000 through 20,000,000. |
 | `api.alpao.profile` | Lowercase `sha256:` identifier for the trusted command profile. |
 | `api.alpao.serial` | Required by `asdk`; omitted by the test mock. |
 
 The single input port accepts only the exact format documented in
 [normalized actuator command schema](docs/schemas/alpao-normalized-actuator-command-1.md).
-The node opens ASDK on `Start`, verifies `NbOfActuator`, resets the mirror, and
-then consumes the latest submitted command. `Pause` and `Suspend` reset and
-release the mirror.
+The node opens ASDK on `Start`, verifies `NbOfActuator`, applies a configured
+`daqFreq` override, resets the mirror, and then consumes the latest submitted
+command. Startup fails if ASDK rejects the requested frequency. `Pause` and
+`Suspend` reset and release the mirror.
+
+`api.alpao.daq-frequency` controls the supported ALPAO interface's digital to
+analog conversion rate. It is not the producer command cadence and therefore
+does not populate the ndarray `rate` property.
 
 The plugin is implemented in C and uses the ASDK C wrapper (`asdkInit`,
 `asdkSend`, and related functions). C is the default language for these SPA

@@ -16,7 +16,7 @@ struct asdk_backend {
 };
 
 static int asdk_start(struct alpao_backend *backend, const char *serial,
-		uint32_t actuator_count)
+		uint32_t actuator_count, uint32_t daq_frequency)
 {
 	struct asdk_backend *asdk = (struct asdk_backend *)backend;
 	Scalar reported = 0.0;
@@ -34,6 +34,12 @@ static int asdk_start(struct alpao_backend *backend, const char *serial,
 		(void)asdkRelease(asdk->mirror);
 		asdk->mirror = NULL;
 		return -EINVAL;
+	}
+	if (daq_frequency != 0 && asdkSet(asdk->mirror, "daqFreq",
+			(Scalar)daq_frequency) != SUCCESS) {
+		(void)asdkRelease(asdk->mirror);
+		asdk->mirror = NULL;
+		return -EIO;
 	}
 	if (asdkReset(asdk->mirror) != SUCCESS) {
 		(void)asdkRelease(asdk->mirror);

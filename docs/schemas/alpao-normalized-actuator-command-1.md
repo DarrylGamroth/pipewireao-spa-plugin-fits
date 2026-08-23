@@ -30,6 +30,10 @@ count and, for the ASDK backend, the `NbOfActuator` value read when the mirror
 is opened. Version 1 does not advertise `rate`: no command cadence has yet been
 qualified as part of this contract.
 
+An ALPAO interface `daqFreq` setting controls digital to analog conversion and
+does not state how frequently a producer submits command buffers. It is exposed
+as device configuration and SHALL NOT be encoded as this format's `rate`.
+
 ## Profile
 
 The profile fixes the association between vector index and physical actuator,

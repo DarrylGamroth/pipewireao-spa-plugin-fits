@@ -15,6 +15,7 @@ its automated evidence can support.
 | ALPAO-008 | Keep the repeated wrapper bounded and allocation-free. | Fixed pool, fixed scan, direct payload validation | Source review; no allocator or logging call in `process()` or `process_command()`. ASDK internals are not qualified. | Wrapper reviewed |
 | ALPAO-009 | Provide a safe physical-device lifecycle and strict RTC qualification. | Reset lifecycle is implemented. | Requires connected-device failure and timing tests. | Not verified |
 | ALPAO-010 | Define canonical profile serialization and fingerprints. | Exact opaque matching only. | Requires normative manifest and byte-stable vectors. | Open |
+| ALPAO-011 | Allow a deployment to set the DEv7 `daqFreq` interface conversion rate without advertising it as command cadence. | Optional `api.alpao.daq-frequency` startup property and `asdkSet("daqFreq", ...)` | Mock contract test covers accepted and out-of-range configuration. The ASDK simulator does not implement `daqFreq`; connected-interface verification remains required. | Implemented; hardware not verified |
 
 The ASDK simulator uses a synthetic eight-actuator binary configuration created
 by `alpao-binary-config` and the ASDK `sim` interface. It discards commands and

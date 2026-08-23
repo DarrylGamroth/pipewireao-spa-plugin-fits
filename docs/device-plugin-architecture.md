@@ -122,6 +122,12 @@ The `rate` property is present only when it expresses a negotiated command
 cadence. It SHALL NOT be used for an SDK polling frequency, a device capability
 advertisement, or an unverified maximum rate.
 
+The ALPAO DEv7 `daqFreq` parameter controls the digital to analog conversion
+rate for supported interfaces, including PEX-292144. It is a device operational
+setting, not the graph command cadence. The ALPAO sink exposes it as
+`api.alpao.daq-frequency` in integer hertz and applies it during device startup.
+It SHALL NOT be copied into the ndarray `rate` property.
+
 ## Calculon boundary
 
 Calculon physical-deformable-mirror commands use canonical micrometres of
