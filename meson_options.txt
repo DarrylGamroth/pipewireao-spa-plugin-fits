@@ -1,0 +1,27 @@
+option(
+  'alpao-sdk',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the proprietary ALPAO ASDK backend',
+)
+
+option(
+  'alpao-sdk-root',
+  type: 'string',
+  value: '',
+  description: 'Development ALPAO SDK root; system headers/libraries are used when empty',
+)
+
+option(
+  'alpao-binary-config',
+  type: 'string',
+  value: '',
+  description: 'Path to alpao_binary_config.py for the ASDK simulator smoke test',
+)
+
+option(
+  'tests',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build SDK-independent and available simulator tests',
+)

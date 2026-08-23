@@ -1,6 +1,6 @@
 # Device plugin architecture
 
-Status: accepted repository and interface boundary; implementation pending
+Status: accepted repository and interface boundary; first ALPAO sink slice implemented
 
 Decision: PWAO-PLUGIN-001
 
@@ -110,11 +110,13 @@ serial number, transport, SDK version, and configuration location belong to
 device or node properties. Only information that changes the meaning of the
 command vector participates in format negotiation.
 
-The profile fingerprint format, canonical profile manifest, and compatibility
-rules remain unresolved. They must be specified and covered by byte-stable test
-vectors before the ALPAO format is promoted as a stable contract. Hashing an
-incidental path, an unordered property map, or an entire SDK installation is
-not an acceptable profile definition.
+The plugin currently requires an exact lowercase `sha256:` identifier but
+treats it as a trusted opaque deployment input. The profile fingerprint format,
+canonical profile manifest, and compatibility rules remain unresolved. They
+must be specified and covered by byte-stable test vectors before the ALPAO
+format is promoted as a stable contract. Hashing an incidental path, an
+unordered property map, or an entire SDK installation is not an acceptable
+profile definition.
 
 The `rate` property is present only when it expresses a negotiated command
 cadence. It SHALL NOT be used for an SDK polling frequency, a device capability
@@ -159,6 +161,18 @@ The override is a development input, not an installation layout or a path to
 record in installed plugin metadata. Production deployments use a supported
 system SDK installation and explicitly provision device configuration and
 drivers.
+
+Plugins SHALL use C by default. A plugin MAY use C++ when its vendor SDK or a
+specific implementation requirement makes C++ necessary. The reason must be
+recorded at that plugin boundary. The ALPAO plugin uses the vendor's C wrapper;
+the eGrabber SDK is an example of a boundary that requires C++.
+
+An SDK-independent mock SHALL cover each device plugin's SPA contract in
+automated tests. A mock that accepts and discards hardware commands SHALL NOT
+be included in the installed hardware plugin unless it has a distinct factory
+identity and an explicitly documented operational use. The ALPAO mock is
+compiled only into a non-installed test plugin; the installed factory accepts
+only the ASDK backend when ASDK support is built.
 
 The repository SHALL NOT commit or redistribute:
 
@@ -223,9 +237,10 @@ or profile values fail negotiation, while exact values link successfully.
 
 ### 2. SDK-independent ALPAO contract
 
-Define the ALPAO schema, canonical command-profile manifest, fingerprint
-algorithm, SPA factory identity, fixed input format, lifecycle state, and a
-synthetic backend that never opens physical hardware.
+Define the ALPAO schema, profile identifier requirements, SPA factory identity,
+fixed input format, lifecycle state, and a test-only synthetic backend that
+never opens physical hardware. Canonical profile serialization and fingerprint
+generation remain a separate promotion requirement.
 
 Completion evidence: factory loading, format enumeration, schema/profile
 rejection, buffers, commands, start/pause, bounded empty processing, and safe
