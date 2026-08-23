@@ -16,8 +16,15 @@ its automated evidence can support.
 | ALPAO-009 | Provide a safe physical-device lifecycle and strict RTC qualification. | Reset lifecycle is implemented. | Requires connected-device failure and timing tests. | Not verified |
 | ALPAO-010 | Define canonical profile serialization and fingerprints. | Exact opaque matching only. | Requires normative manifest and byte-stable vectors. | Open |
 | ALPAO-011 | Allow a deployment to set the DEv7 `daqFreq` interface conversion rate without advertising it as command cadence. | Optional `api.alpao.daq-frequency` startup property and `asdkSet("daqFreq", ...)` | Mock contract test covers accepted and out-of-range configuration. The ASDK simulator does not implement `daqFreq`; connected-interface verification remains required. | Implemented; hardware not verified |
+| ALPAO-012 | Qualify host latency through the ASDK command-packing boundary without requiring a network or physical mirror. | Optional 468-actuator capture-interface integration test and benchmark | Correlates SPA process timestamps with sequenced `AITC` capture timestamps, checks frame size/order/loss, and supports closed-loop, fixed-rate, burst, affinity, memory locking, and `SCHED_FIFO` runs. | Host harness implemented; controlled-host results required |
 
 The ASDK simulator uses a synthetic eight-actuator binary configuration created
 by `alpao-binary-config` and the ASDK `sim` interface. It discards commands and
 therefore cannot support claims about electronics, actuator order, physical
 motion, command latency, or timing bounds.
+
+With ASDK 4.01.12, LeakSanitizer reports the same 1,200-byte, three-allocation
+retention for both the simulator test and the capture-interface test.
+AddressSanitizer and UndefinedBehaviorSanitizer complete the capture test when
+leak detection is disabled. This evidence does not attribute the retained SDK
+state to the capture benchmark, and it does not qualify ASDK as leak-free.

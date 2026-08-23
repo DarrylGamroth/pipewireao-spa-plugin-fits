@@ -10,6 +10,7 @@ alpao_sdk = get_option('alpao-sdk')
 alpao_sdk_root = get_option('alpao-sdk-root')
 alpao_sdk_enabled = false
 alpao_sdk_libdir = ''
+alpao_capture_benchmark_enabled = false
 
 if not alpao_sdk.disabled()
   if alpao_sdk_root != ''
@@ -137,7 +138,85 @@ if get_option('tests').allowed()
       env: simulator_environment,
       depends: [simulator_binary, simulator_ascii],
     )
+
+    capture_plugin_dir = get_option('alpao-capture-plugin-dir')
+    if capture_plugin_dir != ''
+      capture_interface = cc.find_library(
+        'ait_capture',
+        dirs: capture_plugin_dir,
+        required: false,
+      )
+      if capture_interface.found()
+        alpao_capture_benchmark_enabled = true
+        threads_dep = dependency('threads')
+        capture_benchmark = executable(
+          'spa-alpao-capture-benchmark',
+          'bench-capture.c',
+          dependencies: [spa_dep, dl_dep, m_dep, threads_dep],
+          include_directories: plugin_include,
+          c_args: ['-Wno-pedantic'],
+        )
+        capture_binary = custom_target(
+          'alpao-capture-binary-config',
+          output: 'CAP468',
+          command: [
+            python,
+            binary_config,
+            'new',
+            '@OUTPUT@',
+            '--nact', '468',
+            '--nc', '468',
+            '--nb-steps', '1',
+          ],
+          build_by_default: true,
+        )
+        capture_ascii = custom_target(
+          'alpao-capture-ascii-config',
+          output: 'CAP468.acfg',
+          command: [
+            python,
+            '-c',
+            'import pathlib, sys; pathlib.Path(sys.argv[1]).write_bytes(b"interface capture interfaceId 0 startChannel 0 deVersion 7 daqFreq 0\\n")',
+            '@OUTPUT@',
+          ],
+          build_by_default: true,
+        )
+        capture_environment = environment()
+        capture_environment.set('ACECFG', meson.current_build_dir() / '')
+        capture_environment.prepend('LD_LIBRARY_PATH', capture_plugin_dir)
+        if alpao_sdk_libdir != ''
+          capture_environment.prepend('LD_LIBRARY_PATH', alpao_sdk_libdir)
+        endif
+        test(
+          'spa-alpao-asdk-capture',
+          capture_benchmark,
+          args: [
+            '--warmup', '100',
+            '--samples', '1000',
+            alpao_lib.full_path(),
+          ],
+          env: capture_environment,
+          depends: [capture_binary, capture_ascii],
+          timeout: 30,
+        )
+        benchmark(
+          'spa-alpao-asdk-capture-latency',
+          capture_benchmark,
+          args: [alpao_lib.full_path()],
+          env: capture_environment,
+          depends: [capture_binary, capture_ascii],
+          timeout: 120,
+        )
+      else
+        warning('alpao-capture-plugin-dir does not contain libait_capture.so')
+      endif
+    endif
   endif
 endif
 
 summary('ALPAO ASDK backend', alpao_sdk_enabled, section: 'SPA plugins')
+summary(
+  'ALPAO capture benchmark',
+  alpao_capture_benchmark_enabled,
+  section: 'SPA plugins',
+)

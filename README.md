@@ -46,6 +46,25 @@ meson test -C build-asdk --print-errorlogs
 The simulator test loads configuration and exercises ASDK calls. It does not
 validate electronics, timing, packets, or mirror motion.
 
+An optional capture-interface integration test and benchmark exercise the
+complete SPA-to-ASDK packing path with 468 actuators. They use the host-only
+`libait_capture.so` supplied by `alpao-binary-config`, not an Ethernet or PEX
+interface:
+
+```console
+meson setup build-capture --buildtype=release \
+  -Dalpao-sdk=enabled \
+  -Dalpao-sdk-root=/path/to/alpao \
+  -Dalpao-binary-config=/path/to/alpao-binary-config/tools/alpao_binary_config.py \
+  -Dalpao-capture-plugin-dir=/path/to/alpao-binary-config/interfaces/capture/build
+meson test -C build-capture spa-alpao-asdk-capture --print-errorlogs
+meson test -C build-capture --benchmark spa-alpao-asdk-capture-latency --verbose
+```
+
+See [ALPAO capture-interface benchmark](docs/alpao-capture-benchmark.md) for
+the timestamp boundaries, fixed-rate and `SCHED_FIFO` commands, workload
+matrix, raw results, and claim limits.
+
 ## ALPAO sink
 
 Factory construction accepts these properties:

@@ -16,7 +16,14 @@ option(
   'alpao-binary-config',
   type: 'string',
   value: '',
-  description: 'Path to alpao_binary_config.py for the ASDK simulator smoke test',
+  description: 'Path to alpao_binary_config.py for ASDK simulator and capture tests',
+)
+
+option(
+  'alpao-capture-plugin-dir',
+  type: 'string',
+  value: '',
+  description: 'Directory containing the host-only libait_capture.so test interface',
 )
 
 option(
