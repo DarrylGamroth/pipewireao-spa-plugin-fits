@@ -26,6 +26,9 @@ struct observed_object {
 
 struct observation {
 	std::vector<observed_object> objects;
+	uint32_t results = 0;
+	int sequence = -1;
+	int result = 0;
 };
 
 const std::string *property(const observed_object &object, const char *key)
@@ -52,8 +55,17 @@ void on_object_info(void *data, uint32_t,
 	observed->objects.push_back(std::move(object));
 }
 
+void on_result(void *data, int seq, int result, uint32_t, const void *)
+{
+	auto *observed = static_cast<observation *>(data);
+	observed->results++;
+	observed->sequence = seq;
+	observed->result = result;
+}
+
 const struct spa_device_events device_events = {
 	.version = SPA_VERSION_DEVICE_EVENTS,
+	.result = on_result,
 	.object_info = on_object_info,
 };
 
@@ -127,6 +139,9 @@ int main(int argc, char **argv)
 		} else {
 			const size_t discovered_count = manager_observation.objects.size();
 			spa_assert_se(spa_device_sync(manager.device, 7) == 0);
+			spa_assert_se(manager_observation.results == 1);
+			spa_assert_se(manager_observation.sequence == 7);
+			spa_assert_se(manager_observation.result == 0);
 			spa_assert_se(manager_observation.objects.size() == discovered_count);
 			const auto &camera = manager_observation.objects.front();
 			spa_assert_se(camera.type == SPA_TYPE_INTERFACE_Device);

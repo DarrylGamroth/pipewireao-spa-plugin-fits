@@ -18,10 +18,8 @@ its custom `StartOfCameraReadout` event contract.
 The `api.egrabber.source` factory currently provides complete-frame capture and
 mapped-host progressive publication:
 
-- `api.egrabber.enum.manager` off-loop serialized discovery with a one-snapshot
-  handoff for reconciliation, and one
-  `api.egrabber.device` object per discovered camera, with standard add,
-  property-update, and removal events reconciled on the SPA loop;
+- `api.egrabber.enum.manager` one-shot startup discovery and one
+  `api.egrabber.device` object per discovered camera;
 - standard device-to-source object creation with stable selector, vendor,
   model, serial, user-ID, and transport properties;
 - standard SPA node, port, format, buffer, metadata, I/O, and command methods;
@@ -56,7 +54,8 @@ mapped-host progressive publication:
 The plugin uses `spa_image_source`, `spa_image_source_latest`, and
 `spa_buffer_latest` directly. It has no `pw_stream`, libpipewire client,
 private mailbox, payload copy, private capture thread, or graph scheduling
-path. Discovery alone uses an off-loop control-plane thread.
+path. The optional manager completes and releases its discovery objects before
+any source begins acquisition.
 
 The camera, control-backend, frame-layout, frame-sequence, and pixel-format
 code was migrated from sibling `egrabber-pipewire` revision `a3089cb`. The
@@ -83,15 +82,12 @@ The factory test loads and enumerates the plugin without opening hardware. A
 source retains `EGrabberDiscovery` only until its selected `EGrabber` has been
 constructed; it does not retain exclusive discovery-list authority or capture
 a probe frame during initialization. The device test discovers the connected
-producer, verifies an unchanged rescan
-emits no duplicate object, and checks the standard manager-to-device-to-node
-property chain; it skips when no camera is present. A normal PipeWireAO host
-supplies loop utilities and receives discovery snapshots from a control-plane
-thread. The thread waits until the SPA loop consumes its single completed
-snapshot and then waits one second before the next scan, so slow vendor
-discovery cannot occupy the SPA loop or accumulate work. A minimal host without
-loop utilities retains synchronous discovery and `sync()` behavior. The
-capture test skips when no selected camera is available. With the connected
+producer, verifies that `sync()` is only a completion barrier and emits no
+duplicate object, and checks the standard manager-to-device-to-node property
+chain; it skips when no camera is present. Manager construction performs one
+synchronous startup inventory. It retains no discovery thread, timer, or SDK
+discovery object afterward, and it does not rescan while sources are active.
+The capture test skips when no selected camera is available. With the connected
 Gigelink camera it
 negotiates the live format, announces eight aligned
 PipeWireAO-owned buffers, captures ten frames, validates Acquisition metadata,
@@ -230,10 +226,6 @@ readiness; this plugin currently uses its functional BusySpin profile only.
 
 ## Remaining qualification
 
-- Qualify physical camera add, property-change, removal, and reappearance with
-  each supported producer. Automated tests currently cover initial discovery
-  and unchanged reconciliation on the connected Gigelink producer; the normal
-  daemon qualification exercises the asynchronous snapshot handoff.
 - Qualify acquisition-domain identity on Grablink/Coaxlink hardware and
   physical exposure-start mapping and uncertainty. The current completion-time
   anchor restores generic Header PTS behavior but does not claim an
