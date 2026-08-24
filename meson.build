@@ -16,6 +16,7 @@ fs = import('fs')
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
 spa_pkg_dep = dependency('libspa-ao-0.2', version: '>= 0.2')
+pipewire_pkg_dep = dependency('libpipewire-ao-0.3', version: '>= 1.7')
 spa_dep = declare_dependency(
   dependencies: spa_pkg_dep,
   include_directories: include_directories(
@@ -23,6 +24,7 @@ spa_dep = declare_dependency(
     is_system: true,
   ),
 )
+pipewire_dep = declare_dependency(dependencies: pipewire_pkg_dep)
 cc = meson.get_compiler('c')
 cxx = meson.get_compiler('cpp')
 dl_dep = cc.find_library('dl', required: false)
@@ -41,6 +43,7 @@ install_headers(
 
 subdir('spa/plugins/alpao')
 subdir('spa/plugins/calculon')
+subdir('src/modules/queue')
 
 egrabber_found = false
 if get_option('egrabber').allowed()

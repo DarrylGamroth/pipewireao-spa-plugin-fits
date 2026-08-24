@@ -16,6 +16,8 @@ The accepted repository and interface boundary is recorded in
 [Device plugin architecture](docs/device-plugin-architecture.md).
 The separate scientific-algorithm boundary is recorded in
 [Algorithm plugin architecture](docs/algorithm-plugin-architecture.md).
+The generic bounded handoff for isolating telemetry, GUI, and recorder graphs
+is specified in [Bounded queue module](docs/queue.md).
 
 ## Build
 
@@ -33,8 +35,9 @@ SPA factory. During local development, the Cargo workspace expects the
 Rust crates; Meson remains the build and installation entry point for the
 loadable plugin set.
 
-`libspa-ao-0.2` must resolve to a PipeWireAO installation that includes the
-ndarray `schema` and `profile` keys. Enable a development SDK tree explicitly:
+`libspa-ao-0.2` and `libpipewire-ao-0.3` must resolve to a PipeWireAO
+installation. The SPA package must include the ndarray `schema` and `profile`
+keys. Enable a development SDK tree explicitly:
 
 ```console
 meson setup build-asdk \
@@ -144,8 +147,11 @@ discard actuator commands when ASDK is absent or unavailable.
 ## Ownership boundary
 
 - PipeWireAO owns generic transport and execution contracts, including native
-  ndarray formats, semantic-schema and profile negotiation, latest-buffer I/O,
-  and RTC-owned SPA-node execution.
+  ndarray formats, semantic-schema and profile negotiation, standard and
+  latest-buffer I/O, and graph or RTC-owned SPA-node execution.
+- This repository owns the optional `libpipewire-module-queue` topology adapter
+  that applies an explicit finite capacity, overflow policy, and copy or lease
+  storage boundary between producer and observer graphs.
 - This repository owns vendor adapters, their device-native schemas, optional
   SDK integration, and hardware qualification.
 - Scientific projects such as Calculon own their scientific schemas and any
@@ -177,6 +183,7 @@ plugin directory.
 ```text
 docs/                         maintained contracts and qualification records
 include/pipewireao-plugins/   public C vocabulary for plugin factories
+src/modules/                  out-of-tree PipeWire topology modules
 spa/plugins/alpao/            ALPAO SPA factories and optional SDK backend
 spa/plugins/egrabber/         Euresys camera manager, device, and source factories
 spa/plugins/bgapi2/           Baumer GAPI camera source factory

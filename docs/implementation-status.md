@@ -1,7 +1,22 @@
 # Implementation status
 
-This ledger records what the first `api.alpao.sink` slice implements and what
-its automated evidence can support.
+This ledger records what this repository implements and what its automated
+evidence can support.
+
+## Bounded queue module
+
+| ID | Requirement | Implementation | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| QUEUE-001 | Expose an ordinary complete-buffer ndarray boundary without latest-buffer I/O. | `libpipewire-module-queue` uses standard input/output `pw_stream` nodes and exact ndarray format forwarding. | DSO load and capture-node registration test; linked format transfer remains open. | Implemented; live graph not verified |
+| QUEUE-002 | Bound capacity and require `N + 2` input-pool admission. | Fixed-capacity aligned rings, fixed 64-slot state, and capture-pool validation. | Parser boundaries 0/1/62/63 and ring boundary tests; live pool accounting remains open. | Engine verified; live admission open |
+| QUEUE-003 | Apply the selected backpressure, drop-oldest, or drop-newest overflow policy while preserving retained FIFO order. | Central bounded admission operation and reverse-loop backpressure recovery. | Deterministic capacity-one and multi-slot policy/recovery tests plus concurrent replacement stress. | Engine verified; live overload open |
+| QUEUE-004 | Provide explicit copy and lease storage without fallback. | Output-side copy and MemFd/DmaBuf descriptor-alias paths; unsupported storage fails. | Multi-block mutation-isolation and MemFd identity/rejection tests; live buffer negotiation remains open. | Helpers verified; live negotiation open |
+| QUEUE-005 | Keep the warmed producer path bounded, allocation-free, payload-copy-free, and free of direct fd syscalls. | Fixed scans, preallocated rings/slots, input-owned counters, and no producer-path allocator/copy/fd call. | Source review and fixed iteration bounds; allocator interposition and syscall tracing remain open. | Source reviewed; instrumentation open |
+| QUEUE-006 | Preserve exact format, metadata, chunks, payload, and visible sequence gaps. | Exact format POD forwarding and shared transfer helper. | Multi-block chunk, Header, Acquisition, copy, and lease tests; live gap/counter correlation remains open. | Helpers verified; graph evidence open |
+| QUEUE-007 | Recover every lease across pause, removal, failure, and destruction. | Quiescent reset, output-first teardown, removal completion, and FD cleanup. | Module construction/destruction test only; queued/in-flight lifecycle matrix remains open. | Implemented; lifecycle evidence missing |
+| QUEUE-008 | Expose monotonic publication, overload, completion, pool, and error counters. | Cache-line-separated atomics published as eight module properties. | Module load test verifies every initialized counter; event-history tests remain open. | Initial exposure verified; histories open |
+| QUEUE-009 | Bound observer retention under drop policies and isolate copy-mode downstream leases. | `N` pending slots, at most one in-flight output, `N + 2` capture admission, and output-side copy completion. | State and transfer tests; deliberately stalled live observer remains open. | Design implemented; system evidence open |
+| QUEUE-010 | Separate default node groups and limit isolation claims to qualified deployment evidence. | Distinct capture/playback node and link groups. | In-process capture-node property test; live output placement and fixed-arrival qualification remain open. | Capture default verified; deployment open |
 
 | ID | Requirement | Implementation | Evidence | Status |
 | --- | --- | --- | --- | --- |
