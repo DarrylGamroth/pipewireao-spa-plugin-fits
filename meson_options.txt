@@ -76,6 +76,13 @@ option(
 )
 
 option(
+  'aravis',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the experimental Aravis GenTL SPA source',
+)
+
+option(
   'fits',
   type: 'feature',
   value: 'auto',

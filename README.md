@@ -4,11 +4,11 @@ This repository is the out-of-tree home for native SPA hardware plugins built
 for PipeWireAO. Each plugin is a loadable shared object that exports ordinary
 SPA factories and uses PipeWireAO's installed public SPA interfaces.
 
-The device integrations are `api.alpao.sink`, `api.egrabber.source`, and
-`api.bgapi2.source`. `api.fits.source` provides fixed-cadence vector
-and image-sequence playback from FITS arrays. The sources use PipeWireAO-owned
-image buffers and RTC node execution directly; proprietary SDKs and CFITSIO
-remain optional build dependencies.
+The supported device integrations are `api.alpao.sink`,
+`api.egrabber.source`, and `api.bgapi2.source`. `api.fits.source` provides
+fixed-cadence vector and image-sequence playback from FITS arrays. The sources
+use PipeWireAO-owned image buffers and RTC node execution directly;
+proprietary SDKs and CFITSIO remain optional build dependencies.
 Proprietary SDKs, drivers, device configuration files, calibration files, and
 redistributable binaries do not belong in this repository.
 
@@ -59,6 +59,13 @@ meson test -C build-cameras --print-errorlogs \
 locations. A development build may point Meson's `pkg_config_path` at a
 PipeWireAO `build/meson-uninstalled` directory; no source include flags are
 required.
+
+The `api.aravis.source` comparison implementation is retained as an
+experimental, opt-in plugin with `-Daravis=enabled`. It is not a supported RTC
+camera backend: measured completion polling through Aravis and Euresys
+Gigelink was slower than the direct eGrabber and BGAPI2 integrations. See
+[Aravis comparison source](spa/plugins/aravis/README.md) for its scope and
+manual test commands.
 
 Enable or require the FITS source with `-Dfits=enabled`. Its default `file`
 profile reads each scheduled plane through CFITSIO directly into a PipeWireAO
@@ -173,6 +180,7 @@ include/pipewireao-plugins/   public C vocabulary for plugin factories
 spa/plugins/alpao/            ALPAO SPA factories and optional SDK backend
 spa/plugins/egrabber/         Euresys camera manager, device, and source factories
 spa/plugins/bgapi2/           Baumer GAPI camera source factory
+spa/plugins/aravis/           experimental Aravis GenTL comparison source
 spa/plugins/fits/             CFITSIO vector and image-sequence source factory
 spa/plugins/calculon/         Calculon SPA factory build and C ABI tests
 crates/calculon-spa-node/     reusable Rust SPA ABI adapter

@@ -79,6 +79,12 @@ if bgapi2_found
   subdir('spa/plugins/bgapi2')
 endif
 
+aravis_dep = dependency('aravis-0.10', required: get_option('aravis'))
+aravis_found = aravis_dep.found()
+if aravis_found
+  subdir('spa/plugins/aravis')
+endif
+
 cfitsio_dep = dependency('cfitsio', required: get_option('fits'))
 fits_found = cfitsio_dep.found()
 if fits_found
@@ -87,4 +93,5 @@ endif
 
 summary('eGrabber plugin', egrabber_found, section: 'SPA plugins')
 summary('BGAPI2 plugin', bgapi2_found, section: 'SPA plugins')
+summary('Aravis experimental plugin', aravis_found, section: 'SPA plugins')
 summary('FITS cube source', fits_found, section: 'SPA plugins')
