@@ -9,7 +9,7 @@ CFITSIO reads each due plane directly into an acquired PipeWireAO buffer.
 Ordinary buffered file access is the default. This is preferable for
 sequential playback because FITS values still require byte-order, scaling, or
 type conversion before publication; mapping a FITS file does not make those
-frames zero-copy. `mmap` remains available for measurement and for deployments
+planes zero-copy. `mmap` remains available for measurement and for deployments
 that prefer a stable virtual mapping. Its optional prefault pass touches every
 file page during source construction.
 
@@ -19,8 +19,8 @@ file page during source construction.
 | --- | --- | --- |
 | `api.fits.path` | required | FITS file path. Extended-filename parsing is not used. |
 | `api.fits.hdu` | default `1` | One-based image HDU. |
-| `api.fits.frame-rank` | default `2` | Rank of one published plane: `1` for vectors or `2` for images. |
-| `api.fits.rate` | required | Positive `numerator/denominator` frames per second; an integer means `/1`. The period must be at least one nanosecond. |
+| `api.fits.sample-rank` | default `2` | Number of FITS axes in one published sample: `1` for vectors or `2` for images. |
+| `api.fits.rate` | required | Positive `numerator/denominator` samples per second; an integer means `/1`. The period must be at least one nanosecond. |
 | `api.fits.schema` | required | Exact ndarray semantic schema. |
 | `api.fits.profile` | optional | Exact ndarray interpretation or calibration profile. |
 | `api.fits.io-mode` | default `file` | `file` for normal CFITSIO access or `mmap` for a CFITSIO memory file backed by a private read-only mapping. |
@@ -29,11 +29,11 @@ file page during source construction.
 
 The file axes define the repeated values without a separate shape property:
 
-- `frame-rank=1` accepts `(elements)` or `(elements, frames)`. It publishes a
+- `sample-rank=1` accepts `(elements)` or `(elements, samples)`. It publishes a
   canonical row-major vector. A `Float64` file with the ALPAO command schema,
   matching actuator count, and matching profile can therefore negotiate
   directly with `api.alpao.sink`.
-- `frame-rank=2` accepts `(width, height)` or `(width, height, frames)`. It
+- `sample-rank=2` accepts `(width, height)` or `(width, height, frames)`. It
   publishes the native FITS element type with shape `(width, height)` and
   column-major layout, preserving FITS axis order. It also offers raw video
   `GRAY16_LE`; CFITSIO performs the conversion directly into the selected

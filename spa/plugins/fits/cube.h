@@ -25,17 +25,17 @@ enum fits_cube_output {
 struct fits_cube_options {
 	const char *path;
 	uint32_t hdu;
-	uint32_t frame_rank;
+	uint32_t sample_rank;
 	enum fits_cube_io_mode io_mode;
 	bool prefault;
 };
 
 struct fits_cube_info {
-	uint32_t frame_rank;
+	uint32_t sample_rank;
 	uint32_t shape[2];
 	uint32_t width;
 	uint32_t height;
-	uint64_t frames;
+	uint64_t samples;
 	enum spa_element_type element_type;
 	size_t element_size;
 	size_t plane_elements;
@@ -51,7 +51,7 @@ void fits_cube_close(struct fits_cube *cube);
 
 const struct fits_cube_info *fits_cube_get_info(const struct fits_cube *cube);
 
-int fits_cube_read_plane(struct fits_cube *cube, uint64_t frame,
+int fits_cube_read_plane(struct fits_cube *cube, uint64_t sample,
 		enum fits_cube_output output, void *destination,
 		size_t destination_size);
 

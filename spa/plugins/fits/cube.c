@@ -174,7 +174,7 @@ int fits_cube_open(struct fits_cube **result,
 	if (result == NULL || options == NULL || options->path == NULL ||
 			options->path[0] == '\0' || options->hdu == 0 ||
 			options->hdu > INT_MAX ||
-			(options->frame_rank != 1 && options->frame_rank != 2) ||
+			(options->sample_rank != 1 && options->sample_rank != 2) ||
 			(options->io_mode != FITS_CUBE_IO_FILE &&
 			 options->io_mode != FITS_CUBE_IO_MMAP))
 		return fail(message, message_size, -EINVAL,
@@ -208,17 +208,17 @@ int fits_cube_open(struct fits_cube **result,
 				"could not inspect FITS image");
 		goto error;
 	}
-	if (dimensions != (int)options->frame_rank &&
-			dimensions != (int)options->frame_rank + 1) {
+	if (dimensions != (int)options->sample_rank &&
+			dimensions != (int)options->sample_rank + 1) {
 		res = fail(message, message_size, -EINVAL,
-				"FITS dimensions do not match the configured frame rank");
+				"FITS dimensions do not match the configured sample rank");
 		goto error;
 	}
 	if (axes[0] <= 0 || axes[0] > UINT32_MAX ||
-			(options->frame_rank == 2 &&
+			(options->sample_rank == 2 &&
 			 (axes[1] <= 0 || axes[1] > UINT32_MAX)) ||
-			(dimensions > (int)options->frame_rank &&
-			 axes[options->frame_rank] <= 0)) {
+			(dimensions > (int)options->sample_rank &&
+			 axes[options->sample_rank] <= 0)) {
 		res = fail(message, message_size, -EOVERFLOW,
 				"FITS image dimensions are unsupported");
 		goto error;
@@ -230,7 +230,7 @@ int fits_cube_open(struct fits_cube **result,
 		goto error;
 	}
 	plane_elements = (uint64_t)axes[0] *
-			(options->frame_rank == 2 ? (uint64_t)axes[1] : 1u);
+			(options->sample_rank == 2 ? (uint64_t)axes[1] : 1u);
 	if (plane_elements > SIZE_MAX ||
 			plane_elements > SIZE_MAX / cube->info.element_size ||
 			plane_elements > LONGLONG_MAX) {
@@ -238,14 +238,14 @@ int fits_cube_open(struct fits_cube **result,
 				"FITS image plane is too large");
 		goto error;
 	}
-	cube->info.frame_rank = options->frame_rank;
+	cube->info.sample_rank = options->sample_rank;
 	cube->info.shape[0] = (uint32_t)axes[0];
-	cube->info.shape[1] = options->frame_rank == 2 ? (uint32_t)axes[1] : 1u;
+	cube->info.shape[1] = options->sample_rank == 2 ? (uint32_t)axes[1] : 1u;
 	cube->info.width = cube->info.shape[0];
 	cube->info.height = cube->info.shape[1];
-	cube->info.frames = dimensions > (int)options->frame_rank ?
-			(uint64_t)axes[options->frame_rank] : 1u;
-	if (plane_elements > (uint64_t)LONGLONG_MAX / cube->info.frames) {
+	cube->info.samples = dimensions > (int)options->sample_rank ?
+			(uint64_t)axes[options->sample_rank] : 1u;
+	if (plane_elements > (uint64_t)LONGLONG_MAX / cube->info.samples) {
 		res = fail(message, message_size, -EOVERFLOW,
 				"FITS image cube is too large");
 		goto error;
@@ -281,7 +281,7 @@ const struct fits_cube_info *fits_cube_get_info(const struct fits_cube *cube)
 	return cube == NULL ? NULL : &cube->info;
 }
 
-int fits_cube_read_plane(struct fits_cube *cube, uint64_t frame,
+int fits_cube_read_plane(struct fits_cube *cube, uint64_t sample,
 		enum fits_cube_output output, void *destination,
 		size_t destination_size)
 {
@@ -289,7 +289,7 @@ int fits_cube_read_plane(struct fits_cube *cube, uint64_t frame,
 	size_t required;
 	int any_null = 0, datatype, status = 0;
 
-	if (cube == NULL || destination == NULL || frame >= cube->info.frames)
+	if (cube == NULL || destination == NULL || sample >= cube->info.samples)
 		return -EINVAL;
 	if (output == FITS_CUBE_OUTPUT_NATIVE) {
 		datatype = cube->native_datatype;
@@ -304,7 +304,7 @@ int fits_cube_read_plane(struct fits_cube *cube, uint64_t frame,
 	}
 	if (destination_size < required)
 		return -ENOSPC;
-	first_element = (LONGLONG)(frame * cube->info.plane_elements + 1u);
+	first_element = (LONGLONG)(sample * cube->info.plane_elements + 1u);
 	elements = (LONGLONG)cube->info.plane_elements;
 	fits_read_img(cube->file, datatype, first_element, elements, NULL,
 			destination, &any_null, &status);

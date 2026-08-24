@@ -49,7 +49,7 @@ static void test_mode(const char *path, enum fits_cube_io_mode mode,
 	struct fits_cube_options options = {
 		.path = path,
 		.hdu = 1,
-		.frame_rank = 2,
+		.sample_rank = 2,
 		.io_mode = mode,
 		.prefault = prefault,
 	};
@@ -62,11 +62,11 @@ static void test_mode(const char *path, enum fits_cube_io_mode mode,
 	spa_assert_se(fits_cube_open(&cube, &options, message, sizeof(message)) == 0);
 	info = fits_cube_get_info(cube);
 	spa_assert_se(info != NULL);
-	spa_assert_se(info->frame_rank == 2);
+	spa_assert_se(info->sample_rank == 2);
 	spa_assert_se(info->shape[0] == 4 && info->shape[1] == 3);
 	spa_assert_se(info->width == 4);
 	spa_assert_se(info->height == 3);
-	spa_assert_se(info->frames == 3);
+	spa_assert_se(info->samples == 3);
 	spa_assert_se(info->element_type == SPA_ELEMENT_TYPE_U16_LE);
 	spa_assert_se(info->element_size == sizeof(uint16_t));
 	spa_assert_se(info->plane_elements ==

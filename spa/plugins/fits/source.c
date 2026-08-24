@@ -70,7 +70,7 @@ struct impl {
 	char schema[TEXT_SIZE];
 	char profile[TEXT_SIZE];
 	char hdu_text[32];
-	char frame_rank_text[8];
+	char sample_rank_text[8];
 	char rate_text[32];
 	char node_name[TEXT_SIZE];
 	char description[TEXT_SIZE];
@@ -175,8 +175,8 @@ static void cadence_start(struct cadence *cadence,
 }
 
 static int cadence_due(struct cadence *cadence, uint64_t now,
-		uint64_t frame_count, bool loop, uint64_t *sequence,
-		uint64_t *frame, uint64_t *pts, bool *discontinuity)
+		uint64_t sample_count, bool loop, uint64_t *sequence,
+		uint64_t *sample, uint64_t *pts, bool *discontinuity)
 {
 	uint64_t due_sequence, selected;
 	__uint128_t elapsed;
@@ -189,19 +189,19 @@ static int cadence_due(struct cadence *cadence, uint64_t now,
 	if (due_sequence < cadence->next_sequence)
 		due_sequence = cadence->next_sequence;
 	selected = due_sequence;
-	if (!loop && selected >= frame_count) {
-		if (cadence->next_sequence >= frame_count) {
+	if (!loop && selected >= sample_count) {
+		if (cadence->next_sequence >= sample_count) {
 			cadence->ended = true;
 			return 0;
 		}
-		selected = frame_count - 1u;
+		selected = sample_count - 1u;
 	}
 	*sequence = selected;
-	*frame = loop ? selected % frame_count : selected;
+	*sample = loop ? selected % sample_count : selected;
 	*pts = sequence_pts(cadence, selected);
 	*discontinuity = selected == 0 || selected > cadence->next_sequence;
 	cadence->next_sequence = selected + 1u;
-	if (!loop && cadence->next_sequence >= frame_count) {
+	if (!loop && cadence->next_sequence >= sample_count) {
 		cadence->ended = true;
 		cadence->next_pts = UINT64_MAX;
 	} else {
@@ -345,9 +345,9 @@ static struct spa_pod *build_ndarray_format(struct impl *self,
 			SPA_FORMAT_NDARRAY_elementType,
 			SPA_POD_Id(self->cube_info.element_type),
 			SPA_FORMAT_NDARRAY_shape, SPA_POD_Array(sizeof(int32_t),
-					SPA_TYPE_Int, self->cube_info.frame_rank, shape),
+					SPA_TYPE_Int, self->cube_info.sample_rank, shape),
 			SPA_FORMAT_NDARRAY_layout,
-			SPA_POD_Id(self->cube_info.frame_rank == 1 ?
+			SPA_POD_Id(self->cube_info.sample_rank == 1 ?
 					SPA_NDARRAY_LAYOUT_ROW_MAJOR :
 					SPA_NDARRAY_LAYOUT_COLUMN_MAJOR),
 			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&self->rate), 0);
@@ -393,7 +393,7 @@ static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 	case SPA_PARAM_EnumFormat:
 		if (index == 0)
 			*param = build_ndarray_format(self, builder, id);
-		else if (index == 1 && self->cube_info.frame_rank == 2)
+		else if (index == 1 && self->cube_info.sample_rank == 2)
 			*param = build_video_format(self, builder, id);
 		else
 			return 0;
@@ -491,14 +491,14 @@ static int validate_ndarray_format(struct impl *self,
 
 	if (spa_format_ndarray_parse(param, &format) < 0 ||
 			format.element_type != self->cube_info.element_type ||
-			format.layout != (self->cube_info.frame_rank == 1 ?
+			format.layout != (self->cube_info.sample_rank == 1 ?
 					SPA_NDARRAY_LAYOUT_ROW_MAJOR :
 					SPA_NDARRAY_LAYOUT_COLUMN_MAJOR) ||
 			format.rate.num != self->rate.num ||
 			format.rate.denom != self->rate.denom ||
-			format.n_dimensions != self->cube_info.frame_rank ||
+			format.n_dimensions != self->cube_info.sample_rank ||
 			format.shape[0] != self->cube_info.width ||
-			(self->cube_info.frame_rank == 2 &&
+			(self->cube_info.sample_rank == 2 &&
 			 format.shape[1] != self->cube_info.height) ||
 			spa_ndarray_format_key_count(param,
 					SPA_FORMAT_NDARRAY_schema) != 1)
@@ -524,7 +524,7 @@ static int validate_video_format(struct impl *self,
 {
 	struct spa_video_info_raw format = { 0 };
 
-	return self->cube_info.frame_rank == 2 &&
+	return self->cube_info.sample_rank == 2 &&
 			spa_format_video_raw_parse(param, &format) >= 0 &&
 			format.format == SPA_VIDEO_FORMAT_GRAY16_LE &&
 			format.size.width == self->cube_info.width &&
@@ -650,7 +650,7 @@ static int node_process(void *object)
 	struct spa_image_frame publication;
 	struct spa_buffer *buffer;
 	struct spa_data *data;
-	uint64_t now, sequence, frame, pts;
+	uint64_t now, sequence, sample, pts;
 	bool discontinuity;
 	int res;
 
@@ -658,8 +658,8 @@ static int node_process(void *object)
 		return SPA_STATUS_OK;
 	if ((res = monotonic_nsec(&now)) < 0)
 		return res;
-	if (cadence_due(&self->cadence, now, self->cube_info.frames,
-			self->loop, &sequence, &frame, &pts, &discontinuity) == 0)
+	if (cadence_due(&self->cadence, now, self->cube_info.samples,
+			self->loop, &sequence, &sample, &pts, &discontinuity) == 0)
 		return SPA_STATUS_OK;
 	res = spa_image_source_try_acquire(&self->source, &image);
 	if (res < 0)
@@ -672,7 +672,7 @@ static int node_process(void *object)
 		return -EPROTO;
 	}
 	data = &buffer->datas[0];
-	res = fits_cube_read_plane(self->cube, frame,
+	res = fits_cube_read_plane(self->cube, sample,
 			self->port.output == OUTPUT_NDARRAY ?
 					FITS_CUBE_OUTPUT_NATIVE : FITS_CUBE_OUTPUT_GRAY16,
 			data->data, data->maxsize);
@@ -752,25 +752,25 @@ static void configure_props(struct impl *self)
 	uint32_t n = 0;
 
 	snprintf(self->node_name, sizeof(self->node_name), "fits_source");
-	if (self->cube_info.frame_rank == 1)
+	if (self->cube_info.sample_rank == 1)
 		snprintf(self->description, sizeof(self->description),
-				"FITS vector sequence %u (%" PRIu64 " frames)",
-				self->cube_info.width, self->cube_info.frames);
+				"FITS vector sequence %u (%" PRIu64 " samples)",
+				self->cube_info.width, self->cube_info.samples);
 	else
 		snprintf(self->description, sizeof(self->description),
 				"FITS image cube %ux%u (%" PRIu64 " frames)",
 				self->cube_info.width, self->cube_info.height,
-				self->cube_info.frames);
+				self->cube_info.samples);
 #define ADD_ITEM(key, value) \
 	self->prop_items[n++] = SPA_DICT_ITEM_INIT((key), (value))
 	ADD_ITEM(SPA_KEY_DEVICE_API, "fits");
 	ADD_ITEM(SPA_KEY_MEDIA_CLASS,
-			self->cube_info.frame_rank == 2 ? "Video/Source" : "Data/Source");
+			self->cube_info.sample_rank == 2 ? "Video/Source" : "Data/Source");
 	ADD_ITEM(SPA_KEY_NODE_NAME, self->node_name);
 	ADD_ITEM(SPA_KEY_NODE_DESCRIPTION, self->description);
 	ADD_ITEM(SPA_KEY_API_FITS_PATH, self->path);
 	ADD_ITEM(SPA_KEY_API_FITS_HDU, self->hdu_text);
-	ADD_ITEM(SPA_KEY_API_FITS_FRAME_RANK, self->frame_rank_text);
+	ADD_ITEM(SPA_KEY_API_FITS_SAMPLE_RANK, self->sample_rank_text);
 	ADD_ITEM(SPA_KEY_API_FITS_RATE, self->rate_text);
 	ADD_ITEM(SPA_KEY_API_FITS_SCHEMA, self->schema);
 	if (self->profile[0] != '\0')
@@ -789,7 +789,7 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	struct impl *self = (struct impl *)handle;
 	struct fits_cube_options options = {
 		.hdu = 1,
-		.frame_rank = 2,
+		.sample_rank = 2,
 		.io_mode = FITS_CUBE_IO_FILE,
 	};
 	struct spa_image_source_config source_config = {
@@ -823,9 +823,9 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	if (parse_u32(spa_dict_lookup(info, SPA_KEY_API_FITS_HDU), 1,
 			&options.hdu) < 0 || options.hdu == 0)
 		return -EINVAL;
-	if (parse_u32(spa_dict_lookup(info, SPA_KEY_API_FITS_FRAME_RANK), 2,
-			&options.frame_rank) < 0 ||
-			(options.frame_rank != 1 && options.frame_rank != 2))
+	if (parse_u32(spa_dict_lookup(info, SPA_KEY_API_FITS_SAMPLE_RANK), 2,
+			&options.sample_rank) < 0 ||
+			(options.sample_rank != 1 && options.sample_rank != 2))
 		return -EINVAL;
 	value = spa_dict_lookup(info, SPA_KEY_API_FITS_IO_MODE);
 	if (value != NULL) {
@@ -860,8 +860,8 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 		goto error;
 	}
 	snprintf(self->hdu_text, sizeof(self->hdu_text), "%u", options.hdu);
-	snprintf(self->frame_rank_text, sizeof(self->frame_rank_text), "%u",
-			options.frame_rank);
+	snprintf(self->sample_rank_text, sizeof(self->sample_rank_text), "%u",
+			options.sample_rank);
 	snprintf(self->rate_text, sizeof(self->rate_text), "%u/%u",
 			self->rate.num, self->rate.denom);
 	snprintf(self->io_mode_text, sizeof(self->io_mode_text), "%s",

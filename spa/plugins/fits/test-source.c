@@ -175,7 +175,7 @@ static struct spa_node *make_node(const struct spa_handle_factory *factory,
 	char rank_text[8];
 	const struct spa_dict_item items[] = {
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PATH, path),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_FRAME_RANK, rank_text),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_SAMPLE_RANK, rank_text),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_RATE, "1000/1"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_SCHEMA, TEST_SCHEMA),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PROFILE, TEST_PROFILE),
