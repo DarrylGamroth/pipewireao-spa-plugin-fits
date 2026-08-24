@@ -56,7 +56,7 @@ struct impl {
 	struct spa_node_info info;
 	struct spa_param_info params[2];
 	struct spa_dict props;
-	struct spa_dict_item prop_items[11];
+	struct spa_dict_item prop_items[16];
 	char node_name[192];
 	char node_description[256];
 	char producer_path[PATH_MAX];
@@ -924,12 +924,15 @@ static void configure_props(struct impl *this,
 	ADD_ITEM(SPA_KEY_MEDIA_ROLE, "Camera");
 	ADD_ITEM(SPA_KEY_NODE_NAME, this->node_name);
 	ADD_ITEM(SPA_KEY_NODE_DESCRIPTION, this->node_description);
+	ADD_ITEM(SPA_KEY_DEVICE_VENDOR_NAME, this->camera_info.vendor);
 	ADD_ITEM(SPA_KEY_DEVICE_PRODUCT_NAME, this->camera_info.model);
 	ADD_ITEM(SPA_KEY_DEVICE_SERIAL, this->camera_info.serial);
 	ADD_ITEM(SPA_KEY_API_BGAPI2_PRODUCER, this->producer_path);
+	ADD_ITEM(SPA_KEY_API_BGAPI2_SERIAL, this->camera_info.serial);
 	ADD_ITEM(SPA_KEY_API_BGAPI2_INTERFACE_INDEX, this->interface_index);
 	ADD_ITEM(SPA_KEY_API_BGAPI2_DEVICE_INDEX, this->device_index);
 	ADD_ITEM(SPA_KEY_API_BGAPI2_STREAM_INDEX, this->stream_index);
+	ADD_ITEM(SPA_KEY_API_BGAPI2_TRANSPORT, this->camera_info.transport);
 #undef ADD_ITEM
 	this->props = SPA_DICT_INIT(this->prop_items, n_items);
 }
@@ -958,6 +961,8 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 	memset(this, 0, sizeof(*this));
 	options.producer_path = info == NULL ? NULL :
 			spa_dict_lookup(info, SPA_KEY_API_BGAPI2_PRODUCER);
+	options.serial = info == NULL ? NULL :
+			spa_dict_lookup(info, SPA_KEY_API_BGAPI2_SERIAL);
 	options.completion_mode = BGAPI2_CAMERA_COMPLETION_CALLBACK;
 	if (options.producer_path == NULL ||
 			parse_index(info, SPA_KEY_API_BGAPI2_INTERFACE_INDEX,

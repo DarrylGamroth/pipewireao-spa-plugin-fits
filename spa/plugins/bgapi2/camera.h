@@ -21,6 +21,7 @@ enum bgapi2_camera_completion_mode {
 
 struct bgapi2_camera_options {
 	const char *producer_path;
+	const char *serial;
 	uint32_t interface_index;
 	uint32_t device_index;
 	uint32_t stream_index;
@@ -39,9 +40,25 @@ struct bgapi2_camera_info {
 	uint64_t offset_x;
 	uint64_t offset_y;
 	char pixel_format[64];
+	char vendor[128];
 	char model[128];
 	char serial[128];
+	char device_id[256];
+	char transport[64];
 };
+
+struct bgapi2_discovered_device {
+	uint32_t interface_index;
+	uint32_t device_index;
+	char vendor[128];
+	char model[128];
+	char serial[128];
+	char device_id[256];
+	char transport[64];
+};
+
+typedef int (*bgapi2_discovery_callback)(void *data,
+		const struct bgapi2_discovered_device *device);
 
 struct bgapi2_frame_info {
 	uint64_t frame_id;
@@ -98,6 +115,9 @@ struct bgapi2_feature_value {
 struct bgapi2_camera;
 
 /* Discovery, feature lookup, and teardown are control-path operations. */
+int bgapi2_camera_discover(const char *producer_path,
+		uint64_t interface_timeout_ms, uint64_t device_timeout_ms,
+		bgapi2_discovery_callback callback, void *data);
 int bgapi2_camera_open(struct bgapi2_camera **camera,
 		const struct bgapi2_camera_options *options);
 void bgapi2_camera_close(struct bgapi2_camera *camera);

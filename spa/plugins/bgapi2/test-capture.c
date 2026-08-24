@@ -352,7 +352,9 @@ int main(int argc, char *argv[])
 	enumerate = (spa_handle_factory_enum_func_t)dlsym(library,
 			SPA_HANDLE_FACTORY_ENUM_FUNC_NAME);
 	spa_assert_se(enumerate != NULL);
-	spa_assert_se(enumerate(&factory, &index) == 1);
+	while (enumerate(&factory, &index) > 0)
+		if (spa_streq(factory->name, SPA_NAME_API_BGAPI2_SOURCE))
+			break;
 	spa_assert_se(factory != NULL &&
 			spa_streq(factory->name, SPA_NAME_API_BGAPI2_SOURCE));
 	res = capture(factory, argv[2]);

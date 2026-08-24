@@ -1,5 +1,7 @@
 bgapi2_sources = [
   'plugin.c',
+  'manager.c',
+  'device.c',
   'source.c',
   'camera.cpp',
   'params.c',
@@ -32,6 +34,30 @@ if get_option('tests').allowed()
     bgapi2_factory_test,
     args: [bgapi2_lib.full_path()],
     depends: bgapi2_lib,
+  )
+
+  bgapi2_device_test = executable(
+    'spa-bgapi2-device-test',
+    'test-device.c',
+    dependencies: [spa_dep, dl_dep],
+  )
+  test(
+    'spa-bgapi2-device-euresys',
+    bgapi2_device_test,
+    args: [bgapi2_lib.full_path(),
+      '/opt/euresys/egrabber/lib/x86_64/gigelink.cti'],
+    depends: bgapi2_lib,
+    is_parallel: false,
+    timeout: 10,
+  )
+  test(
+    'spa-bgapi2-device-baumer',
+    bgapi2_device_test,
+    args: [bgapi2_lib.full_path(),
+      get_option('bgapi2-prefix') / 'lib/libbgapi2_gige.cti'],
+    depends: bgapi2_lib,
+    is_parallel: false,
+    timeout: 10,
   )
 
   bgapi2_capture_test = executable(

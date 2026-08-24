@@ -15,6 +15,22 @@ struct test_slot {
 	void *memory;
 };
 
+struct discovery_result {
+	struct bgapi2_discovered_device first;
+	uint32_t count;
+};
+
+static int on_discovered(void *data,
+		const struct bgapi2_discovered_device *device)
+{
+	struct discovery_result *result = data;
+
+	if (result->count == 0)
+		result->first = *device;
+	result->count++;
+	return 0;
+}
+
 static uint64_t monotonic_nsec(void)
 {
 	struct timespec now;
@@ -51,6 +67,7 @@ int main(int argc, char *argv[])
 		.device_timeout_ms = 200,
 	};
 	struct bgapi2_camera *camera = NULL;
+	struct discovery_result discovery = { 0 };
 	const struct bgapi2_camera_info *info;
 	struct bgapi2_feature_info feature;
 	struct test_slot slots[N_BUFFERS] = { 0 };
@@ -66,6 +83,21 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 	options.producer_path = argv[1];
+	res = bgapi2_camera_discover(options.producer_path,
+			options.interface_timeout_ms, options.device_timeout_ms,
+			on_discovered, &discovery);
+	if (res == 0)
+		return 77;
+	if (res < 0 || discovery.count != (uint32_t)res) {
+		fprintf(stderr, "could not discover cameras: %d\n", res);
+		return EXIT_FAILURE;
+	}
+	if (discovery.first.serial[0] != '\0')
+		options.serial = discovery.first.serial;
+	else {
+		options.interface_index = discovery.first.interface_index;
+		options.device_index = discovery.first.device_index;
+	}
 	res = bgapi2_camera_open(&camera, &options);
 	if (res == -ENODEV)
 		return 77;

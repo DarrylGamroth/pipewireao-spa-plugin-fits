@@ -130,7 +130,7 @@ live join/leave, and final subscriber teardown. PipeWireAO commit `5dd08ebd1`
 corrects the RTC lifecycle ordering that this harness exposed: an RTC node now
 stops and joins before its final runnable link and announced buffers are
 dismantled, while a non-final fan-out removal leaves the loop running. The core
-regression, all 15 eGrabber/BGAPI2 tests, and four consecutive connected
+regression, all 17 eGrabber/BGAPI2 tests, and four consecutive connected
 Gigelink host qualifications pass. CAMERA-005 is verified without weakening
 the daemon-health or teardown checks.
 

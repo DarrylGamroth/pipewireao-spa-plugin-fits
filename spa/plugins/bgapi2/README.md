@@ -6,7 +6,44 @@ producers supported by Baumer GAPI. Enable it with `-Dbgapi2=enabled`; use
 `/opt/baumer-gapi-sdk-c`. A disabled build does not inspect or include the
 proprietary SDK.
 
-## Implemented slice
+## Discovery and selection
+
+The plugin exports the same three-layer SPA model as the eGrabber plugin:
+
+- `api.bgapi2.enum.manager` scans one configured GenTL producer once when the
+  manager is created and emits one SPA Device object for each camera found;
+- `api.bgapi2.device` represents one discovered camera and emits its source
+  Node object; and
+- `api.bgapi2.source` opens the selected camera and performs complete-frame
+  capture.
+
+Discovery is a startup snapshot. It does not retain the BGAPI2 system, create a
+background thread, poll for hotplug, or reinterpret `sync()` as a rescan.
+Applications that need a fresh list create a new manager. This keeps discovery
+and GUI enumeration entirely off the acquisition path.
+
+The required manager and source property is the GenTL system/producer path:
+
+```text
+api.bgapi2.producer=/absolute/path/to/producer.cti
+```
+
+When a producer exposes serial numbers without opening the cameras, the manager
+publishes `api.bgapi2.serial` and the source uses it as the stable selector.
+Some third-party producer/BGAPI2 combinations expose only transport coordinates
+during unopened discovery. In that case the manager publishes the discovered
+interface, device, and stream indices; after opening, the source publishes the
+camera's actual serial and other identity properties. Device object names and
+paths fall back to the complete interface/device/stream tuple, so multiple
+interfaces cannot collide.
+
+The source factory remains directly usable without a manager. The optional
+`api.bgapi2.serial`, `api.bgapi2.interface-index`, `api.bgapi2.device-index`, and
+`api.bgapi2.stream-index` properties select a device. By default the source
+searches all interfaces and selects device and stream zero. Serial selection
+rejects ambiguous duplicate matches.
+
+## Capture
 
 The `api.bgapi2.source` factory provides complete-frame capture with:
 
@@ -24,16 +61,8 @@ The `api.bgapi2.source` factory provides complete-frame capture with:
   metadata; and
 - synchronous acquisition stop and event-thread shutdown before pool teardown.
 
-The required factory property is:
-
-```text
-api.bgapi2.producer=/absolute/path/to/producer.cti
-```
-
-The optional `api.bgapi2.interface-index`, `api.bgapi2.device-index`, and
-`api.bgapi2.stream-index` properties select a device. By default the source
-searches all interfaces and selects device and stream zero. The actual indices,
-model, serial number, and producer path are published as node properties.
+The actual indices, vendor, model, serial number, transport, and producer path
+are published as node properties.
 
 The plugin discovers scalar controls from the remote GenICam NodeMap instead of
 maintaining a camera-specific list. Properties use canonical names such as
@@ -91,11 +120,14 @@ hardware acquisition identity, clock mapping, or uncertainty.
 
 ## Qualification
 
-The factory test verifies load and parameter validation without opening a
-camera. Camera and source tests use four or eight external host buffers,
-respectively. The source test captures ten frames, returns every subscriber
-lease, pauses and restarts halfway through the run, and performs ordered
-teardown.
+The factory test verifies all three factories and source parameter validation
+without opening a camera. The device test verifies the manager-to-device-to-node
+property chain and confirms that `sync()` completes without rescanning or
+duplicating objects. Camera and source tests use four or eight external host
+buffers, respectively. The adapter test opens the first startup-discovery result
+by serial when available, otherwise by its exact transport coordinates. The
+source test captures ten frames, returns every subscriber lease, pauses and
+restarts halfway through the run, and performs ordered teardown.
 
 On 2026-08-23 the factory, camera, and complete-frame source tests passed
 against the connected 640x480 Mono8 GE34GM camera with the BGAPI2 2.16.1
@@ -231,7 +263,6 @@ taskset -c 15 build/spa/plugins/bgapi2/spa-bgapi2-completion-benchmark \
 
 ## Remaining work
 
-- Add manager and device factories for live camera discovery and reconciliation.
 - Map a hardware or producer timestamp into the PipeWireAO acquisition clock
   contract before claiming exposure timing.
 - Extend pixel-format coverage where a deterministic direct SPA mapping exists.

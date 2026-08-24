@@ -12,9 +12,19 @@ int spa_handle_factory_enum(const struct spa_handle_factory **factory,
 {
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
 	spa_return_val_if_fail(index != NULL, -EINVAL);
-	if (*index > 0)
+	switch (*index) {
+	case 0:
+		*factory = &spa_bgapi2_manager_factory;
+		break;
+	case 1:
+		*factory = &spa_bgapi2_device_factory;
+		break;
+	case 2:
+		*factory = &spa_bgapi2_source_factory;
+		break;
+	default:
 		return 0;
-	*factory = &spa_bgapi2_source_factory;
+	}
 	(*index)++;
 	return 1;
 }

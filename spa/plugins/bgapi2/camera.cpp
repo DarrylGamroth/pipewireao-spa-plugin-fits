@@ -340,12 +340,40 @@ static void close_interface(struct bgapi2_camera *camera)
 	camera->interface_open = false;
 }
 
-static int find_device(struct bgapi2_camera *camera,
-		const struct bgapi2_camera_options *options)
+typedef BGAPI2_RESULT (BGAPI2CALL *device_string_getter)(BGAPI2_Device *,
+		char *, bo_uint64 *);
+
+static int get_device_string(struct bgapi2_camera *camera,
+		BGAPI2_Device *device, device_string_getter getter,
+		char *value, size_t capacity)
+{
+	bo_uint64 length = capacity;
+	int res;
+
+	if (capacity == 0)
+		return -EINVAL;
+	value[0] = '\0';
+	res = checked(camera, getter(device, value, &length));
+	value[capacity - 1] = '\0';
+	return res;
+}
+
+static void get_optional_device_string(struct bgapi2_camera *camera,
+		BGAPI2_Device *device, device_string_getter getter,
+		char *value, size_t capacity)
+{
+	if (get_device_string(camera, device, getter, value, capacity) < 0)
+		value[0] = '\0';
+}
+
+static int select_device_by_serial(struct bgapi2_camera *camera,
+		const struct bgapi2_camera_options *options,
+		uint32_t *selected_interface, uint32_t *selected_device)
 {
 	bo_uint n_interfaces = 0;
 	bo_bool changed = 0;
-	uint32_t first, end, index;
+	uint32_t first, end;
+	bool found = false;
 	int res;
 
 	if ((res = checked(camera, BGAPI2_System_UpdateInterfaceList(
@@ -362,7 +390,79 @@ static int find_device(struct bgapi2_camera *camera,
 		first = options->interface_index;
 		end = first + 1;
 	}
-	for (index = first; index < end; index++) {
+	for (uint32_t interface_index = first; interface_index < end;
+			interface_index++) {
+		bo_uint n_devices = 0;
+
+		if (checked(camera, BGAPI2_System_GetInterface(camera->system,
+				interface_index, &camera->interface)) < 0 ||
+				checked(camera, BGAPI2_Interface_Open(camera->interface)) < 0) {
+			camera->interface = NULL;
+			continue;
+		}
+		camera->interface_open = true;
+		if (checked(camera, BGAPI2_Interface_UpdateDeviceList(
+				camera->interface, &changed, options->device_timeout_ms)) == 0 &&
+				checked(camera, BGAPI2_Interface_GetNumDevices(
+				camera->interface, &n_devices)) == 0) {
+			for (uint32_t device_index = 0; device_index < n_devices;
+					device_index++) {
+				BGAPI2_Device *device = NULL;
+				char serial[128];
+
+				if (checked(camera, BGAPI2_Interface_GetDevice(
+						camera->interface, device_index, &device)) < 0 ||
+						get_device_string(camera, device,
+						BGAPI2_Device_GetSerialNumber, serial,
+						sizeof(serial)) < 0 ||
+						strcmp(serial, options->serial) != 0)
+					continue;
+				if (found) {
+					close_interface(camera);
+					return -EEXIST;
+				}
+				*selected_interface = interface_index;
+				*selected_device = device_index;
+				found = true;
+			}
+		}
+		close_interface(camera);
+	}
+	return found ? 0 : -ENODEV;
+}
+
+static int find_device(struct bgapi2_camera *camera,
+		const struct bgapi2_camera_options *options)
+{
+	bo_uint n_interfaces = 0;
+	bo_bool changed = 0;
+	uint32_t first, end, device_index = options->device_index;
+	int res;
+
+	if (options->serial != NULL && options->serial[0] != '\0') {
+		if ((res = select_device_by_serial(camera, options, &first,
+				&device_index)) < 0)
+			return res;
+		end = first + 1;
+	} else {
+		if ((res = checked(camera, BGAPI2_System_UpdateInterfaceList(
+				camera->system, &changed,
+				options->interface_timeout_ms))) < 0 ||
+				(res = checked(camera, BGAPI2_System_GetNumInterfaces(
+				camera->system, &n_interfaces))) < 0)
+			return res;
+		if (options->interface_index == BGAPI2_CAMERA_ANY_INTERFACE) {
+			first = 0;
+			end = n_interfaces;
+		} else {
+			if (options->interface_index >= n_interfaces)
+				return -ENODEV;
+			first = options->interface_index;
+			end = first + 1;
+		}
+	}
+
+	for (uint32_t index = first; index < end; index++) {
 		bo_uint n_devices = 0;
 
 		if (checked(camera, BGAPI2_System_GetInterface(camera->system,
@@ -376,11 +476,11 @@ static int find_device(struct bgapi2_camera *camera,
 				camera->interface, &changed, options->device_timeout_ms)) == 0 &&
 				checked(camera, BGAPI2_Interface_GetNumDevices(
 				camera->interface, &n_devices)) == 0 &&
-				options->device_index < n_devices &&
+				device_index < n_devices &&
 				checked(camera, BGAPI2_Interface_GetDevice(camera->interface,
-				options->device_index, &camera->device)) == 0) {
+				device_index, &camera->device)) == 0) {
 			camera->info.interface_index = index;
-			camera->info.device_index = options->device_index;
+			camera->info.device_index = device_index;
 			return 0;
 		}
 		close_interface(camera);
@@ -390,7 +490,6 @@ static int find_device(struct bgapi2_camera *camera,
 
 static int query_info(struct bgapi2_camera *camera)
 {
-	bo_uint64 length;
 	int res;
 
 	if ((res = checked(camera, BGAPI2_Device_GetPayloadSize(
@@ -402,13 +501,108 @@ static int query_info(struct bgapi2_camera *camera)
 			(res = get_node_string(camera, "PixelFormat", camera->info.pixel_format,
 				sizeof(camera->info.pixel_format))) < 0)
 		return res;
-	length = sizeof(camera->info.model);
-	if ((res = checked(camera, BGAPI2_Device_GetModel(camera->device,
-			camera->info.model, &length))) < 0)
+	if ((res = get_device_string(camera, camera->device,
+			BGAPI2_Device_GetVendor, camera->info.vendor,
+			sizeof(camera->info.vendor))) < 0 ||
+			(res = get_device_string(camera, camera->device,
+			BGAPI2_Device_GetModel, camera->info.model,
+			sizeof(camera->info.model))) < 0 ||
+			(res = get_device_string(camera, camera->device,
+			BGAPI2_Device_GetSerialNumber, camera->info.serial,
+			sizeof(camera->info.serial))) < 0 ||
+			(res = get_device_string(camera, camera->device,
+			BGAPI2_Device_GetID, camera->info.device_id,
+			sizeof(camera->info.device_id))) < 0 ||
+			(res = get_device_string(camera, camera->device,
+			BGAPI2_Device_GetTLType, camera->info.transport,
+			sizeof(camera->info.transport))) < 0)
 		return res;
-	length = sizeof(camera->info.serial);
-	return checked(camera, BGAPI2_Device_GetSerialNumber(camera->device,
-			camera->info.serial, &length));
+	return 0;
+}
+
+int bgapi2_camera_discover(const char *producer_path,
+		uint64_t interface_timeout_ms, uint64_t device_timeout_ms,
+		bgapi2_discovery_callback callback, void *data)
+{
+	struct bgapi2_camera probe = {};
+	bo_uint n_interfaces = 0;
+	bo_bool changed = 0;
+	int count = 0, res;
+
+	if (producer_path == NULL || callback == NULL)
+		return -EINVAL;
+	if ((res = checked(&probe, BGAPI2_LoadSystemFromPath(producer_path,
+			&probe.system))) < 0 ||
+			(res = checked(&probe, BGAPI2_System_Open(probe.system))) < 0)
+		goto done;
+	probe.system_open = true;
+	if ((res = checked(&probe, BGAPI2_System_UpdateInterfaceList(
+			probe.system, &changed, interface_timeout_ms))) < 0 ||
+			(res = checked(&probe, BGAPI2_System_GetNumInterfaces(
+			probe.system, &n_interfaces))) < 0)
+		goto done;
+	for (uint32_t interface_index = 0; interface_index < n_interfaces;
+			interface_index++) {
+		bo_uint n_devices = 0;
+
+		if (checked(&probe, BGAPI2_System_GetInterface(probe.system,
+				interface_index, &probe.interface)) < 0 ||
+				checked(&probe, BGAPI2_Interface_Open(probe.interface)) < 0) {
+			probe.interface = NULL;
+			continue;
+		}
+		probe.interface_open = true;
+		if (checked(&probe, BGAPI2_Interface_UpdateDeviceList(probe.interface,
+				&changed, device_timeout_ms)) < 0 ||
+				checked(&probe, BGAPI2_Interface_GetNumDevices(probe.interface,
+				&n_devices)) < 0) {
+			close_interface(&probe);
+			continue;
+		}
+		for (uint32_t device_index = 0; device_index < n_devices;
+				device_index++) {
+			BGAPI2_Device *device = NULL;
+			struct bgapi2_discovered_device discovered = {};
+
+			discovered.interface_index = interface_index;
+			discovered.device_index = device_index;
+			if ((res = checked(&probe, BGAPI2_Interface_GetDevice(
+					probe.interface, device_index, &device))) < 0) {
+				close_interface(&probe);
+				goto done;
+			}
+			get_optional_device_string(&probe, device,
+					BGAPI2_Device_GetVendor, discovered.vendor,
+					sizeof(discovered.vendor));
+			get_optional_device_string(&probe, device,
+					BGAPI2_Device_GetModel, discovered.model,
+					sizeof(discovered.model));
+			get_optional_device_string(&probe, device,
+					BGAPI2_Device_GetSerialNumber, discovered.serial,
+					sizeof(discovered.serial));
+			get_optional_device_string(&probe, device,
+					BGAPI2_Device_GetID, discovered.device_id,
+					sizeof(discovered.device_id));
+			get_optional_device_string(&probe, device,
+					BGAPI2_Device_GetTLType, discovered.transport,
+					sizeof(discovered.transport));
+			if ((res = callback(data, &discovered)) < 0) {
+				close_interface(&probe);
+				goto done;
+			}
+			count++;
+		}
+		close_interface(&probe);
+	}
+	res = count;
+
+done:
+	close_interface(&probe);
+	if (probe.system_open)
+		BGAPI2_CALL(BGAPI2_System_Close(probe.system));
+	if (probe.system != NULL)
+		BGAPI2_CALL(BGAPI2_ReleaseSystem(probe.system));
+	return res;
 }
 
 int bgapi2_camera_open(struct bgapi2_camera **camera_ptr,
