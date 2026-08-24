@@ -128,6 +128,16 @@ payload remain unchanged, the source disappears, and the daemon remains
 healthy. The harness removes its isolated runtime directory on success or
 failure.
 
+The migration qualification on 2026-08-23 proved that the isolated daemon
+loads this out-of-tree DSO and completed normal capture, retained-lease fan-out,
+and live join/leave. The full harness then exposed a PipeWireAO RTC lifecycle
+defect after the final subscriber left: the daemon terminated with `SIGSEGV`.
+GDB showed the main thread waiting in `pw_rtc_data_loop_stop()` while this
+plugin's RTC thread remained in eGrabber `processEventFilter()` and a Gigelink
+worker faulted. PipeWireAO must quiesce an RTC camera source before dismantling
+its final link and announced buffers. This is tracked as CAMERA-005 and is not
+hidden by weakening the harness.
+
 Gigelink is complete-only: `progressive=offer` falls back to complete frames and
 `progressive=require` is rejected. Grablink/Coaxlink progressive behavior is
 implemented against the vendor StartOfCameraReadout, acquiring-buffer, and
@@ -218,8 +228,12 @@ add a helper thread or private handoff merely to synthesize one. PipeWireAO's
 RTC data loop implements EventFd and Hybrid for SDKs that provide pollable
 readiness; this plugin currently uses its functional BusySpin profile only.
 
-## Remaining migration
+## Remaining qualification
 
+- Correct and qualify PipeWireAO final-link teardown ordering for RTC camera
+  sources under CAMERA-005. The plugin migration and external factory loading
+  are complete, but the daemon must not release an active camera link before
+  its RTC owner has quiesced.
 - Qualify physical camera add, property-change, removal, and reappearance with
   each supported producer. Automated tests currently cover initial discovery
   and unchanged reconciliation on the connected Gigelink producer; the normal
