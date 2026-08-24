@@ -4,7 +4,7 @@ use std::io::Cursor;
 use std::mem::size_of;
 use std::ptr;
 
-use libspa::param::format::{ElementType, MatrixFormat, NdArrayLayout};
+use libspa::param::format::{ElementType, NdArrayFormat, NdArrayLayout};
 use libspa::pod::deserialize::PodDeserializer;
 use libspa::pod::serialize::PodSerializer;
 use libspa::pod::{ChoiceValue, Object, Value};
@@ -12,6 +12,7 @@ use libspa::sys;
 use libspa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle};
 
 use crate::format::{Format, FormatClass, FormatConstraint, Rate};
+use crate::latest;
 
 /// One property within an SPA object POD.
 pub use libspa::pod::Property;
@@ -43,6 +44,7 @@ fn int_range(default: i32, min: i32, max: i32) -> Value {
 pub(crate) fn port_param(
     id_: u32,
     index: u32,
+    direction: sys::spa_direction,
     constraints: &[FormatConstraint],
     format: Option<&Format>,
 ) -> Result<Option<Value>, i32> {
@@ -68,21 +70,43 @@ pub(crate) fn port_param(
                 ),
             ],
         ),
-        sys::SPA_PARAM_IO if index == 0 => object(
-            sys::SPA_TYPE_OBJECT_ParamIO,
-            id_,
-            vec![
-                property(sys::SPA_PARAM_IO_id, id(sys::SPA_IO_Buffers)),
-                property(
-                    sys::SPA_PARAM_IO_size,
-                    Value::Int(size_of::<sys::spa_io_buffers>() as i32),
-                ),
-            ],
-        ),
-        sys::SPA_PARAM_Format
-        | sys::SPA_PARAM_Buffers
-        | sys::SPA_PARAM_Meta
-        | sys::SPA_PARAM_IO => return Ok(None),
+        sys::SPA_PARAM_IO => match (direction, index) {
+            (_, 0) => object(
+                sys::SPA_TYPE_OBJECT_ParamIO,
+                id_,
+                vec![
+                    property(sys::SPA_PARAM_IO_id, id(sys::SPA_IO_Buffers)),
+                    property(
+                        sys::SPA_PARAM_IO_size,
+                        Value::Int(size_of::<sys::spa_io_buffers>() as i32),
+                    ),
+                ],
+            ),
+            (_, 1) => object(
+                sys::SPA_TYPE_OBJECT_ParamIO,
+                id_,
+                vec![
+                    property(sys::SPA_PARAM_IO_id, id(sys::SPA_IO_BuffersLatest)),
+                    property(
+                        sys::SPA_PARAM_IO_size,
+                        Value::Int(size_of::<sys::spa_io_buffers_latest>() as i32),
+                    ),
+                ],
+            ),
+            (_, 2) => object(
+                sys::SPA_TYPE_OBJECT_ParamIO,
+                id_,
+                vec![
+                    property(sys::SPA_PARAM_IO_id, id(sys::SPA_IO_BuffersLatestLink)),
+                    property(
+                        sys::SPA_PARAM_IO_size,
+                        Value::Int(size_of::<sys::spa_io_buffers_latest_link>() as i32),
+                    ),
+                ],
+            ),
+            _ => return Ok(None),
+        },
+        sys::SPA_PARAM_Format | sys::SPA_PARAM_Buffers | sys::SPA_PARAM_Meta => return Ok(None),
         _ => return Err(-libc::ENOENT),
     };
     Ok(Some(value))
@@ -114,10 +138,9 @@ fn format_value(format: &Format, object_id: u32) -> Value {
             ],
         ),
         FormatClass::NdArray => {
-            let mut properties = MatrixFormat::new(
-                ElementType::F32Le,
-                format.height().expect("validated height"),
-                format.width().expect("validated width"),
+            let mut properties = NdArrayFormat::new(
+                ElementType::from_raw(format.element_type),
+                format.shape.to_vec(),
                 NdArrayLayout::RowMajor,
                 format.rate.map(rate_fraction),
             )
@@ -236,7 +259,7 @@ fn parse_gray16(properties: &[Property]) -> Result<Format, i32> {
 }
 
 fn parse_ndarray(properties: &[Property]) -> Result<Format, i32> {
-    let native = MatrixFormat::from_properties(properties).map_err(|_| -libc::EINVAL)?;
+    let native = NdArrayFormat::from_properties(properties).map_err(|_| -libc::EINVAL)?;
     let schema = match unique(properties, sys::SPA_FORMAT_NDARRAY_schema)? {
         Some(Value::String(schema)) if !schema.is_empty() => schema.clone().into_boxed_str(),
         _ => return Err(-libc::EINVAL),
@@ -245,18 +268,14 @@ fn parse_ndarray(properties: &[Property]) -> Result<Format, i32> {
         Some(Value::String(profile)) if !profile.is_empty() => profile.clone().into_boxed_str(),
         _ => return Err(-libc::EINVAL),
     };
-    let native = native.as_ndarray();
-    let [height, width] = native.shape() else {
-        return Err(-libc::EINVAL);
-    };
-    if native.element_type() != ElementType::F32Le || native.layout() != NdArrayLayout::RowMajor {
+    if native.layout() != NdArrayLayout::RowMajor {
         return Err(-libc::EINVAL);
     }
-    Format::f32_image(
+    Format::ndarray(
+        native.element_type().as_raw(),
         schema,
         profile,
-        *width,
-        *height,
+        native.shape().to_vec(),
         native.rate().map(|rate| Rate {
             num: rate.num,
             denom: rate.denom,
@@ -276,11 +295,13 @@ pub fn parse_props(value: Value) -> Result<Vec<Property>, i32> {
 }
 
 pub(crate) unsafe fn decode(pod: *const sys::spa_pod) -> Result<Value, i32> {
+    let storage = unsafe { latest::unwrap_fixed_pod(pod)? };
+    let pod = storage.as_ptr().cast::<sys::spa_pod>();
     let pod = unsafe { pod.as_ref() }.ok_or(-libc::EINVAL)?;
     let length = size_of::<sys::spa_pod>()
         .checked_add(pod.size as usize)
         .ok_or(-libc::EOVERFLOW)?;
-    let bytes = unsafe { std::slice::from_raw_parts(ptr::from_ref(pod).cast::<u8>(), length) };
+    let bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), length) };
     let (remaining, value) =
         PodDeserializer::deserialize_any_from(bytes).map_err(|_| -libc::EINVAL)?;
     if !remaining.is_empty() {
@@ -352,6 +373,83 @@ mod tests {
             .unwrap()
         };
         assert_eq!(parsed, format);
+    }
+
+    #[test]
+    fn fixed_f64_vector_round_trips_with_element_stride() {
+        let format = Format::ndarray(
+            sys::SPA_ELEMENT_TYPE_F64_LE,
+            "org.pipewireao.test-vector/1",
+            PROFILE,
+            vec![8],
+            None,
+        )
+        .unwrap();
+        assert_eq!(format.packed_bytes(), Ok(64));
+        assert_eq!(format.packed_stride(), Ok(8));
+        assert_eq!(format.stride_count(), Ok(8));
+        let constraint = FormatConstraint::exact(format.clone());
+        let value = format_value(&format, sys::SPA_PARAM_Format);
+        let parsed = unsafe {
+            with_filtered_pod(&value, ptr::null(), |pod| {
+                parse_format(decode(pod).unwrap(), &[constraint]).unwrap()
+            })
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(parsed, format);
+    }
+
+    #[test]
+    fn fixated_choice_is_unwrapped_before_exact_format_validation() {
+        let format = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
+        let constraint = FormatConstraint::exact(format.clone());
+        let Value::Object(mut object) = format_value(&format, sys::SPA_PARAM_Format) else {
+            unreachable!();
+        };
+        let element_type = object
+            .properties
+            .iter_mut()
+            .find(|property| property.key == sys::SPA_FORMAT_NDARRAY_elementType)
+            .unwrap();
+        element_type.value = Value::Choice(ChoiceValue::Id(Choice(
+            ChoiceFlags::empty(),
+            ChoiceEnum::None(Id(format.element_type)),
+        )));
+        let parsed = unsafe {
+            with_filtered_pod(&Value::Object(object), ptr::null(), |pod| {
+                parse_format(decode(pod).unwrap(), &[constraint]).unwrap()
+            })
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(parsed, format);
+    }
+
+    #[test]
+    fn unresolved_choice_is_rejected_before_format_validation() {
+        let format = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
+        let Value::Object(mut object) = format_value(&format, sys::SPA_PARAM_Format) else {
+            unreachable!();
+        };
+        let element_type = object
+            .properties
+            .iter_mut()
+            .find(|property| property.key == sys::SPA_FORMAT_NDARRAY_elementType)
+            .unwrap();
+        element_type.value = Value::Choice(ChoiceValue::Id(Choice(
+            ChoiceFlags::empty(),
+            ChoiceEnum::Enum {
+                default: Id(sys::SPA_ELEMENT_TYPE_F32_LE),
+                alternatives: vec![Id(sys::SPA_ELEMENT_TYPE_F64_LE)],
+            },
+        )));
+        let decoded = unsafe {
+            with_filtered_pod(&Value::Object(object), ptr::null(), |pod| decode(pod))
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(decoded, Err(-libc::EINVAL));
     }
 
     #[test]

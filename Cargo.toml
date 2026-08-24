@@ -12,8 +12,10 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+cc = "1.4.4"
 libc = "0.2.189"
 libspa = { package = "libspa-ao", git = "https://github.com/DarrylGamroth/PipeWireAO-rs.git", rev = "d6a34012b091753eb74e82ae4a2574ea9e1b846d", features = ["v1_2_0"] }
+pkg-config = "0.3.34"
 
 [workspace.lints.rust]
 missing_docs = "warn"

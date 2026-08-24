@@ -19,7 +19,7 @@ bgapi2_lib = shared_library(
   c_args: bgapi2_c_args,
   cpp_args: bgapi2_cpp_args,
   install: true,
-  install_dir: spa_dep.get_variable(pkgconfig: 'plugindir') / 'bgapi2',
+  install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'bgapi2',
   install_rpath: bgapi2_install_rpath,
 )
 

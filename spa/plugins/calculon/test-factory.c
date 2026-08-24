@@ -401,6 +401,7 @@ int main(int argc, char **argv)
 {
 	spa_handle_factory_enum_func_t enumerate;
 	const struct spa_handle_factory *factory = NULL;
+	const struct spa_handle_factory *pixel_factory = NULL;
 	void *library;
 	void *symbol;
 	uint32_t index = 0;
@@ -415,8 +416,15 @@ int main(int argc, char **argv)
 	spa_assert_se(factory != NULL);
 	spa_assert_se(spa_streq(factory->name,
 			SPA_NAME_API_CALCULON_PIXEL_CALIBRATION));
+	pixel_factory = factory;
+	spa_assert_se(enumerate(&factory, &index) == 1);
+	spa_assert_se(spa_streq(factory->name,
+			SPA_NAME_API_CALCULON_SHWFS_CONTROLLER));
+	spa_assert_se(enumerate(&factory, &index) == 1);
+	spa_assert_se(spa_streq(factory->name,
+			SPA_NAME_API_ALPAO_COMMAND_NORMALIZATION));
 	spa_assert_se(enumerate(&factory, &index) == 0);
-	exercise(factory);
+	exercise(pixel_factory);
 	spa_assert_se(dlclose(library) == 0);
 	return 0;
 }

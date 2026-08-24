@@ -10,6 +10,10 @@ description = "Rust SPA node boundary for Calculon adaptive-optics plugins"
 libc.workspace = true
 libspa.workspace = true
 
+[build-dependencies]
+cc.workspace = true
+pkg-config.workspace = true
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "warn"

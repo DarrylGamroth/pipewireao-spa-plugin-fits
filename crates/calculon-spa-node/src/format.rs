@@ -86,6 +86,27 @@ impl Format {
         Ok(format)
     }
 
+    /// Constructs an exact row-major scientific ndarray.
+    pub fn ndarray(
+        element_type: u32,
+        schema: impl Into<Box<str>>,
+        profile: impl Into<Box<str>>,
+        shape: impl Into<Box<[u32]>>,
+        rate: Option<Rate>,
+    ) -> Result<Self, i32> {
+        let format = Self {
+            class: FormatClass::NdArray,
+            element_type,
+            shape: shape.into(),
+            layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
+            rate,
+            schema: Some(schema.into()),
+            profile: Some(profile.into()),
+        };
+        format.validate()?;
+        Ok(format)
+    }
+
     /// Returns the image width.
     pub fn width(&self) -> Result<u32, i32> {
         self.shape.get(1).copied().ok_or(-libc::EINVAL)
@@ -105,14 +126,26 @@ impl Format {
 
     /// Returns the packed bytes in one logical row.
     pub fn packed_stride(&self) -> Result<usize, i32> {
-        (self.width()? as usize)
+        if self.shape.len() == 1 {
+            return self.element_size();
+        }
+        (self.shape.last().copied().ok_or(-libc::EINVAL)? as usize)
             .checked_mul(self.element_size()?)
             .ok_or(-libc::EOVERFLOW)
     }
 
     /// Returns the number of logical rows represented by the SPA chunk stride.
     pub fn stride_count(&self) -> Result<usize, i32> {
-        Ok(self.height()? as usize)
+        if self.shape.len() == 1 {
+            return Ok(self.shape[0] as usize);
+        }
+        self.shape[..self.shape.len().saturating_sub(1)]
+            .iter()
+            .try_fold(1usize, |count, &dimension| {
+                count
+                    .checked_mul(dimension as usize)
+                    .ok_or(-libc::EOVERFLOW)
+            })
     }
 
     /// Returns whether image shape and rate are identical.
@@ -130,14 +163,17 @@ impl Format {
 
     fn element_size(&self) -> Result<usize, i32> {
         match self.element_type {
+            sys::SPA_ELEMENT_TYPE_U8 => Ok(1),
             sys::SPA_ELEMENT_TYPE_U16_LE => Ok(2),
+            sys::SPA_ELEMENT_TYPE_U32_LE => Ok(4),
             sys::SPA_ELEMENT_TYPE_F32_LE => Ok(4),
+            sys::SPA_ELEMENT_TYPE_F64_LE => Ok(8),
             _ => Err(-libc::EINVAL),
         }
     }
 
     pub(crate) fn validate(&self) -> Result<(), i32> {
-        if self.shape.len() != 2 || self.shape.contains(&0) {
+        if self.shape.is_empty() || self.shape.contains(&0) {
             return Err(-libc::EINVAL);
         }
         if self
@@ -148,7 +184,8 @@ impl Format {
         }
         match self.class {
             FormatClass::Gray16 => {
-                if self.element_type != sys::SPA_ELEMENT_TYPE_U16_LE
+                if self.shape.len() != 2
+                    || self.element_type != sys::SPA_ELEMENT_TYPE_U16_LE
                     || self.layout != sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR
                     || self.rate.is_none()
                     || self.schema.is_some()
@@ -158,8 +195,14 @@ impl Format {
                 }
             }
             FormatClass::NdArray => {
-                if self.element_type != sys::SPA_ELEMENT_TYPE_F32_LE
-                    || self.layout != sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR
+                if !matches!(
+                    self.element_type,
+                    sys::SPA_ELEMENT_TYPE_U8
+                        | sys::SPA_ELEMENT_TYPE_U16_LE
+                        | sys::SPA_ELEMENT_TYPE_U32_LE
+                        | sys::SPA_ELEMENT_TYPE_F32_LE
+                        | sys::SPA_ELEMENT_TYPE_F64_LE
+                ) || self.layout != sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR
                     || self.schema.as_deref().is_none_or(str::is_empty)
                     || self.profile.as_deref().is_none_or(str::is_empty)
                 {

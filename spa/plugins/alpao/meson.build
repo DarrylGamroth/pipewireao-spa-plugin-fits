@@ -54,7 +54,7 @@ if alpao_sdk_enabled and alpao_sdk_root != ''
     c_args: alpao_c_args,
     gnu_symbol_visibility: 'hidden',
     install: true,
-    install_dir: spa_dep.get_variable(pkgconfig: 'plugindir') / 'alpao',
+    install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'alpao',
   )
 else
   alpao_lib = shared_library(
@@ -65,7 +65,7 @@ else
     c_args: alpao_c_args,
     gnu_symbol_visibility: 'hidden',
     install: true,
-    install_dir: spa_dep.get_variable(pkgconfig: 'plugindir') / 'alpao',
+    install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'alpao',
   )
 endif
 

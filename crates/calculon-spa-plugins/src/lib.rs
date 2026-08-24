@@ -5,15 +5,26 @@
 #[cfg(not(target_endian = "little"))]
 compile_error!("the current Calculon SPA payload adapters require a little-endian target");
 
+mod alpao_command_normalization;
+mod config;
 mod pixel_calibration;
+mod shwfs_controller;
 
 use std::ptr;
 
 use calculon_spa_node::{Factory, sys};
 
+pub use alpao_command_normalization::{
+    ALPAO_COMMAND_NORMALIZATION_FACTORY_NAME, ALPAO_NORMALIZED_ACTUATOR_COMMAND_V1,
+};
 pub use pixel_calibration::PIXEL_CALIBRATION_FACTORY_NAME;
+pub use shwfs_controller::SHWFS_CONTROLLER_FACTORY_NAME;
 
-static FACTORIES: [&Factory; 1] = [&pixel_calibration::FACTORY];
+static FACTORIES: [&Factory; 3] = [
+    &pixel_calibration::FACTORY,
+    &shwfs_controller::FACTORY,
+    &alpao_command_normalization::FACTORY,
+];
 
 /// Enumerates the Calculon SPA factories in this shared object.
 ///
@@ -49,8 +60,10 @@ mod tests {
         unsafe {
             let mut factory = ptr::null();
             let mut index = 0;
-            assert_eq!(spa_handle_factory_enum(&mut factory, &mut index), 1);
-            assert!(!factory.is_null());
+            for expected in FACTORIES {
+                assert_eq!(spa_handle_factory_enum(&mut factory, &mut index), 1);
+                assert_eq!(factory, expected.as_ptr());
+            }
             assert_eq!(spa_handle_factory_enum(&mut factory, &mut index), 0);
         }
     }

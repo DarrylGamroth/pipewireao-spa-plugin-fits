@@ -999,7 +999,7 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS;
 	self->info = SPA_NODE_INFO_INIT();
 	self->info.max_output_ports = 1;
-	self->info.flags = SPA_NODE_FLAG_RTC_PROCESS;
+	self->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_RTC_PROCESS;
 	configure_props(self);
 	self->info.props = &self->props;
 	self->port.info_all = SPA_PORT_CHANGE_MASK_FLAGS |

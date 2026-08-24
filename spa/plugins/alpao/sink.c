@@ -25,6 +25,7 @@
 #include <spa/utils/string.h>
 
 #include <pipewireao-plugins/alpao.h>
+#include <pipewireao-plugins/pod.h>
 
 #include "backend.h"
 
@@ -347,23 +348,28 @@ static int port_enum_params(void *object, int seq,
 
 static int validate_format(struct impl *self, const struct spa_pod *param)
 {
+	uint8_t fixed_storage[2048];
+	struct spa_pod_builder fixed_builder = SPA_POD_BUILDER_INIT(fixed_storage,
+			sizeof(fixed_storage));
+	const struct spa_pod *fixed;
 	struct spa_ndarray_info format = SPA_NDARRAY_INFO_INIT();
 	const struct spa_pod_prop *schema_property;
 	const struct spa_pod_prop *profile_property;
 	const char *schema = NULL;
 	const char *profile = NULL;
 
-	if (spa_format_ndarray_parse(param, &format) < 0 ||
+	fixed = pipewireao_pod_unwrap_fixed_choices(&fixed_builder, param);
+	if (fixed == NULL || spa_format_ndarray_parse(fixed, &format) < 0 ||
 			format.element_type != SPA_ELEMENT_TYPE_F64_LE ||
 			format.layout != SPA_NDARRAY_LAYOUT_ROW_MAJOR ||
 			format.n_dimensions != 1 ||
 			format.shape[0] != self->actuator_count ||
-			spa_ndarray_format_key_count(param, SPA_FORMAT_NDARRAY_schema) != 1 ||
-			spa_ndarray_format_key_count(param, SPA_FORMAT_NDARRAY_profile) != 1)
+			spa_ndarray_format_key_count(fixed, SPA_FORMAT_NDARRAY_schema) != 1 ||
+			spa_ndarray_format_key_count(fixed, SPA_FORMAT_NDARRAY_profile) != 1)
 		return -EINVAL;
-	schema_property = spa_pod_find_prop(param, NULL,
+	schema_property = spa_pod_find_prop(fixed, NULL,
 			SPA_FORMAT_NDARRAY_schema);
-	profile_property = spa_pod_find_prop(param, NULL,
+	profile_property = spa_pod_find_prop(fixed, NULL,
 			SPA_FORMAT_NDARRAY_profile);
 	if (schema_property == NULL || profile_property == NULL ||
 			spa_pod_get_string(&schema_property->value, &schema) < 0 ||
@@ -691,7 +697,7 @@ static int init(const struct spa_handle_factory *factory,
 	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS;
 	self->info = SPA_NODE_INFO_INIT();
 	self->info.max_input_ports = 1;
-	self->info.flags = SPA_NODE_FLAG_RTC_PROCESS;
+	self->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_RTC_PROCESS;
 	configure_node_props(self);
 	self->info.props = &self->node_props;
 

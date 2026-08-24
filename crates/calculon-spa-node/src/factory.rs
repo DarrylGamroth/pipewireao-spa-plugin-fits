@@ -152,7 +152,7 @@ impl<N: Node> State<N> {
             max_input_ports: input_count as u32,
             max_output_ports: output_count as u32,
             change_mask: 0,
-            flags: sys::SPA_NODE_FLAG_NEED_CONFIGURE as u64,
+            flags: self.node_flags(),
             props: ptr::null_mut(),
             params: if N::HAS_PROPS {
                 self.params.as_mut_ptr()
@@ -164,6 +164,19 @@ impl<N: Node> State<N> {
             } else {
                 0
             },
+        }
+    }
+
+    fn node_flags(&self) -> u64 {
+        if self
+            .node
+            .ports()
+            .iter()
+            .any(|port| port.required && port.format.is_none())
+        {
+            sys::SPA_NODE_FLAG_NEED_CONFIGURE as u64
+        } else {
+            0
         }
     }
 
@@ -583,13 +596,32 @@ unsafe extern "C" fn node_send_command<N: Node>(
                 }
                 state.ready()?;
                 state.node.start()?;
+                let port_count = state.node.ports().len();
+                for index in 0..port_count {
+                    if let Err(error) = state.node.ports_mut()[index].worker_begin() {
+                        for rollback in (0..index).rev() {
+                            let _ = state.node.ports_mut()[rollback].worker_end();
+                        }
+                        state.node.pause();
+                        return Err(error);
+                    }
+                }
                 state.started = true;
                 Ok(0)
             }
             sys::SPA_NODE_COMMAND_Pause => {
                 if state.started {
                     state.started = false;
+                    let mut worker_error = None;
+                    for port in state.node.ports_mut().iter_mut().rev() {
+                        if let Err(error) = port.worker_end() {
+                            worker_error.get_or_insert(error);
+                        }
+                    }
                     state.node.pause();
+                    if let Some(error) = worker_error {
+                        return Err(error);
+                    }
                 }
                 Ok(0)
             }
@@ -649,7 +681,13 @@ unsafe extern "C" fn node_port_enum_params<N: Node>(
             let value = {
                 let state = claim(instance)?;
                 let port = &state.node.ports()[port_index(&state.node, direction, port_id)?];
-                pod::port_param(id, index, &port.constraints, port.format.as_ref())?
+                pod::port_param(
+                    id,
+                    index,
+                    port.key.direction,
+                    &port.constraints,
+                    port.format.as_ref(),
+                )?
             };
             let Some(value) = value else {
                 break;
@@ -678,6 +716,7 @@ unsafe extern "C" fn node_port_set_param<N: Node>(
         let instance = instance_mut::<N>(object)?;
         let mut state = claim(instance)?;
         let index = port_index(&state.node, direction, port_id)?;
+        let previous_node_flags = state.node_flags();
         let format = if param.is_null() {
             None
         } else {
@@ -711,15 +750,22 @@ unsafe extern "C" fn node_port_set_param<N: Node>(
                 return Err(error);
             }
         }
-        let (key, mut info) = {
+        let (key, mut info, node_info) = {
             let port = &mut state.node.ports_mut()[index];
             port.info.params = port.params.as_mut_ptr();
             port.info.n_params = port.params.len() as u32;
-            (port.key, port.info)
+            let key = port.key;
+            let info = port.info;
+            let node_info = (state.node_flags() != previous_node_flags).then(|| state.node_info());
+            (key, info, node_info)
         };
         drop(state);
         info.change_mask = sys::SPA_PORT_CHANGE_MASK_PARAMS as u64;
         emit_port_info(&mut instance.hooks, key, &info);
+        if let Some(mut info) = node_info {
+            info.change_mask = sys::SPA_NODE_CHANGE_MASK_FLAGS as u64;
+            emit_node_info(&mut instance.hooks, &info);
+        }
         Ok(0)
     })
 }
@@ -776,6 +822,7 @@ unsafe extern "C" fn node_port_use_buffers<N: Node>(
             port.buffers[buffer_index].available = direction == sys::SPA_DIRECTION_OUTPUT;
         }
         port.n_buffers = supplied.len();
+        port.update_latest_buffers();
         Ok(0)
     })
 }
@@ -790,18 +837,25 @@ unsafe extern "C" fn node_port_set_io<N: Node>(
 ) -> i32 {
     ffi_result(|| unsafe {
         let instance = instance_mut::<N>(object)?;
-        if id != sys::SPA_IO_Buffers {
-            return Err(-libc::ENOENT);
-        }
-        if !data.is_null() && size < size_of::<sys::spa_io_buffers>() {
-            return Err(-libc::ENOSPC);
-        }
         let mut state = claim(instance)?;
         let index = port_index(&state.node, direction, port_id)?;
-        if state.started {
+        let started = state.started;
+        let port = &mut state.node.ports_mut()[index];
+        if started && !port.is_latest_io(id) {
             return Err(-libc::EBUSY);
         }
-        state.node.ports_mut()[index].io = data.cast();
+        if started {
+            port.worker_end()?;
+        }
+        if let Err(error) = port.set_io(id, data, size) {
+            if started {
+                let _ = port.worker_begin();
+            }
+            return Err(error);
+        }
+        if started {
+            port.worker_begin()?;
+        }
         Ok(0)
     })
 }

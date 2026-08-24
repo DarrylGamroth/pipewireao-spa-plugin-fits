@@ -15,7 +15,14 @@ fs = import('fs')
 
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
-spa_dep = dependency('libspa-ao-0.2', version: '>= 0.2')
+spa_pkg_dep = dependency('libspa-ao-0.2', version: '>= 0.2')
+spa_dep = declare_dependency(
+  dependencies: spa_pkg_dep,
+  include_directories: include_directories(
+    spa_pkg_dep.get_variable(pkgconfig: 'spa_includedir'),
+    is_system: true,
+  ),
+)
 cc = meson.get_compiler('c')
 cxx = meson.get_compiler('cpp')
 dl_dep = cc.find_library('dl', required: false)
@@ -28,6 +35,7 @@ install_headers(
   'include/pipewireao-plugins/alpao.h',
   'include/pipewireao-plugins/calculon.h',
   'include/pipewireao-plugins/fits.h',
+  'include/pipewireao-plugins/pod.h',
   subdir: 'pipewireao-plugins-0.1/pipewireao-plugins',
 )
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import shutil
 import subprocess
@@ -16,6 +17,8 @@ def main() -> None:
     parser.add_argument("--target-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--profile", choices=("debug", "release"), required=True)
+    parser.add_argument("--spa-include", type=pathlib.Path, required=True)
+    parser.add_argument("--pkg-config-path")
     args = parser.parse_args()
 
     command = [
@@ -31,7 +34,11 @@ def main() -> None:
     ]
     if args.profile == "release":
         command.append("--release")
-    subprocess.run(command, check=True)
+    environment = os.environ.copy()
+    environment["PIPEWIREAO_SPA_INCLUDE_DIR"] = str(args.spa_include)
+    if args.pkg_config_path:
+        environment["PKG_CONFIG_PATH"] = args.pkg_config_path
+    subprocess.run(command, check=True, env=environment)
 
     library = args.target_dir / args.profile / "libcalculon_spa_plugins.so"
     args.output.parent.mkdir(parents=True, exist_ok=True)

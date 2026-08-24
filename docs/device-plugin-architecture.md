@@ -199,6 +199,35 @@ registration, port I/O, commands, and lifecycle events. Its repeated process
 function is bounded and nonblocking; PipeWireAO owns thread creation, affinity,
 wait policy, start, stop, join, and terminal-result propagation.
 
+The implemented camera and mirror factories currently set
+`SPA_NODE_FLAG_RTC_PROCESS`. PipeWireAO therefore gives each factory an
+independent `pw_rtc_data_loop` and excludes it from the regular graph scheduler.
+This is the current device-boundary implementation, not the target execution
+model for a multi-stage controller.
+
+The target model keeps the regular PipeWire scheduler as the default and lets
+the core place an explicitly selected latency-critical subgraph in one RTC
+island. Scheduler placement is a core policy; a vendor factory declares
+real-time safety and supported complete/latest/progressive I/O contracts but
+does not permanently choose regular or RTC-island ownership.
+
+Device migration follows these rules:
+
+- eGrabber and BGAPI2 add regular complete-frame source operation. Producers
+  with qualified in-progress readout may additionally provide a progressive
+  boundary to an RTC island.
+- ALPAO adds regular complete-command sink operation. A strict controller may
+  place the same sink at the terminal end of an RTC island.
+- Factory identity, discovery, formats, schemas, controls, metadata, and SDK
+  ownership do not change with scheduling mode.
+- `SPA_NODE_FLAG_RTC_PROCESS` is not removed until PipeWireAO can assign one
+  island process owner and quiesce it safely during every link and node
+  lifecycle transition.
+
+Consequently these integrations remain ordinary out-of-tree SPA plugins; they
+do not become PipeWire modules. "Regular" describes an execution mode and
+standard complete-buffer I/O, not a different packaging or factory ABI.
+
 An RTC-owned sink accepts the applicable latest-buffer input I/O contract. It
 does not invent an application queue or call back into the graph scheduler.
 Startup occurs only after its format, profile, buffers, required input, and

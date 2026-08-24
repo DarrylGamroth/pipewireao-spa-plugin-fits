@@ -9,6 +9,7 @@
 mod buffer;
 mod factory;
 mod format;
+mod latest;
 mod pod;
 mod port;
 

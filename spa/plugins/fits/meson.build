@@ -7,7 +7,7 @@ fits_lib = shared_library(
   include_directories: plugin_include,
   c_args: ['-Wno-pedantic'],
   install: true,
-  install_dir: spa_dep.get_variable(pkgconfig: 'plugindir') / 'fits',
+  install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'fits',
 )
 
 if get_option('tests').allowed()
@@ -43,5 +43,19 @@ if get_option('tests').allowed()
     fits_source_test,
     args: [fits_lib.full_path()],
     depends: fits_lib,
+  )
+
+  fits_calculon_test = executable(
+    'spa-fits-calculon-test',
+    'test-calculon.c',
+    dependencies: [spa_dep, cfitsio_dep, dl_dep],
+    include_directories: plugin_include,
+    c_args: ['-Wno-pedantic'],
+  )
+  test(
+    'spa-fits-calculon-ingress',
+    fits_calculon_test,
+    args: [fits_lib.full_path(), calculon_lib.full_path()],
+    depends: [fits_lib, calculon_lib],
   )
 endif

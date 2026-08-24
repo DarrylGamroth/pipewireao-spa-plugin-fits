@@ -11,6 +11,7 @@
 #define SPA_KEY_API_ALPAO_ACTUATOR_COUNT "api.alpao.actuator-count"
 #define SPA_KEY_API_ALPAO_DAQ_FREQUENCY "api.alpao.daq-frequency"
 #define SPA_KEY_API_ALPAO_PROFILE "api.alpao.profile"
+#define SPA_KEY_API_ALPAO_COMMAND_SCALE "api.alpao.command-scale"
 
 #define SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND \
 	"org.pipewireao.alpao.normalized-actuator-command/1"
