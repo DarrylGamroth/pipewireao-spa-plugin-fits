@@ -12,6 +12,8 @@ redistributable binaries do not belong in this repository.
 
 The accepted repository and interface boundary is recorded in
 [Device plugin architecture](docs/device-plugin-architecture.md).
+The separate scientific-algorithm boundary is recorded in
+[Algorithm plugin architecture](docs/algorithm-plugin-architecture.md).
 
 ## Build
 
@@ -22,6 +24,12 @@ meson setup build -Dalpao-sdk=disabled
 meson compile -C build
 meson test -C build --print-errorlogs
 ```
+
+The default build also produces `api.calculon.pixel-calibration` as a Rust
+SPA factory. During local development, the Cargo workspace expects the
+`calculon-algorithms` repository beside this repository. Cargo is used for the
+Rust crates; Meson remains the build and installation entry point for the
+loadable plugin set.
 
 `libspa-ao-0.2` must resolve to a PipeWireAO installation that includes the
 ndarray `schema` and `profile` keys. Enable a development SDK tree explicitly:
@@ -109,6 +117,19 @@ discard actuator commands when ASDK is absent or unavailable.
 - Hardware vendors own their SDK ABI, device protocol, configuration, and
   calibration artifacts.
 
+## Calculon pixel calibration
+
+The `api.calculon.pixel-calibration` factory converts exact `GRAY16_LE` raw
+detector frames into `F32_LE` calibrated-pixel ndarrays. Optional flat and
+background artifact ports use Calculon-owned schemas and standard Header
+sequence numbers; a node `Props` update activates a complete pair atomically.
+The factory uses standard `SPA_IO_Buffers` back pressure and performs no
+steady-state heap allocation in `process`.
+
+The adapter and algorithm are Rust. The exported shared object is nevertheless
+an ordinary C SPA plugin. See the architecture document for port formats,
+factory properties, language rationale, and validation boundary.
+
 The source repository containing a plugin is not part of its runtime identity.
 An out-of-tree plugin remains a native SPA plugin when it builds against the
 installed PipeWireAO SPA API and installs into the configured PipeWireAO SPA
@@ -120,8 +141,7 @@ plugin directory.
 docs/                         maintained contracts and qualification records
 include/pipewireao-plugins/   public C vocabulary for plugin factories
 spa/plugins/alpao/            ALPAO SPA factories and optional SDK backend
+spa/plugins/calculon/         Calculon SPA factory build and C ABI tests
+crates/calculon-spa-node/     reusable Rust SPA ABI adapter
+crates/calculon-spa-plugins/  Rust algorithm factories
 ```
-
-Algorithm packaging is a separate architecture decision. This repository does
-not assume that numerical algorithms are SPA plugins merely because their
-language-local API resembles `spa_node`.

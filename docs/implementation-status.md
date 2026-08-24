@@ -1,4 +1,4 @@
-# ALPAO implementation status
+# Implementation status
 
 This ledger records what the first `api.alpao.sink` slice implements and what
 its automated evidence can support.
@@ -28,3 +28,16 @@ retention for both the simulator test and the capture-interface test.
 AddressSanitizer and UndefinedBehaviorSanitizer complete the capture test when
 leak detection is disabled. This evidence does not attribute the retained SDK
 state to the capture benchmark, and it does not qualify ASDK as leak-free.
+
+## Calculon pixel calibration
+
+| ID | Requirement | Implementation | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| CAL-001 | Expose one ordinary SPA transform factory. | Rust `calculon-spa-node` adapter and `pixel_calibration.rs` | C test loads the release cdylib and enumerates `api.calculon.pixel-calibration`. | Verified |
+| CAL-002 | Negotiate exact raw, artifact, and calibrated formats. | Four fixed format constraints | Rust POD tests and C ABI metadata checks cover type, schema, profile, shape, layout, and rate. | Verified |
+| CAL-003 | Use the authoritative Calculon numerical implementation. | `PixelCalibrationPlan<f32, u16>` dependency | Locked Calculon tests plus C ABI result check for a selected flat/background pair. | Verified |
+| CAL-004 | Activate flat and background calibration atomically. | Bounded immutable plane stores and one `Props` transaction | C ABI test ingests two sequenced planes and selects the pair before processing. | Verified |
+| CAL-005 | Preserve synchronous transform back pressure and complete-frame publication. | Standard `SPA_IO_Buffers`, reserve/commit/publish sequence | C ABI test verifies input consumption, output status, chunk layout, values, and Header propagation. | Verified |
+| CAL-006 | Keep repeated processing bounded, nonblocking, and allocation-free. | Fail-fast atomic callback gate, fixed storage, one buffer per port per callback | Gate unit test; C ABI test interposes the glibc allocator around a warmed process call and observes zero allocations. | Verified on current Linux test host |
+| CAL-007 | Define canonical detector-profile serialization. | Exact opaque matching only | Requires a normative manifest and byte-stable vectors. | Open |
+| CAL-008 | Establish latency distributions and release gates for representative detector sizes. | No dedicated benchmark yet | Requires warmed p50/p99/p99.9 runs with environment capture. | Open |

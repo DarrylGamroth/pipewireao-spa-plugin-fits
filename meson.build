@@ -20,7 +20,9 @@ plugin_include = include_directories('include')
 
 install_headers(
   'include/pipewireao-plugins/alpao.h',
+  'include/pipewireao-plugins/calculon.h',
   subdir: 'pipewireao-plugins-0.1/pipewireao-plugins',
 )
 
 subdir('spa/plugins/alpao')
+subdir('spa/plugins/calculon')
