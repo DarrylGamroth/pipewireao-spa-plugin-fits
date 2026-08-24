@@ -122,6 +122,13 @@ int main(int argc, char **argv)
 			{ SPA_KEY_API_EGRABBER_PRODUCER, "gigelink" },
 			{ SPA_KEY_API_EGRABBER_BUFFER_COUNT, "12" },
 			{ SPA_KEY_API_EGRABBER_PROGRESSIVE, "offer" },
+			{ SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES,
+					"/opt/clprotocol-one:/opt/clprotocol-two" },
+			{ SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE, "CRED2" },
+			{ SPA_KEY_API_EGRABBER_CAMERA_SERIAL, "CRED2-001" },
+			{ SPA_KEY_API_EGRABBER_GENAPI_RUNTIME,
+					"/opt/genicam/libGenApiC_v3.so" },
+			{ SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS, "250" },
 			{ SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN,
 					"00112233445566778899aabbccddeeff" },
 			{ SPA_KEY_API_EGRABBER_ACQUISITION_GENERATION, "42" },
@@ -153,6 +160,18 @@ int main(int argc, char **argv)
 			spa_assert_se(*property(camera, SPA_KEY_API_EGRABBER_BUFFER_COUNT) == "12");
 			spa_assert_se(*property(camera, SPA_KEY_API_EGRABBER_PROGRESSIVE) == "offer");
 			spa_assert_se(*property(camera,
+					SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES) ==
+					"/opt/clprotocol-one:/opt/clprotocol-two");
+			spa_assert_se(*property(camera,
+					SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE) == "CRED2");
+			spa_assert_se(*property(camera,
+					SPA_KEY_API_EGRABBER_CAMERA_SERIAL) == "CRED2-001");
+			spa_assert_se(*property(camera,
+					SPA_KEY_API_EGRABBER_GENAPI_RUNTIME) ==
+					"/opt/genicam/libGenApiC_v3.so");
+			spa_assert_se(*property(camera,
+					SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS) == "250");
+			spa_assert_se(*property(camera,
 					SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN) ==
 					"00112233445566778899aabbccddeeff");
 			spa_assert_se(*property(camera,
@@ -182,6 +201,18 @@ int main(int argc, char **argv)
 					SPA_KEY_API_EGRABBER_BUFFER_COUNT) == "12");
 			spa_assert_se(*property(device_observation.objects[0],
 					SPA_KEY_API_EGRABBER_PROGRESSIVE) == "offer");
+			spa_assert_se(*property(device_observation.objects[0],
+					SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES) ==
+					"/opt/clprotocol-one:/opt/clprotocol-two");
+			spa_assert_se(*property(device_observation.objects[0],
+					SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE) == "CRED2");
+			spa_assert_se(*property(device_observation.objects[0],
+					SPA_KEY_API_EGRABBER_CAMERA_SERIAL) == "CRED2-001");
+			spa_assert_se(*property(device_observation.objects[0],
+					SPA_KEY_API_EGRABBER_GENAPI_RUNTIME) ==
+					"/opt/genicam/libGenApiC_v3.so");
+			spa_assert_se(*property(device_observation.objects[0],
+					SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS) == "250");
 			spa_assert_se(*property(device_observation.objects[0],
 					SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN) ==
 					"00112233445566778899aabbccddeeff");

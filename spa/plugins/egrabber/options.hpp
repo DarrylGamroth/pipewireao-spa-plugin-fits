@@ -39,5 +39,7 @@ void read_options(Options &options, const struct spa_dict *info);
 const char *progressive_policy_name(ProgressivePolicy policy) noexcept;
 std::string format_acquisition_domain(
 		const std::array<std::uint8_t, 16> &domain);
+std::string format_clprotocol_libraries(
+		const std::vector<std::string> &libraries);
 
 } // namespace egrabber_pipewire

@@ -28,6 +28,8 @@ mapped-host progressive publication:
   construction;
 - typed scalar GenICam discovery and readback through `SPA_PARAM_PropInfo` and
   `SPA_PARAM_Props`;
+- optional Grablink Camera Link control through a standard CLProtocol provider
+  and GenApi C node map, including a distinct attached-camera serial check;
 - immutable `SPA_NODE_FLAG_RTC_PROCESS` ownership;
 - `SPA_IO_BuffersLatestLink` fan-out without graph-ready callbacks;
 - mapped `MemPtr` or `MemFd` buffers announced directly to eGrabber;
@@ -57,10 +59,13 @@ private mailbox, payload copy, private capture thread, or graph scheduling
 path. The optional manager completes and releases its discovery objects before
 any source begins acquisition.
 
-The camera, control-backend, frame-layout, frame-sequence, and pixel-format
-code was migrated from sibling `egrabber-pipewire` revision `a3089cb`. The
-standalone application remains the behavior oracle until the plugin reaches
-parity. `CallbackOnDemand` dispatches synchronously from `process()`; callback
+The camera, control-backend, frame-layout, frame-sequence, pixel-format, and
+optional CLProtocol code was migrated from the sibling `egrabber-pipewire`
+implementation. The standalone application remains the behavior oracle until
+the plugin reaches hardware parity. See
+[eGrabber Camera Link control](../../../docs/egrabber-clprotocol.md) for the
+build, property, identity, and qualification contract. `CallbackOnDemand`
+dispatches synchronously from `process()`; callback
 installation and removal occur only while the node is stopped, so the migrated
 event bridge has no callback mutex and does not copy `std::function` callbacks
 per event. The node tracks submitted buffers locally instead of querying the
@@ -130,7 +135,7 @@ live join/leave, and final subscriber teardown. PipeWireAO commit `5dd08ebd1`
 corrects the RTC lifecycle ordering that this harness exposed: an RTC node now
 stops and joins before its final runnable link and announced buffers are
 dismantled, while a non-final fan-out removal leaves the loop running. The core
-regression, all 17 eGrabber/BGAPI2 tests, and four consecutive connected
+regression, all 17 baseline eGrabber/BGAPI2 tests, and four consecutive connected
 Gigelink host qualifications pass. CAMERA-005 is verified without weakening
 the daemon-health or teardown checks.
 
@@ -139,6 +144,12 @@ Gigelink is complete-only: `progressive=offer` falls back to complete frames and
 implemented against the vendor StartOfCameraReadout, acquiring-buffer, and
 filled-size contract, but remains a hardware qualification item. Progressive
 publication rejects DMA-BUF by design.
+
+Grablink CLProtocol control compiles only when `genicam-root` is configured.
+The optional host/provider integration test covers provider probing, GenApi
+feature access, attached-camera serial mismatch, and serial cleanup after
+construction failure. The physical Grablink serial path remains unqualified
+because no Grablink board is connected.
 
 Explicit-sync DMA-BUF is currently restricted to one active subscriber. The
 standard SyncTimeline allocation has one release timeline, so it cannot safely
@@ -233,6 +244,9 @@ readiness; this plugin currently uses its functional BusySpin profile only.
 - Qualify StartOfCameraReadout progressive publication on Grablink/Coaxlink
   hardware, including partial-row, completion, incomplete-frame, restart, and
   cancellation behavior.
+- Qualify Grablink Camera Link serial open/read/write, CLProtocol provider
+  probing, attached-camera serial verification, and layout synchronization on
+  physical hardware.
 - Qualify complete-frame DMA-BUF and SyncObj timeline behavior on supported
   Grablink/Coaxlink hardware. The connected Gigelink device cannot exercise
   this path.

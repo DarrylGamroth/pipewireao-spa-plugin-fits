@@ -50,9 +50,45 @@ int main()
 	assert(timed.acquisition_sequence_context == 2);
 	assert(timed.buffer_count == 12);
 
+	const auto clprotocol = parse({
+		{ SPA_KEY_API_EGRABBER_CONTROL, "clprotocol" },
+		{ SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES,
+				"/opt/camera/libCLProtocol_one.so:/opt/camera/libCLProtocol_two.so" },
+		{ SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE, "CRED2" },
+		{ SPA_KEY_API_EGRABBER_CAMERA_SERIAL, "CRED2-001" },
+		{ SPA_KEY_API_EGRABBER_GENAPI_RUNTIME, "/opt/genicam/libGenApiC_v3.so" },
+		{ SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS, "250" },
+	});
+	assert(clprotocol.clprotocol_libraries.size() == 2);
+	assert(clprotocol.clprotocol_libraries[0] ==
+			"/opt/camera/libCLProtocol_one.so");
+	assert(clprotocol.clprotocol_libraries[1] ==
+			"/opt/camera/libCLProtocol_two.so");
+	assert(egrabber_pipewire::format_clprotocol_libraries(
+			clprotocol.clprotocol_libraries) ==
+			"/opt/camera/libCLProtocol_one.so:/opt/camera/libCLProtocol_two.so");
+	assert(clprotocol.clprotocol_device_template == "CRED2");
+	assert(clprotocol.camera_serial == "CRED2-001");
+	assert(clprotocol.genapi_runtime == "/opt/genicam/libGenApiC_v3.so");
+	assert(clprotocol.control_timeout_ms == 250);
+
 	assert(throws([] { parse({{ SPA_KEY_API_EGRABBER_BUFFER_COUNT, "1" }}); }));
 	assert(throws([] { parse({{ SPA_KEY_API_EGRABBER_BUFFER_COUNT, "8frames" }}); }));
 	assert(throws([] { parse({{ SPA_KEY_API_EGRABBER_PROGRESSIVE, "sometimes" }}); }));
+	assert(throws([] { parse({{
+		SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES, "/one::/two" }}); }));
+	assert(throws([] { parse({{
+		SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS, "0" }}); }));
+	assert(throws([] { parse({{
+		SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS, "soon" }}); }));
+	assert(throws([] { parse({
+		{ SPA_KEY_API_EGRABBER_CONTROL, "remote" },
+		{ SPA_KEY_API_EGRABBER_CAMERA_SERIAL, "CRED2-001" },
+	}); }));
+	assert(throws([] { parse({
+		{ SPA_KEY_API_EGRABBER_CONTROL, "none" },
+		{ SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE, "CRED2" },
+	}); }));
 	assert(throws([] { parse({{
 		SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN, "0011" }}); }));
 	assert(throws([] { parse({{

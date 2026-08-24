@@ -11,6 +11,8 @@ project(
   ],
 )
 
+fs = import('fs')
+
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
 spa_dep = dependency('libspa-ao-0.2', version: '>= 0.2')

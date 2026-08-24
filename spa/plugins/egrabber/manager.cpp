@@ -101,7 +101,12 @@ int emit_camera(impl *self, uint32_t id)
 			self->options.acquisition_generation);
 	const std::string acquisition_sequence_context = std::to_string(
 			self->options.acquisition_sequence_context);
-	struct spa_dict_item items[24];
+	const std::string clprotocol_libraries =
+			egrabber_pipewire::format_clprotocol_libraries(
+					self->options.clprotocol_libraries);
+	const std::string control_timeout_ms = std::to_string(
+			self->options.control_timeout_ms);
+	struct spa_dict_item items[32];
 	uint32_t n_items = 0;
 
 #define ADD_ITEM(key, value) items[n_items++] = SPA_DICT_ITEM_INIT(key, value)
@@ -117,6 +122,20 @@ int emit_camera(impl *self, uint32_t id)
 	ADD_ITEM(SPA_KEY_API_EGRABBER_STREAM_INDEX, camera.stream_index.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_BUFFER_COUNT, buffer_count.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_CONTROL, self->options.control.c_str());
+	if (!clprotocol_libraries.empty())
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES,
+				clprotocol_libraries.c_str());
+	if (self->options.clprotocol_device_template)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE,
+				self->options.clprotocol_device_template->c_str());
+	if (self->options.camera_serial)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CAMERA_SERIAL,
+				self->options.camera_serial->c_str());
+	if (self->options.genapi_runtime)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_GENAPI_RUNTIME,
+				self->options.genapi_runtime->c_str());
+	ADD_ITEM(SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS,
+			control_timeout_ms.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_PROGRESSIVE,
 			egrabber_pipewire::progressive_policy_name(self->options.progressive));
 	if (self->options.acquisition_domain) {

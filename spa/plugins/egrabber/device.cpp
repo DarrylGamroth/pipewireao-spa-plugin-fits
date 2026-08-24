@@ -39,6 +39,8 @@ struct impl {
 	std::string device_index;
 	std::string stream_index;
 	std::string buffer_count;
+	std::string clprotocol_libraries;
+	std::string control_timeout_ms;
 	std::string acquisition_domain;
 	std::string acquisition_generation;
 	std::string acquisition_sequence_context;
@@ -55,6 +57,20 @@ void add_identity_items(const impl *self, struct spa_dict_item *items,
 	ADD_ITEM(SPA_KEY_API_EGRABBER_STREAM_INDEX, self->stream_index.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_BUFFER_COUNT, self->buffer_count.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_CONTROL, self->options.control.c_str());
+	if (!self->clprotocol_libraries.empty())
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES,
+				self->clprotocol_libraries.c_str());
+	if (self->options.clprotocol_device_template)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE,
+				self->options.clprotocol_device_template->c_str());
+	if (self->options.camera_serial)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CAMERA_SERIAL,
+				self->options.camera_serial->c_str());
+	if (self->options.genapi_runtime)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_GENAPI_RUNTIME,
+				self->options.genapi_runtime->c_str());
+	ADD_ITEM(SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS,
+			self->control_timeout_ms.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_PROGRESSIVE,
 			egrabber_pipewire::progressive_policy_name(self->options.progressive));
 	if (self->options.acquisition_domain) {
@@ -76,7 +92,7 @@ void add_identity_items(const impl *self, struct spa_dict_item *items,
 
 void emit_info(impl *self)
 {
-	struct spa_dict_item device_items[24];
+	struct spa_dict_item device_items[32];
 	uint32_t n_device_items = 0;
 	add_identity_items(self, device_items, n_device_items);
 #define ADD_DEVICE_ITEM(key, value) \
@@ -101,7 +117,7 @@ void emit_info(impl *self)
 	info.props = &device_props;
 	spa_device_emit_info(&self->hooks, &info);
 
-	struct spa_dict_item node_items[24];
+	struct spa_dict_item node_items[32];
 	uint32_t n_node_items = 0;
 	add_identity_items(self, node_items, n_node_items);
 #define ADD_NODE_ITEM(key, value) \
@@ -216,6 +232,11 @@ int init(const struct spa_handle_factory *, struct spa_handle *handle,
 	self->device_index = std::to_string(self->options.device_index);
 	self->stream_index = std::to_string(self->options.stream_index);
 	self->buffer_count = std::to_string(self->options.buffer_count);
+	self->clprotocol_libraries =
+			egrabber_pipewire::format_clprotocol_libraries(
+					self->options.clprotocol_libraries);
+	self->control_timeout_ms = std::to_string(
+			self->options.control_timeout_ms);
 	if (self->options.acquisition_domain)
 		self->acquisition_domain = egrabber_pipewire::format_acquisition_domain(
 				*self->options.acquisition_domain);

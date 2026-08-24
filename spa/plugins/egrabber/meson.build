@@ -17,6 +17,27 @@ egrabber_sources = [
 
 egrabber_dependencies = [spa_dep, egrabber_dep, threads_dep]
 egrabber_cpp_args = ['-Wno-pedantic']
+egrabber_includes = []
+
+genicam_root = get_option('genicam-root')
+if genicam_root != ''
+  genicam_c_include = genicam_root / 'Reference Implementation' / 'library' / 'C' / 'include'
+  genicam_cpp_include = genicam_root / 'Reference Implementation' / 'library' / 'CPP' / 'include'
+  genapi_runtime = genicam_root / 'Reference Implementation' / 'bin' / 'Linux64_x64' / 'libGenApiC_v3.so'
+  if not fs.exists(genicam_c_include / 'GenApiC.h') or not fs.exists(genicam_cpp_include / 'CLProtocol' / 'ISerial.h')
+    error('genicam-root does not contain the GenICam Reference Implementation C and C++ headers')
+  endif
+  if not fs.exists(genapi_runtime)
+    error('genicam-root does not contain Reference Implementation/bin/Linux64_x64/libGenApiC_v3.so')
+  endif
+  egrabber_sources += ['clprotocol_control.cpp', 'grablink_serial.cpp']
+  egrabber_includes += include_directories(genicam_c_include, genicam_cpp_include)
+  egrabber_cpp_args += [
+    '-DHAVE_CLPROTOCOL_CONTROL=1',
+    '-DDEFAULT_GENAPI_RUNTIME="' + genapi_runtime + '"',
+  ]
+endif
+
 if drm_dep.found()
   egrabber_sources += 'dma_buf_sync.cpp'
   egrabber_dependencies += drm_dep
@@ -26,6 +47,7 @@ endif
 egrabber_lib = shared_library(
   'spa-egrabber',
   egrabber_sources,
+  include_directories: egrabber_includes,
   dependencies: egrabber_dependencies,
   cpp_args: egrabber_cpp_args,
   install: true,
@@ -83,6 +105,22 @@ if get_option('tests').allowed()
     dependencies: [spa_dep],
   )
   test('spa-egrabber-options', egrabber_options_test)
+
+  clprotocol_test_backend = get_option('clprotocol-test-backend')
+  if genicam_root != '' and clprotocol_test_backend != ''
+    egrabber_clprotocol_control_test = executable(
+      'spa-egrabber-clprotocol-control-test',
+      ['test-clprotocol-control.cpp', 'clprotocol_control.cpp'],
+      include_directories: egrabber_includes,
+      dependencies: [dl_dep],
+      cpp_args: egrabber_cpp_args,
+    )
+    test(
+      'spa-egrabber-clprotocol-control',
+      egrabber_clprotocol_control_test,
+      args: [clprotocol_test_backend],
+    )
+  endif
 
   egrabber_factory_test = executable(
     'spa-egrabber-factory-test',

@@ -64,6 +64,28 @@ ProgressivePolicy parse_progressive_policy(const char *value)
 	throw std::invalid_argument("progressive policy must be disabled, offer, or require");
 }
 
+std::vector<std::string> parse_clprotocol_libraries(const char *value)
+{
+	const std::string_view input(value == nullptr ? "" : value);
+	if (input.empty())
+		throw std::invalid_argument("CLProtocol libraries must not be empty");
+	std::vector<std::string> result;
+	std::size_t start = 0;
+	while (start <= input.size()) {
+		const auto end = input.find(':', start);
+		const auto item = input.substr(start,
+				end == std::string_view::npos ? input.size() - start : end - start);
+		if (item.empty())
+			throw std::invalid_argument(
+					"CLProtocol libraries must not contain an empty path");
+		result.emplace_back(item);
+		if (end == std::string_view::npos)
+			break;
+		start = end + 1;
+	}
+	return result;
+}
+
 } // namespace
 
 const char *progressive_policy_name(ProgressivePolicy policy) noexcept
@@ -91,6 +113,18 @@ std::string format_acquisition_domain(
 	return result;
 }
 
+std::string format_clprotocol_libraries(
+		const std::vector<std::string> &libraries)
+{
+	std::string result;
+	for (const auto &library : libraries) {
+		if (!result.empty())
+			result += ':';
+		result += library;
+	}
+	return result;
+}
+
 void read_options(Options &options, const struct spa_dict *info)
 {
 	const char *value;
@@ -105,6 +139,18 @@ void read_options(Options &options, const struct spa_dict *info)
 		options.user_id = value;
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_CONTROL)))
 		options.control = value;
+	if ((value = spa_dict_lookup(info,
+			SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES)))
+		options.clprotocol_libraries = parse_clprotocol_libraries(value);
+	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE)))
+		options.clprotocol_device_template = value;
+	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_CAMERA_SERIAL)))
+		options.camera_serial = value;
+	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_GENAPI_RUNTIME)))
+		options.genapi_runtime = value;
+	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS)))
+		options.control_timeout_ms = parse_unsigned<std::uint32_t>(value,
+				SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS);
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_PROGRESSIVE)))
 		options.progressive = parse_progressive_policy(value);
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN)))
@@ -133,6 +179,15 @@ void read_options(Options &options, const struct spa_dict *info)
 	if (options.control != "auto" && options.control != "remote" &&
 			options.control != "clprotocol" && options.control != "none")
 		throw std::invalid_argument("eGrabber control must be auto, remote, clprotocol, or none");
+	if (options.control_timeout_ms == 0)
+		throw std::invalid_argument("eGrabber control timeout must be greater than zero");
+	const bool clprotocol_configuration = !options.clprotocol_libraries.empty() ||
+			options.clprotocol_device_template || options.camera_serial ||
+			options.genapi_runtime;
+	if (clprotocol_configuration && options.control != "auto" &&
+			options.control != "clprotocol")
+		throw std::invalid_argument(
+				"CLProtocol configuration requires eGrabber control auto or clprotocol");
 	if (options.acquisition_sequence_context > 3)
 		throw std::invalid_argument("acquisition sequence context must be 1, 2, or 3");
 	if (options.acquisition_domain.has_value() !=

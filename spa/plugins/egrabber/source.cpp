@@ -163,13 +163,15 @@ struct impl {
 	struct spa_node_info info = SPA_NODE_INFO_INIT();
 	struct spa_param_info params[2] = {};
 	struct spa_dict node_props = {};
-	struct spa_dict_item node_items[24] = {};
+	struct spa_dict_item node_items[32] = {};
 	Options options;
 	std::string node_name;
 	std::string description;
 	std::string interface_index;
 	std::string device_index;
 	std::string stream_index;
+	std::string clprotocol_libraries;
+	std::string control_timeout_ms;
 	std::string acquisition_domain;
 	std::string acquisition_generation;
 	std::string acquisition_sequence_context;
@@ -1444,6 +1446,7 @@ size_t get_size(const struct spa_handle_factory *, const struct spa_dict *)
 void configure_node_props(impl *self)
 {
 	const auto &identity = self->camera->identity();
+	const auto &camera_serial = self->camera->camera_serial();
 	uint32_t n_items = 0;
 	const std::string stable = !identity.serial.empty() ? identity.serial :
 			std::to_string(self->options.interface_index) + "." +
@@ -1461,6 +1464,11 @@ void configure_node_props(impl *self)
 	self->interface_index = std::to_string(self->options.interface_index);
 	self->device_index = std::to_string(self->options.device_index);
 	self->stream_index = std::to_string(self->options.stream_index);
+	self->clprotocol_libraries =
+			egrabber_pipewire::format_clprotocol_libraries(
+					self->options.clprotocol_libraries);
+	self->control_timeout_ms = std::to_string(
+			self->options.control_timeout_ms);
 	if (self->options.acquisition_domain)
 		self->acquisition_domain = egrabber_pipewire::format_acquisition_domain(
 				*self->options.acquisition_domain);
@@ -1480,6 +1488,24 @@ void configure_node_props(impl *self)
 	ADD_ITEM(SPA_KEY_API_EGRABBER_INTERFACE_INDEX, self->interface_index.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_DEVICE_INDEX, self->device_index.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_STREAM_INDEX, self->stream_index.c_str());
+	ADD_ITEM(SPA_KEY_API_EGRABBER_CONTROL, self->options.control.c_str());
+	if (!self->clprotocol_libraries.empty())
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES,
+				self->clprotocol_libraries.c_str());
+	if (self->options.clprotocol_device_template)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE,
+				self->options.clprotocol_device_template->c_str());
+	if (!camera_serial.empty())
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CAMERA_SERIAL,
+				camera_serial.c_str());
+	else if (self->options.camera_serial)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_CAMERA_SERIAL,
+				self->options.camera_serial->c_str());
+	if (self->options.genapi_runtime)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_GENAPI_RUNTIME,
+				self->options.genapi_runtime->c_str());
+	ADD_ITEM(SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS,
+			self->control_timeout_ms.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_PROGRESSIVE,
 			egrabber_pipewire::progressive_policy_name(self->options.progressive));
 	if (self->options.acquisition_domain) {

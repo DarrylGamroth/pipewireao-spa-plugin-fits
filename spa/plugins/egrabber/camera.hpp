@@ -97,6 +97,7 @@ public:
     const std::string &pixel_format() const;
     const std::vector<Feature> &features() const;
     const CameraIdentity &identity() const;
+    const std::string &camera_serial() const;
     bool progressive_supported() const;
     bool dma_buf_supported();
     void set_frame_callback(FrameCallback callback);

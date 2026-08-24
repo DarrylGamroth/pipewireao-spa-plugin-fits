@@ -217,6 +217,7 @@ public:
     const std::string &pixel_format() const { return pixel_format_; }
     const std::vector<Feature> &features() const { return features_; }
     const CameraIdentity &identity() const { return selection_.identity; }
+    const std::string &camera_serial() const { return camera_serial_; }
     bool progressive_supported() const { return progressive_supported_; }
     std::size_t buffer_count() const { return buffer_count_; }
     std::size_t announce_minimum() const { return announce_minimum_; }
@@ -709,14 +710,15 @@ private:
                              "eGrabber RemoteModule: %s", error.what());
             }
         } else if (options.camera_serial) {
-            throw std::runtime_error("--camera-serial requires an installed CLProtocol backend");
+            throw std::runtime_error(
+                "api.egrabber.camera-serial requires an installed CLProtocol backend");
         }
 #else
         if (options.control == "clprotocol" || options.camera_serial ||
             !options.clprotocol_libraries.empty() || options.clprotocol_device_template ||
             options.genapi_runtime)
             throw std::runtime_error(
-                "this build has no CLProtocol support; configure Meson with -Dgenicam_root=PATH");
+                "this build has no CLProtocol support; configure Meson with -Dgenicam-root=PATH");
 #endif
         control_ = make_remote_control_backend(grabber_, log_);
     }
@@ -741,8 +743,12 @@ private:
         };
         update("DeviceVendorName", selection_.identity.vendor);
         update("DeviceModelName", selection_.identity.model);
-        update("DeviceSerialNumber", selection_.identity.serial);
-        update("DeviceUserID", selection_.identity.user_id);
+        if (control_->requires_transport_layout_sync()) {
+            update("DeviceSerialNumber", camera_serial_);
+        } else {
+            update("DeviceSerialNumber", selection_.identity.serial);
+            update("DeviceUserID", selection_.identity.user_id);
+        }
     }
 
     std::size_t read_dimension(std::string_view name, std::size_t fallback) {
@@ -852,6 +858,7 @@ private:
     CameraSelection selection_;
     CallbackGrabber grabber_;
     std::unique_ptr<SerialTransport> serial_transport_;
+    std::string camera_serial_;
     std::unique_ptr<ControlBackend> control_;
     std::size_t buffer_count_;
     std::size_t width_ = 0;
@@ -899,6 +906,7 @@ std::size_t Camera::buffer_alignment() const { return impl_->buffer_alignment();
 const std::string &Camera::pixel_format() const { return impl_->pixel_format(); }
 const std::vector<Feature> &Camera::features() const { return impl_->features(); }
 const CameraIdentity &Camera::identity() const { return impl_->identity(); }
+const std::string &Camera::camera_serial() const { return impl_->camera_serial(); }
 bool Camera::progressive_supported() const { return impl_->progressive_supported(); }
 bool Camera::dma_buf_supported() { return impl_->dma_buf_supported(); }
 void Camera::set_frame_callback(FrameCallback callback) { impl_->set_frame_callback(std::move(callback)); }

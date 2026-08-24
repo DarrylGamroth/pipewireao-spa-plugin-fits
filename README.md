@@ -59,6 +59,11 @@ locations. A development build may point Meson's `pkg_config_path` at a
 PipeWireAO `build/meson-uninstalled` directory; no source include flags are
 required.
 
+Optional Camera Link control through Grablink, CLProtocol, and the GenICam
+Reference Implementation is enabled with `-Dgenicam-root=PATH`. See
+[eGrabber Camera Link control](docs/egrabber-clprotocol.md) for its properties,
+two-level serial identity, and hardware qualification boundary.
+
 The ASDK simulator smoke test also uses
 [alpao-binary-config](https://github.com/DarrylGamroth/alpao-binary-config) to
 create a synthetic calibration in the build tree:
