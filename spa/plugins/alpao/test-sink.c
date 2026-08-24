@@ -88,6 +88,7 @@ static struct spa_pod *build_format(uint8_t *storage, size_t size,
 	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
 			(uint32_t)size);
 	const int32_t shape[] = { (int32_t)ACTUATOR_COUNT };
+	const struct spa_fraction rate = SPA_FRACTION(1000, 1);
 
 	return spa_pod_builder_add_object(&builder,
 			SPA_TYPE_OBJECT_Format, object_id,
@@ -100,6 +101,7 @@ static struct spa_pod *build_format(uint8_t *storage, size_t size,
 					SPA_TYPE_Int, SPA_N_ELEMENTS(shape), shape),
 			SPA_FORMAT_NDARRAY_layout,
 			SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR),
+			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&rate),
 			SPA_FORMAT_NDARRAY_profile, SPA_POD_String(selected_profile));
 }
 
@@ -205,7 +207,9 @@ static int exercise(const struct spa_handle_factory *factory,
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_INPUT, 0,
 			SPA_PARAM_Format, 0, missing_profile) == -EINVAL);
 
-	format = enum_one(node, &capture, SPA_PARAM_EnumFormat);
+	format = build_format(format_storage, sizeof(format_storage),
+			SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND, profile,
+			SPA_PARAM_Format);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_INPUT, 0,
 			SPA_PARAM_Format, 0, format) == 0);
 	init_test_buffer(&storage[0]);

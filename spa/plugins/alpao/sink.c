@@ -356,7 +356,7 @@ static int validate_format(struct impl *self, const struct spa_pod *param)
 	if (spa_format_ndarray_parse(param, &format) < 0 ||
 			format.element_type != SPA_ELEMENT_TYPE_F64_LE ||
 			format.layout != SPA_NDARRAY_LAYOUT_ROW_MAJOR ||
-			format.rate.denom != 0 || format.n_dimensions != 1 ||
+			format.n_dimensions != 1 ||
 			format.shape[0] != self->actuator_count ||
 			spa_ndarray_format_key_count(param, SPA_FORMAT_NDARRAY_schema) != 1 ||
 			spa_ndarray_format_key_count(param, SPA_FORMAT_NDARRAY_profile) != 1)
