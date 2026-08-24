@@ -74,3 +74,10 @@ option(
   value: '/opt/baumer-gapi-sdk-c',
   description: 'Baumer GAPI2 SDK installation prefix',
 )
+
+option(
+  'fits',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build the CFITSIO-backed FITS cube source',
+)

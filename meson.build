@@ -70,5 +70,12 @@ if bgapi2_found
   subdir('spa/plugins/bgapi2')
 endif
 
+cfitsio_dep = dependency('cfitsio', required: get_option('fits'))
+fits_found = cfitsio_dep.found()
+if fits_found
+  subdir('spa/plugins/fits')
+endif
+
 summary('eGrabber plugin', egrabber_found, section: 'SPA plugins')
 summary('BGAPI2 plugin', bgapi2_found, section: 'SPA plugins')
+summary('FITS cube source', fits_found, section: 'SPA plugins')
