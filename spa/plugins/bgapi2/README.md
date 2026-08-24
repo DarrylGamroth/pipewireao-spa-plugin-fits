@@ -28,14 +28,13 @@ The required manager and source property is the GenTL system/producer path:
 api.bgapi2.producer=/absolute/path/to/producer.cti
 ```
 
-When a producer exposes serial numbers without opening the cameras, the manager
-publishes `api.bgapi2.serial` and the source uses it as the stable selector.
-Some third-party producer/BGAPI2 combinations expose only transport coordinates
-during unopened discovery. In that case the manager publishes the discovered
-interface, device, and stream indices; after opening, the source publishes the
-camera's actual serial and other identity properties. Device object names and
-paths fall back to the complete interface/device/stream tuple, so multiple
-interfaces cannot collide.
+The manager first requests each serial number without opening the camera. If a
+producer defers that information, the manager briefly opens the device read-only,
+reads the serial, and closes it before emitting the startup snapshot. If another
+process holds exclusive access, discovery still emits the device using its exact
+interface/device/stream coordinates. Device object names and paths fall back to
+that complete tuple, so multiple interfaces cannot collide. The source applies
+the same read-only fallback while resolving a direct serial selector.
 
 The source factory remains directly usable without a manager. The optional
 `api.bgapi2.serial`, `api.bgapi2.interface-index`, `api.bgapi2.device-index`, and
@@ -141,6 +140,12 @@ runtime through both:
 The second result is significant: the Baumer producer does operate this camera.
 An earlier failure was caused by an uncaught GenApi exception from the Euresys
 producer, which terminated the shared process before the Baumer case ran.
+
+Unopened Euresys Gigelink `IFGetDeviceInfo(DEVICE_INFO_SERIAL_NUMBER)` returns
+GenTL `GC_ERR_NOT_ALLOWED` for this camera even though vendor, model, and display
+name are available. `BGAPI2_Device_OpenReadOnly` makes the serial available and
+does not require control ownership. Both the manager and direct serial-selection
+tests exercise this fallback and still complete capture through the Euresys CTI.
 
 The separately installed BGAPI2 2.16.1 C and C++ packages contain byte-identical
 `libbgapi2_genicam`, `libbgapi2_img`, and Baumer GigE CTI binaries. Both

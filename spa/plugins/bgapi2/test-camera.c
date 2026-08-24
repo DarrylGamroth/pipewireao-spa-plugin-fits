@@ -88,16 +88,12 @@ int main(int argc, char *argv[])
 			on_discovered, &discovery);
 	if (res == 0)
 		return 77;
-	if (res < 0 || discovery.count != (uint32_t)res) {
+	if (res < 0 || discovery.count != (uint32_t)res ||
+			discovery.first.serial[0] == '\0') {
 		fprintf(stderr, "could not discover cameras: %d\n", res);
 		return EXIT_FAILURE;
 	}
-	if (discovery.first.serial[0] != '\0')
-		options.serial = discovery.first.serial;
-	else {
-		options.interface_index = discovery.first.interface_index;
-		options.device_index = discovery.first.device_index;
-	}
+	options.serial = discovery.first.serial;
 	res = bgapi2_camera_open(&camera, &options);
 	if (res == -ENODEV)
 		return 77;

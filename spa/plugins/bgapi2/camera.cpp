@@ -366,6 +366,23 @@ static void get_optional_device_string(struct bgapi2_camera *camera,
 		value[0] = '\0';
 }
 
+static int get_discovery_serial(struct bgapi2_camera *camera,
+		BGAPI2_Device *device, char *value, size_t capacity)
+{
+	int close_res, res;
+
+	res = get_device_string(camera, device, BGAPI2_Device_GetSerialNumber,
+			value, capacity);
+	if (res >= 0)
+		return 0;
+	if ((res = checked(camera, BGAPI2_Device_OpenReadOnly(device))) < 0)
+		return res;
+	res = get_device_string(camera, device, BGAPI2_Device_GetSerialNumber,
+			value, capacity);
+	close_res = checked(camera, BGAPI2_Device_Close(device));
+	return res < 0 ? res : close_res;
+}
+
 static int select_device_by_serial(struct bgapi2_camera *camera,
 		const struct bgapi2_camera_options *options,
 		uint32_t *selected_interface, uint32_t *selected_device)
@@ -412,8 +429,7 @@ static int select_device_by_serial(struct bgapi2_camera *camera,
 
 				if (checked(camera, BGAPI2_Interface_GetDevice(
 						camera->interface, device_index, &device)) < 0 ||
-						get_device_string(camera, device,
-						BGAPI2_Device_GetSerialNumber, serial,
+						get_discovery_serial(camera, device, serial,
 						sizeof(serial)) < 0 ||
 						strcmp(serial, options->serial) != 0)
 					continue;
@@ -577,9 +593,9 @@ int bgapi2_camera_discover(const char *producer_path,
 			get_optional_device_string(&probe, device,
 					BGAPI2_Device_GetModel, discovered.model,
 					sizeof(discovered.model));
-			get_optional_device_string(&probe, device,
-					BGAPI2_Device_GetSerialNumber, discovered.serial,
-					sizeof(discovered.serial));
+			if (get_discovery_serial(&probe, device, discovered.serial,
+					sizeof(discovered.serial)) < 0)
+				discovered.serial[0] = '\0';
 			get_optional_device_string(&probe, device,
 					BGAPI2_Device_GetID, discovered.device_id,
 					sizeof(discovered.device_id));

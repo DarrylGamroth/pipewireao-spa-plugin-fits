@@ -164,6 +164,7 @@ int main(int argc, char *argv[])
 	spa_assert_se(spa_streq(manager_observation.factory,
 			SPA_NAME_API_BGAPI2_DEVICE));
 	spa_assert_se(manager_observation.producer[0] != '\0');
+	spa_assert_se(manager_observation.serial[0] != '\0');
 	spa_assert_se(manager_observation.interface_index[0] != '\0');
 	spa_assert_se(manager_observation.device_index[0] != '\0');
 	spa_assert_se(manager_observation.stream_index[0] != '\0');
@@ -205,9 +206,8 @@ int main(int argc, char *argv[])
 			SPA_NAME_API_BGAPI2_SOURCE));
 	spa_assert_se(spa_streq(device_observation.producer,
 			manager_observation.producer));
-	if (manager_observation.serial[0] != '\0')
-		spa_assert_se(spa_streq(device_observation.serial,
-				manager_observation.serial));
+	spa_assert_se(spa_streq(device_observation.serial,
+			manager_observation.serial));
 
 	spa_hook_remove(&device_listener);
 	spa_assert_se(device_handle->clear(device_handle) == 0);
