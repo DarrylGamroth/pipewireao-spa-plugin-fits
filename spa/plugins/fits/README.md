@@ -26,6 +26,7 @@ file page during source construction.
 | `api.fits.io-mode` | default `file` | `file` for normal CFITSIO access or `mmap` for a CFITSIO memory file backed by a private read-only mapping. |
 | `api.fits.prefault` | default `false` | Touch every mapped page before startup; valid only with `io-mode=mmap`. |
 | `api.fits.loop` | default `true` | Wrap to the first plane after the final plane. |
+| `api.fits.progressive` | default `disabled` | `disabled` publishes complete samples. `offer` uses progressive publication when every pool buffer has `SPA_META_Progressive` and otherwise falls back to complete publication. `require` rejects a pool without that metadata. |
 
 The file axes define the repeated values without a separate shape property:
 
@@ -44,6 +45,26 @@ the profile when configured. Element type, shape, layout, rate, schema, and
 profile are exact negotiated constraints, so a downstream plugin rejects a
 mismatched file before playback starts.
 
+## Progressive test output
+
+Progressive output is a deterministic downstream-test profile, not a claim
+that FITS storage is acquired progressively. CFITSIO first reads the complete
+sample into the producer-owned pool buffer. The source then release-publishes
+only a prefix through `SPA_META_Progressive`; consumers must not access bytes
+beyond that committed prefix even though the test source has already filled
+them.
+
+Each process call advances at most one natural contiguous unit. A vector
+advances by one element. An ndarray image or `GRAY16_LE` frame advances by one
+FITS scanline. There is no private thread, timer, sleep, or synthetic delay.
+The same RTC data-loop duty cycle therefore interleaves source progress with
+downstream work. Completion makes the full sample immutable and releases the
+ordinary buffer lease.
+
+Only mapped `MemPtr` and `MemFd` buffers are supported. Progressive DMA-BUF is
+not offered. Stopping during an active sample terminates it as ABORTED with
+`SPA_META_PROGRESSIVE_FLAG_CANCELLED`.
+
 ## Cadence and overload
 
 Start establishes a `CLOCK_MONOTONIC` epoch. `SPA_META_Header.seq` is the
@@ -52,6 +73,11 @@ first plane is due immediately. If processing, storage, or a consumer lease is
 late, the source advances directly to the newest due plane; it never emits a
 catch-up burst and never backpressures the cadence. The first plane and a plane
 following skipped deadlines carry `SPA_META_HEADER_FLAG_DISCONT`.
+
+An active progressive sample is never overwritten or abandoned to meet the
+next deadline. It reaches COMPLETE first; the next process call then advances
+the cadence directly to the newest due sample. Progressive overload therefore
+drops whole intervening samples without backpressure or a catch-up burst.
 
 The repeated path performs one monotonic clock read and, when a plane is due,
 one bounded pool acquisition and one CFITSIO plane read. CFITSIO and filesystem
@@ -62,5 +88,4 @@ filesystem faults, and CFITSIO internals must be qualified for the selected
 storage and rate.
 
 The source supports mapped `MemPtr` and `MemFd` pool buffers. It does not offer
-DMA-BUF or progressive publication; a stored FITS plane has no useful
-progressive acquisition boundary.
+DMA-BUF.

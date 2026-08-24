@@ -39,6 +39,12 @@ enum output_kind {
 	OUTPUT_GRAY16,
 };
 
+enum progressive_policy {
+	PROGRESSIVE_DISABLED,
+	PROGRESSIVE_OFFER,
+	PROGRESSIVE_REQUIRE,
+};
+
 struct port {
 	uint64_t info_all;
 	struct spa_port_info info;
@@ -77,6 +83,7 @@ struct impl {
 	char io_mode_text[16];
 	char prefault_text[8];
 	char loop_text[8];
+	char progressive_text[16];
 	struct port port;
 	struct spa_buffer_latest *latest;
 	struct spa_image_source_latest transport;
@@ -85,7 +92,12 @@ struct impl {
 	struct fits_cube_info cube_info;
 	struct spa_fraction rate;
 	struct cadence cadence;
+	struct spa_image_source_buffer *progressive_image;
+	uint32_t progressive_committed;
+	enum progressive_policy progressive_policy;
 	bool loop;
+	bool progressive_offered;
+	bool progressive_active;
 	bool started;
 };
 
@@ -121,6 +133,34 @@ static int parse_bool(const char *text, bool fallback, bool *value)
 		return 0;
 	}
 	return -EINVAL;
+}
+
+static int parse_progressive_policy(const char *text,
+		enum progressive_policy *policy)
+{
+	if (text == NULL || spa_streq(text, "disabled"))
+		*policy = PROGRESSIVE_DISABLED;
+	else if (spa_streq(text, "offer"))
+		*policy = PROGRESSIVE_OFFER;
+	else if (spa_streq(text, "require"))
+		*policy = PROGRESSIVE_REQUIRE;
+	else
+		return -EINVAL;
+	return 0;
+}
+
+static const char *progressive_policy_name(enum progressive_policy policy)
+{
+	switch (policy) {
+	case PROGRESSIVE_DISABLED:
+		return "disabled";
+	case PROGRESSIVE_OFFER:
+		return "offer";
+	case PROGRESSIVE_REQUIRE:
+		return "require";
+	default:
+		return NULL;
+	}
 }
 
 static int parse_rate(const char *text, struct spa_fraction *rate)
@@ -278,13 +318,23 @@ static int node_set_io(void *object SPA_UNUSED, uint32_t id SPA_UNUSED,
 
 static int stop_source(struct impl *self)
 {
-	int res;
+	int first_error = 0, res;
 
 	if (!self->started)
 		return 0;
+	if (self->progressive_image != NULL) {
+		res = spa_image_source_finish_progressive(&self->source,
+				self->progressive_image, self->progressive_committed,
+				SPA_META_PROGRESSIVE_STATE_ABORTED,
+				SPA_META_PROGRESSIVE_FLAG_CANCELLED);
+		if (res < 0)
+			first_error = res;
+		self->progressive_image = NULL;
+		self->progressive_committed = 0;
+	}
 	self->started = false;
 	res = spa_buffer_latest_worker_end(self->latest);
-	return res < 0 ? res : 0;
+	return first_error != 0 ? first_error : (res < 0 ? res : 0);
 }
 
 static int node_send_command(void *object, const struct spa_command *command)
@@ -384,6 +434,14 @@ static uint32_t output_stride(const struct impl *self)
 	return self->cube_info.width * element_size;
 }
 
+static uint32_t progressive_granularity(const struct impl *self)
+{
+	if (self->cube_info.sample_rank == 2)
+		return output_stride(self);
+	return self->port.output == OUTPUT_NDARRAY ?
+			self->cube_info.element_size : sizeof(uint16_t);
+}
+
 static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 		struct spa_pod_builder *builder, struct spa_pod **param)
 {
@@ -422,13 +480,20 @@ static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 						(1u << SPA_DATA_MemFd)));
 		return *param == NULL ? -ENOSPC : 1;
 	case SPA_PARAM_Meta:
-		if (index > 0)
+		if (index == 0)
+			*param = spa_pod_builder_add_object(builder,
+					SPA_TYPE_OBJECT_ParamMeta, id,
+					SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
+					SPA_PARAM_META_size,
+					SPA_POD_Int(sizeof(struct spa_meta_header)));
+		else if (index == 1 && self->progressive_offered)
+			*param = spa_pod_builder_add_object(builder,
+					SPA_TYPE_OBJECT_ParamMeta, id,
+					SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Progressive),
+					SPA_PARAM_META_size,
+					SPA_POD_Int(sizeof(struct spa_meta_progressive)));
+		else
 			return 0;
-		*param = spa_pod_builder_add_object(builder,
-				SPA_TYPE_OBJECT_ParamMeta, id,
-				SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
-				SPA_PARAM_META_size,
-				SPA_POD_Int(sizeof(struct spa_meta_header)));
 		return *param == NULL ? -ENOSPC : 1;
 	case SPA_PARAM_IO:
 		if (index == 0)
@@ -583,6 +648,7 @@ static int release_buffers(struct impl *self)
 	if (res < 0)
 		return res;
 	self->port.n_buffers = 0;
+	self->progressive_active = false;
 	return 0;
 }
 
@@ -592,6 +658,7 @@ static int port_use_buffers(void *object, enum spa_direction direction,
 {
 	struct impl *self = object;
 	size_t required;
+	bool progressive;
 	uint32_t i;
 	int res;
 
@@ -606,6 +673,7 @@ static int port_use_buffers(void *object, enum spa_direction direction,
 			n_buffers > MAX_BUFFERS)
 		return -EINVAL;
 	required = output_size(self);
+	progressive = self->progressive_offered;
 	for (i = 0; i < n_buffers; i++) {
 		struct spa_data *data;
 
@@ -615,12 +683,18 @@ static int port_use_buffers(void *object, enum spa_direction direction,
 				 data->type != SPA_DATA_MemFd) ||
 				data->maxsize < required || data->chunk == NULL)
 			return -EINVAL;
+		progressive = progressive &&
+				spa_buffer_find_meta_data(buffers[i], SPA_META_Progressive,
+						sizeof(struct spa_meta_progressive)) != NULL;
 	}
+	if (self->progressive_policy == PROGRESSIVE_REQUIRE && !progressive)
+		return -ENOTSUP;
 	res = spa_image_source_latest_prepare(&self->transport, &self->source,
 			buffers, n_buffers);
 	if (res < 0)
 		return res;
 	self->port.n_buffers = n_buffers;
+	self->progressive_active = progressive;
 	return 0;
 }
 
@@ -648,14 +722,37 @@ static int node_process(void *object)
 	struct impl *self = object;
 	struct spa_image_source_buffer *image = NULL;
 	struct spa_image_frame publication;
+	struct spa_image_progressive progressive;
 	struct spa_buffer *buffer;
 	struct spa_data *data;
 	uint64_t now, sequence, sample, pts;
+	uint32_t committed, granularity, size;
 	bool discontinuity;
 	int res;
 
 	if (!self->started)
 		return SPA_STATUS_OK;
+	if (self->progressive_image != NULL) {
+		size = (uint32_t)output_size(self);
+		granularity = progressive_granularity(self);
+		committed = self->progressive_committed > size - granularity ?
+				size : self->progressive_committed + granularity;
+		if (committed == size) {
+			res = spa_image_source_finish_progressive(&self->source,
+					self->progressive_image, committed,
+					SPA_META_PROGRESSIVE_STATE_COMPLETE, 0);
+			if (res >= 0) {
+				self->progressive_image = NULL;
+				self->progressive_committed = 0;
+			}
+		} else {
+			res = spa_image_source_update_progressive(&self->source,
+					self->progressive_image, committed);
+			if (res >= 0)
+				self->progressive_committed = committed;
+		}
+		return res < 0 ? res : SPA_STATUS_HAVE_DATA;
+	}
 	if ((res = monotonic_nsec(&now)) < 0)
 		return res;
 	if (cadence_due(&self->cadence, now, self->cube_info.samples,
@@ -680,18 +777,36 @@ static int node_process(void *object)
 		(void)spa_image_source_return_buffer(&self->source, image);
 		return res;
 	}
+	size = (uint32_t)output_size(self);
 	publication = (struct spa_image_frame) {
 		.version = SPA_VERSION_IMAGE_FRAME,
 		.data_index = 0,
 		.header_flags = discontinuity ? SPA_META_HEADER_FLAG_DISCONT : 0,
 		.offset = 0,
-		.size = (uint32_t)output_size(self),
+		.size = size,
 		.stride = (int32_t)output_stride(self),
 		.sequence = sequence,
 		.pts = (int64_t)pts,
 	};
-	res = spa_image_source_publish_complete(&self->source, image,
-			&publication);
+	if (self->progressive_active) {
+		granularity = progressive_granularity(self);
+		committed = SPA_MIN(granularity, size);
+		progressive = (struct spa_image_progressive) {
+			.version = SPA_VERSION_IMAGE_PROGRESSIVE,
+			.payload_size = size,
+			.commit_granularity = granularity,
+			.committed = committed,
+		};
+		res = spa_image_source_begin_progressive(&self->source, image,
+				&publication, &progressive);
+		if (res >= 0) {
+			self->progressive_image = image;
+			self->progressive_committed = committed;
+		}
+	} else {
+		res = spa_image_source_publish_complete(&self->source, image,
+				&publication);
+	}
 	return res < 0 ? res : SPA_STATUS_HAVE_DATA;
 }
 
@@ -778,6 +893,7 @@ static void configure_props(struct impl *self)
 	ADD_ITEM(SPA_KEY_API_FITS_IO_MODE, self->io_mode_text);
 	ADD_ITEM(SPA_KEY_API_FITS_PREFAULT, self->prefault_text);
 	ADD_ITEM(SPA_KEY_API_FITS_LOOP, self->loop_text);
+	ADD_ITEM(SPA_KEY_API_FITS_PROGRESSIVE, self->progressive_text);
 #undef ADD_ITEM
 	self->props = SPA_DICT_INIT(self->prop_items, n);
 }
@@ -844,6 +960,11 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	value = spa_dict_lookup(info, SPA_KEY_API_FITS_LOOP);
 	if (parse_bool(value, true, &self->loop) < 0)
 		return -EINVAL;
+	if (parse_progressive_policy(spa_dict_lookup(info,
+			SPA_KEY_API_FITS_PROGRESSIVE), &self->progressive_policy) < 0)
+		return -EINVAL;
+	self->progressive_offered =
+			self->progressive_policy != PROGRESSIVE_DISABLED;
 	options.path = self->path;
 	if ((res = fits_cube_open(&self->cube, &options, message,
 			sizeof(message))) < 0) {
@@ -870,6 +991,8 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 			options.prefault ? "true" : "false");
 	snprintf(self->loop_text, sizeof(self->loop_text), "%s",
 			self->loop ? "true" : "false");
+	snprintf(self->progressive_text, sizeof(self->progressive_text), "%s",
+			progressive_policy_name(self->progressive_policy));
 	spa_hook_list_init(&self->hooks);
 	self->node.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Node,
 			SPA_VERSION_NODE, &node_methods, self);
@@ -905,6 +1028,8 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	};
 	self->port.info.params = self->port.params;
 	self->port.info.n_params = SPA_N_ELEMENTS(self->port.params);
+	if (self->progressive_offered)
+		source_config.flags |= SPA_IMAGE_SOURCE_FLAG_ALLOW_PROGRESSIVE;
 	self->latest = spa_buffer_latest_new(SPA_DIRECTION_OUTPUT, self, self->log);
 	if (self->latest == NULL) {
 		res = -errno;

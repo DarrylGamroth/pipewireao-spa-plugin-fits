@@ -63,7 +63,8 @@ required.
 Enable or require the FITS source with `-Dfits=enabled`. Its default `file`
 profile reads each scheduled plane through CFITSIO directly into a PipeWireAO
 pool buffer. See [FITS sequence source](spa/plugins/fits/README.md) for axis,
-schema, cadence, `GRAY16_LE`, and optional mmap behavior.
+schema, cadence, progressive downstream-test output, `GRAY16_LE`, and optional
+mmap behavior.
 
 Optional Camera Link control through Grablink, CLProtocol, and the GenICam
 Reference Implementation is enabled with `-Dgenicam-root=PATH`. See
