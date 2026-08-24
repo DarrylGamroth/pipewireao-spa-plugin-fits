@@ -26,6 +26,8 @@ _Static_assert(offsetof(struct pwao_queue_ring, write_index) %
 		SPA_CACHE_LINE_SIZE == 0, "queue write index alignment");
 _Static_assert(offsetof(struct pwao_queue_ring, slots) %
 		SPA_CACHE_LINE_SIZE == 0, "queue slot alignment");
+_Static_assert(sizeof(struct pwao_queue_ring) % SPA_CACHE_LINE_SIZE == 0,
+		"queue ring size alignment");
 
 enum pwao_queue_overflow {
 	PWAO_QUEUE_OVERFLOW_BACKPRESSURE,

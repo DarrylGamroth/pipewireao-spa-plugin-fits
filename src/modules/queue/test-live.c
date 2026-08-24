@@ -51,12 +51,17 @@ struct endpoint {
 	_Atomic int state;
 	_Atomic uint32_t errors;
 	_Atomic uint32_t trigger_done;
+	_Atomic uint64_t trigger_done_nsec;
 };
 
 struct producer {
 	struct endpoint endpoint;
 	_Atomic uint32_t requested;
 	_Atomic uint32_t publications;
+	_Atomic uint32_t process_cycles;
+	_Atomic uint64_t process_start_nsec;
+	_Atomic uint64_t process_finish_nsec;
+	_Atomic bool record_identity;
 	struct file_identity *identity;
 };
 
@@ -87,11 +92,32 @@ struct fixture {
 	struct observer observer;
 };
 
+struct latency_sample {
+	uint64_t total;
+	uint64_t trigger_call;
+	uint64_t dispatch;
+	uint64_t source_process;
+	uint64_t graph_completion;
+	uint32_t cycles;
+};
+
 static uint64_t monotonic_nsec(void)
 {
 	struct timespec now;
 
 	CHECK(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+	return (uint64_t)now.tv_sec * SPA_NSEC_PER_SEC + (uint64_t)now.tv_nsec;
+}
+
+static uint64_t endpoint_timestamp(struct endpoint *endpoint)
+{
+	struct timespec now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) {
+		atomic_fetch_add_explicit(&endpoint->errors, 1,
+				memory_order_relaxed);
+		return 0;
+	}
 	return (uint64_t)now.tv_sec * SPA_NSEC_PER_SEC + (uint64_t)now.tv_nsec;
 }
 
@@ -214,6 +240,8 @@ static void endpoint_trigger_done(void *data)
 {
 	struct endpoint *endpoint = data;
 
+	atomic_store_explicit(&endpoint->trigger_done_nsec,
+			endpoint_timestamp(endpoint), memory_order_relaxed);
 	atomic_fetch_add_explicit(&endpoint->trigger_done, 1,
 			memory_order_release);
 }
@@ -228,6 +256,8 @@ static void producer_process(void *data)
 	uint32_t requested, sequence, i;
 	uint32_t *payload;
 
+	atomic_store_explicit(&producer->process_start_nsec,
+			endpoint_timestamp(&producer->endpoint), memory_order_relaxed);
 	requested = atomic_load_explicit(&producer->requested,
 			memory_order_acquire);
 	while (requested != 0 && !atomic_compare_exchange_weak_explicit(
@@ -235,12 +265,12 @@ static void producer_process(void *data)
 			memory_order_acq_rel, memory_order_relaxed))
 		;
 	if (requested == 0)
-		return;
+		goto done;
 	pw_buffer = pw_stream_dequeue_buffer(producer->endpoint.stream);
 	if (pw_buffer == NULL) {
 		atomic_fetch_add_explicit(&producer->requested, 1,
 				memory_order_release);
-		return;
+		goto done;
 	}
 	buffer = pw_buffer->buffer;
 	if (buffer->n_datas != 1 || buffer->datas[0].data == NULL ||
@@ -249,7 +279,7 @@ static void producer_process(void *data)
 		atomic_fetch_add_explicit(&producer->endpoint.errors, 1,
 				memory_order_relaxed);
 		(void)pw_stream_queue_buffer(producer->endpoint.stream, pw_buffer);
-		return;
+		goto done;
 	}
 	sequence = atomic_fetch_add_explicit(&producer->publications, 1,
 			memory_order_relaxed) + 1u;
@@ -257,7 +287,7 @@ static void producer_process(void *data)
 		atomic_fetch_add_explicit(&producer->endpoint.errors, 1,
 				memory_order_relaxed);
 		(void)pw_stream_queue_buffer(producer->endpoint.stream, pw_buffer);
-		return;
+		goto done;
 	}
 	payload = buffer->datas[0].data;
 	for (i = 0; i < PAYLOAD_WORDS; i++)
@@ -277,11 +307,19 @@ static void producer_process(void *data)
 		header->dts_offset = 0;
 		header->seq = sequence;
 	}
-	(void)get_file_identity(&buffer->datas[0], &identity);
-	producer->identity[sequence] = identity;
+	if (atomic_load_explicit(&producer->record_identity,
+			memory_order_acquire)) {
+		(void)get_file_identity(&buffer->datas[0], &identity);
+		producer->identity[sequence] = identity;
+	}
 	if (pw_stream_queue_buffer(producer->endpoint.stream, pw_buffer) < 0)
 		atomic_fetch_add_explicit(&producer->endpoint.errors, 1,
 				memory_order_relaxed);
+done:
+	atomic_store_explicit(&producer->process_finish_nsec,
+			endpoint_timestamp(&producer->endpoint), memory_order_relaxed);
+	atomic_fetch_add_explicit(&producer->process_cycles, 1,
+			memory_order_release);
 }
 
 static bool validate_observer_buffer(struct pw_buffer *pw_buffer,
@@ -425,6 +463,7 @@ static struct pw_stream *create_endpoint_stream(struct fixture *fixture,
 	atomic_init(&endpoint->state, PW_STREAM_STATE_UNCONNECTED);
 	atomic_init(&endpoint->errors, 0);
 	atomic_init(&endpoint->trigger_done, 0);
+	atomic_init(&endpoint->trigger_done_nsec, 0);
 	pw_stream_add_listener(stream, &endpoint->listener, events, endpoint);
 	params[0] = format;
 	params[1] = spa_pod_builder_add_object(&buffers_builder,
@@ -638,6 +677,10 @@ static void fixture_init(struct fixture *fixture, const char *overflow,
 	CHECK(fixture->producer.identity != NULL);
 	atomic_init(&fixture->producer.requested, 0);
 	atomic_init(&fixture->producer.publications, 0);
+	atomic_init(&fixture->producer.process_cycles, 0);
+	atomic_init(&fixture->producer.process_start_nsec, 0);
+	atomic_init(&fixture->producer.process_finish_nsec, 0);
+	atomic_init(&fixture->producer.record_identity, true);
 	atomic_init(&fixture->observer.deliveries, 0);
 	atomic_init(&fixture->observer.hold, 1);
 	fixture->observer.producer = &fixture->producer;
@@ -768,81 +811,151 @@ static uint64_t clock_overhead(void)
 	return minimum;
 }
 
-static uint64_t benchmark_producer_cycle(struct fixture *fixture,
+static struct latency_sample benchmark_producer_cycle(struct fixture *fixture,
 		uint32_t expected)
 {
-	uint64_t deadline, start, end;
+	struct latency_sample sample = { 0 };
+	uint64_t deadline, first_start = 0, final_complete = 0;
 
 	atomic_fetch_add_explicit(&fixture->producer.requested, 1,
 			memory_order_release);
-	start = monotonic_nsec();
-	deadline = start + TIMEOUT_NSEC;
+	deadline = monotonic_nsec() + TIMEOUT_NSEC;
 	while (atomic_load_explicit(&fixture->producer.publications,
 			memory_order_acquire) < expected) {
-		uint32_t done = atomic_load_explicit(
+		uint64_t call_start, call_finish, process_start, process_finish,
+				trigger_done_nsec;
+		uint32_t process_cycles = atomic_load_explicit(
+				&fixture->producer.process_cycles, memory_order_acquire);
+		uint32_t trigger_done = atomic_load_explicit(
 				&fixture->producer.endpoint.trigger_done,
 				memory_order_acquire);
 		uint32_t spins = 0;
-		int result = pw_stream_trigger_process(
-				fixture->producer.endpoint.stream);
+		int result;
 
+		call_start = monotonic_nsec();
+		if (first_start == 0)
+			first_start = call_start;
+		result = pw_stream_trigger_process(fixture->producer.endpoint.stream);
+		call_finish = monotonic_nsec();
 		CHECK(result >= 0);
 		while (atomic_load_explicit(
 				&fixture->producer.endpoint.trigger_done,
-				memory_order_acquire) == done) {
+				memory_order_acquire) == trigger_done) {
 			atomic_signal_fence(memory_order_seq_cst);
 			if (SPA_UNLIKELY((++spins & 4095u) == 0 &&
 					monotonic_nsec() >= deadline)) {
-				fprintf(stderr, "benchmark producer cycle timed out\n");
+				fprintf(stderr, "benchmark producer cycle timed out: "
+						"process=%u trigger-done=%u\n",
+						atomic_load_explicit(
+							&fixture->producer.process_cycles,
+							memory_order_relaxed),
+						atomic_load_explicit(
+							&fixture->producer.endpoint.trigger_done,
+							memory_order_relaxed));
 				abort();
 			}
 		}
+		CHECK(atomic_load_explicit(&fixture->producer.process_cycles,
+				memory_order_acquire) == process_cycles + 1u);
+		CHECK(atomic_load_explicit(&fixture->producer.endpoint.trigger_done,
+				memory_order_acquire) == trigger_done + 1u);
+		process_start = atomic_load_explicit(
+				&fixture->producer.process_start_nsec, memory_order_relaxed);
+		process_finish = atomic_load_explicit(
+				&fixture->producer.process_finish_nsec, memory_order_relaxed);
+		trigger_done_nsec = atomic_load_explicit(
+				&fixture->producer.endpoint.trigger_done_nsec,
+				memory_order_relaxed);
+		CHECK(call_start <= call_finish && call_start <= process_start &&
+				process_start <= process_finish &&
+				process_finish <= trigger_done_nsec);
+		sample.trigger_call += call_finish - call_start;
+		sample.dispatch += process_start - call_start;
+		sample.source_process += process_finish - process_start;
+		sample.graph_completion += trigger_done_nsec - process_finish;
+		sample.cycles++;
+		final_complete = trigger_done_nsec;
 	}
-	end = monotonic_nsec();
 	CHECK(atomic_load_explicit(&fixture->producer.publications,
 			memory_order_acquire) == expected);
 	CHECK(atomic_load_explicit(&fixture->producer.endpoint.errors,
 			memory_order_relaxed) == 0);
-	return end - start;
+	CHECK(first_start > 0 && final_complete >= first_start && sample.cycles > 0);
+	sample.total = final_complete - first_start;
+	return sample;
+}
+
+static void print_distribution(const char *storage, const char *metric,
+		uint64_t *values)
+{
+	qsort(values, BENCHMARK_SAMPLES, sizeof(*values), compare_u64);
+	printf("storage=%s model=closed-loop metric=%s samples=%u "
+			"p50=%" PRIu64 "ns p90=%" PRIu64 "ns p99=%" PRIu64
+			"ns p99.9=%" PRIu64 "ns max=%" PRIu64 "ns\n",
+			storage, metric, BENCHMARK_SAMPLES,
+			percentile(values, BENCHMARK_SAMPLES, 50, 100),
+			percentile(values, BENCHMARK_SAMPLES, 90, 100),
+			percentile(values, BENCHMARK_SAMPLES, 99, 100),
+			percentile(values, BENCHMARK_SAMPLES, 999, 1000),
+			values[BENCHMARK_SAMPLES - 1u]);
 }
 
 static void run_producer_benchmark(const char *storage)
 {
 	struct fixture fixture;
-	uint64_t *latency;
+	uint64_t *latency, *total, *trigger_call, *dispatch, *source_process,
+			*graph_completion;
 	uint64_t measurement_start = 0, measurement_end = 0;
-	uint32_t i, expected = 1;
+	uint64_t total_cycles = 0;
+	uint32_t i, expected = 1, max_cycles = 0;
 
-	latency = calloc(BENCHMARK_SAMPLES, sizeof(*latency));
+	latency = calloc(5u * BENCHMARK_SAMPLES, sizeof(*latency));
 	CHECK(latency != NULL);
+	total = latency;
+	trigger_call = total + BENCHMARK_SAMPLES;
+	dispatch = trigger_call + BENCHMARK_SAMPLES;
+	source_process = dispatch + BENCHMARK_SAMPLES;
+	graph_completion = source_process + BENCHMARK_SAMPLES;
 	fixture_init(&fixture, "drop-oldest", storage);
 	trigger_producer(&fixture, expected);
 	trigger_observer(&fixture, 1);
 	CHECK(fixture.observer.sequence[0] == 1);
+	atomic_store_explicit(&fixture.producer.record_identity, false,
+			memory_order_release);
 	for (i = 0; i < BENCHMARK_WARMUP; i++)
 		(void)benchmark_producer_cycle(&fixture, ++expected);
 	measurement_start = monotonic_nsec();
-	for (i = 0; i < BENCHMARK_SAMPLES; i++)
-		latency[i] = benchmark_producer_cycle(&fixture, ++expected);
+	for (i = 0; i < BENCHMARK_SAMPLES; i++) {
+		struct latency_sample sample =
+				benchmark_producer_cycle(&fixture, ++expected);
+
+		total[i] = sample.total;
+		trigger_call[i] = sample.trigger_call;
+		dispatch[i] = sample.dispatch;
+		source_process[i] = sample.source_process;
+		graph_completion[i] = sample.graph_completion;
+		total_cycles += sample.cycles;
+		max_cycles = SPA_MAX(max_cycles, sample.cycles);
+	}
 	measurement_end = monotonic_nsec();
 	release_observer(&fixture);
 	wait_for_stats(&fixture, expected);
 	CHECK(module_counter(&fixture, "queue.stats.replacements") ==
 			BENCHMARK_WARMUP + BENCHMARK_SAMPLES - 1u);
 	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
-	qsort(latency, BENCHMARK_SAMPLES, sizeof(*latency), compare_u64);
-	printf("storage=%s model=closed-loop samples=%u warmup=%u "
-			"rate=%.0f/s p50=%" PRIu64 "ns p90=%" PRIu64
-			"ns p99=%" PRIu64 "ns p99.9=%" PRIu64
-			"ns max=%" PRIu64 "ns clock-min=%" PRIu64 "ns\n",
+	printf("storage=%s model=closed-loop samples=%u warmup=%u rate=%.0f/s "
+			"cycles=%" PRIu64 " extra-cycles=%" PRIu64
+			" max-cycles=%u clock-min=%" PRIu64 "ns\n",
 			storage, BENCHMARK_SAMPLES, BENCHMARK_WARMUP,
 			(double)BENCHMARK_SAMPLES * (double)SPA_NSEC_PER_SEC /
 				(double)(measurement_end - measurement_start),
-			percentile(latency, BENCHMARK_SAMPLES, 50, 100),
-			percentile(latency, BENCHMARK_SAMPLES, 90, 100),
-			percentile(latency, BENCHMARK_SAMPLES, 99, 100),
-			percentile(latency, BENCHMARK_SAMPLES, 999, 1000),
-			latency[BENCHMARK_SAMPLES - 1u], clock_overhead());
+			total_cycles, total_cycles - BENCHMARK_SAMPLES, max_cycles,
+			clock_overhead());
+	print_distribution(storage, "request-total", total);
+	print_distribution(storage, "trigger-call-sum", trigger_call);
+	print_distribution(storage, "dispatch-sum", dispatch);
+	print_distribution(storage, "source-process-sum", source_process);
+	print_distribution(storage, "graph-completion-sum", graph_completion);
 	fixture_clear(&fixture);
 	free(latency);
 }

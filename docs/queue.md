@@ -286,6 +286,15 @@ unrelated producer/observer counter traffic sharing the publication cache
 lines; it does not eliminate the cache transfer required to publish or claim a
 slot.
 
+The local ring deliberately preserves this cache-line isolation without using
+`spa_ringbuffer_shared`, which is a PipeWireAO extension rather than an
+upstream SPA ABI. Upstream `spa_ringbuffer` keeps its two indices adjacent.
+Its API also assumes that only the consumer writes the read index, whereas
+`drop-oldest` requires the queue producer and consumer to claim the oldest
+position with compare-and-exchange. The ordinary completion ring could use an
+upstream SPA ringbuffer, but doing so would retain the custom ring for pending
+items, introduce two queue mechanisms, and lose index isolation on that path.
+
 ## Counters
 
 The module publishes cumulative decimal counters as module properties once at
@@ -350,28 +359,51 @@ that the regular scheduler or the complete process is system-call-free.
 
 The live harness also provides a closed-loop diagnostic benchmark for the
 capacity-one `drop-oldest` profile with the observer retaining sequence 1. It
-warms 1,000 requests and measures 10,000 requests. A sample starts immediately
-before `pw_stream_trigger_process()` and ends when the producer graph cycle
-that publishes the requested sequence completes. The observer output graph is
-not driven during the samples, so neither storage mode copies payload bytes in
-the measured interval.
+warms 1,000 requests and measures 10,000 requests. Request total starts
+immediately before `pw_stream_trigger_process()` and ends at the RT
+`trigger_done` callback for the graph cycle that publishes the requested
+sequence. The observer output graph is not driven during the samples, so
+neither storage mode copies payload bytes in the measured interval. Test-only
+MemFd identity checks are disabled after the initial observer delivery so that
+their `fstat()` call is outside warmup and measurement.
 
-Six release-build repetitions on 2026-08-24 produced these ranges for a
-64-byte ndarray payload:
+The harness also records these causal intervals with `CLOCK_MONOTONIC`:
 
-| Storage | Throughput | p50 | p99 | p99.9 | Per-run maximum |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `copy` | 119.6–130.2 krequests/s | 7.50–7.90 us | 10.01–12.65 us | 14.23–29.97 us | 41.16–526.51 us |
-| `lease` | 86.8–88.9 krequests/s | 12.78–14.29 us | 16.68–19.31 us | 23.35–30.94 us | 37.95–303.45 us |
+- **trigger call** is entry to return from `pw_stream_trigger_process()`;
+- **dispatch** is trigger entry to the producer's `process()` callback entry;
+- **source process** is entry to exit of that callback; and
+- **graph completion** is source callback exit to RT `trigger_done`.
+
+Trigger call overlaps dispatch and MUST NOT be added to the other intervals.
+Dispatch includes the API path, eventfd signaling, kernel/data-loop wakeup, and
+framework entry; this public-API probe cannot isolate the raw eventfd syscall.
+For a request that needs more than one graph cycle, the three component
+intervals are summed and request total spans the complete retry sequence.
+
+Five instrumented release-build repetitions on 2026-08-24 produced these
+ranges for a 64-byte ndarray payload:
+
+| Storage | Throughput | Cycles/request | Total p50 | Total p99 | Total p99.9 | Per-run total maximum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `copy` | 134.1–138.2 krequests/s | 1.0, maximum 1 | 7.04–7.15 us | 8.73–10.62 us | 15.95–19.67 us | 29.72–350.96 us |
+| `lease` | 89.4–93.0 krequests/s | 1.5, maximum 2 | 13.78–14.15 us | 15.65–19.18 us | 20.12–32.29 us | 27.95–364.12 us |
+
+| Storage | Trigger-call p50 | Dispatch p50 | Source-process p50 | Graph-completion p50 |
+| --- | ---: | ---: | ---: | ---: |
+| `copy` | 1.92–2.00 us | 4.46–4.55 us | 0.04–0.08 us | 2.50–2.53 us |
+| `lease` | 2.10–3.03 us | 5.25–8.64 us | 0.11–0.16 us | 4.85–5.03 us |
 
 This was a shared AMD Ryzen 7 6800H development host running Linux
 6.12.57 with `PREEMPT_DYNAMIC`, active frequency scaling and boost, no CPU
 affinity or isolation, and no real-time scheduling policy. It is diagnostic
 evidence, not a latency limit. Copy storage is faster in this particular
 stalled-output test because it released the delivered input lease; lease
-storage retained one of the three capture buffers and sometimes required an
-additional graph cycle before the producer obtained a returned buffer. The
-result is not a general copy-versus-lease performance comparison.
+storage retained one of the three capture buffers and required exactly 5,000
+additional graph cycles for 10,000 measured requests. Source callback work is
+small in both modes. Trigger-to-source dispatch is the largest copy-mode p50
+component, but this evidence attributes it only to the combined trigger and
+wakeup path, not to eventfd alone. The result is not a general
+copy-versus-lease performance comparison.
 
 This in-process test verifies graph semantics, not physical data-loop or CPU
 isolation. Format renegotiation and destruction with outstanding leases,
