@@ -502,11 +502,14 @@ static int validate_capture_pool(struct impl *impl)
 	return 0;
 }
 
+static int setup_playback(struct impl *impl);
+
 static void capture_add_buffer(void *data, struct pw_buffer *buffer)
 {
 	struct impl *impl = data;
 	struct queue_slot *slot;
 	uint32_t index;
+	int result;
 
 	for (index = 0; index < MAX_POOL_BUFFERS; index++)
 		if (impl->slots[index].capture == NULL)
@@ -523,6 +526,13 @@ static void capture_add_buffer(void *data, struct pw_buffer *buffer)
 	buffer->user_data = slot;
 	impl->n_capture_present++;
 	impl->n_capture_buffers = SPA_MAX(impl->n_capture_buffers, index + 1u);
+	if (impl->playback == NULL && impl->format != NULL &&
+			impl->n_capture_present >= impl->max_buffers + 2u &&
+			pw_stream_get_state(impl->capture, NULL) ==
+				PW_STREAM_STATE_PAUSED &&
+			(result = setup_playback(impl)) < 0)
+		(void)pw_stream_set_error(impl->capture, result,
+				"queue output setup failed: %s", spa_strerror(result));
 }
 
 static void capture_remove_buffer(void *data, struct pw_buffer *buffer)
@@ -692,13 +702,16 @@ static int setup_playback(struct impl *impl)
 			SPA_PARAM_BUFFERS_size, SPA_POD_Int((int32_t)size),
 			SPA_PARAM_BUFFERS_dataType,
 			SPA_POD_CHOICE_FLAGS_Int(data_types));
-	for (i = 0; i < sample->n_metas; i++)
+	for (i = 0; i < sample->n_metas; i++) {
+		if (sample->metas[i].type == SPA_META_Busy)
+			continue;
 		params[n_params++] = spa_pod_builder_add_object(&builder,
 				SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 				SPA_PARAM_META_type,
 				SPA_POD_Id(sample->metas[i].type),
 				SPA_PARAM_META_size,
 				SPA_POD_Int((int32_t)sample->metas[i].size));
+	}
 
 	impl->playback = pw_stream_new(impl->core, "queue output",
 			impl->playback_props);
@@ -788,7 +801,8 @@ static void stream_state_changed(void *data, enum pw_stream_state old,
 		return;
 	}
 	if (state != PW_STREAM_STATE_PAUSED || impl->format == NULL ||
-			impl->playback != NULL)
+			impl->playback != NULL ||
+			impl->n_capture_present < impl->max_buffers + 2u)
 		return;
 	result = setup_playback(impl);
 	if (result < 0)

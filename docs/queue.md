@@ -1,6 +1,7 @@
 # Bounded queue module
 
-Status: implemented; live-graph and latency qualification remain open
+Status: implemented and live-graph tested; deployment latency qualification
+remains open
 
 Decision: PWAO-PLUGIN-003
 
@@ -199,9 +200,11 @@ bounded-work tests, and syscall tracing around a warmed producer path.
 
 ### QUEUE-006 — Format, metadata, and gaps
 
-The output MUST preserve the exact negotiated format, each negotiated metadata
-record, every data-block chunk description, and the complete payload selected
-for delivery. Sequence and acquisition metadata MUST remain unchanged.
+The output MUST preserve the exact negotiated format, each negotiated
+application metadata record, every data-block chunk description, and the
+complete payload selected for delivery. Sequence and acquisition metadata MUST
+remain unchanged. PipeWire's transport-owned `SPA_META_Busy` record MUST remain
+link-local and MUST NOT be copied between the input and output links.
 Replacement and drop counters MUST make lost sequence positions observable;
 the module MUST NOT renumber products to hide a gap.
 
@@ -318,11 +321,60 @@ ownership but do not reset them.
 Automated tests cover configuration boundaries and aliases, capacity-one and
 multi-slot FIFO/overflow behavior, recovery after deterministic backpressure,
 a 200,000-publication concurrent `drop-oldest` stress run, multi-block payload
-and metadata copying, MemFd lease identity, module loading, initial counters,
-capture-node default grouping, AddressSanitizer/UndefinedBehaviorSanitizer, and
-ThreadSanitizer on the concurrent ring test.
+and application-metadata copying, link-local Busy metadata, MemFd lease
+identity, module loading, initial counters, and capture-node default grouping.
+AddressSanitizer/UndefinedBehaviorSanitizer and ThreadSanitizer pass both the
+queue engine and live graph tests.
 
-Those tests do not yet exercise an end-to-end linked PipeWire graph, downstream
-stall during live capture, format renegotiation with outstanding leases,
-latency distributions, or syscall tracing. The implementation ledger therefore
-keeps those claims open even though their code paths are present.
+The live test uses an exact ndarray format and two independently triggered
+PipeWire graph components. It holds an observer buffer while continuing to
+drive the producer, then checks the delivered sequence, payload, Header,
+backing-storage identity, recovery, and counter history for this matrix:
+
+| Storage | Overflow | Stalled-observer result | Status |
+| --- | --- | --- | --- |
+| `copy` | `drop-oldest` | Latest queued sequence delivered; producer progresses. | Covered |
+| `copy` | `drop-newest` | First queued sequence delivered; producer progresses. | Covered |
+| `copy` | `backpressure` | FIFO delivery resumes after observer release. | Covered |
+| `lease` | `drop-oldest` | Latest queued sequence delivered; producer progresses with one in-flight lease. | Covered |
+| `lease` | `drop-newest` | First queued sequence delivered; producer progresses with one in-flight lease. | Covered |
+| `lease` | `backpressure` | FIFO delivery and retained-lease recovery resume after observer release. | Covered |
+
+An ad hoc `strace -ff -k` run over this matrix found no system call whose stack
+entered the module's `capture_process` callback. The same trace did show
+eventfd operations elsewhere in normal PipeWire graph execution. This evidence
+supports the narrow producer-callback claim in QUEUE-005; it does not establish
+that the regular scheduler or the complete process is system-call-free.
+
+### Diagnostic producer-cycle benchmark
+
+The live harness also provides a closed-loop diagnostic benchmark for the
+capacity-one `drop-oldest` profile with the observer retaining sequence 1. It
+warms 1,000 requests and measures 10,000 requests. A sample starts immediately
+before `pw_stream_trigger_process()` and ends when the producer graph cycle
+that publishes the requested sequence completes. The observer output graph is
+not driven during the samples, so neither storage mode copies payload bytes in
+the measured interval.
+
+Six release-build repetitions on 2026-08-24 produced these ranges for a
+64-byte ndarray payload:
+
+| Storage | Throughput | p50 | p99 | p99.9 | Per-run maximum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `copy` | 119.6–130.2 krequests/s | 7.50–7.90 us | 10.01–12.65 us | 14.23–29.97 us | 41.16–526.51 us |
+| `lease` | 86.8–88.9 krequests/s | 12.78–14.29 us | 16.68–19.31 us | 23.35–30.94 us | 37.95–303.45 us |
+
+This was a shared AMD Ryzen 7 6800H development host running Linux
+6.12.57 with `PREEMPT_DYNAMIC`, active frequency scaling and boost, no CPU
+affinity or isolation, and no real-time scheduling policy. It is diagnostic
+evidence, not a latency limit. Copy storage is faster in this particular
+stalled-output test because it released the delivered input lease; lease
+storage retained one of the three capture buffers and sometimes required an
+additional graph cycle before the producer obtained a returned buffer. The
+result is not a general copy-versus-lease performance comparison.
+
+This in-process test verifies graph semantics, not physical data-loop or CPU
+isolation. Format renegotiation and destruction with outstanding leases,
+fixed-arrival latency distributions, controlled-host placement, automated
+producer-path syscall enforcement, and representative ndarray sizes remain
+open.

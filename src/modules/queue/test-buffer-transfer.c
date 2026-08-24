@@ -32,12 +32,16 @@ static void test_copy(void)
 		.sequence = 91,
 	};
 	struct spa_meta_acquisition output_acquisition = { 0 };
-	struct spa_meta input_metas[2] = {
+	struct spa_meta_busy input_busy = { .count = 9 };
+	struct spa_meta_busy output_busy = { .count = 3 };
+	struct spa_meta input_metas[3] = {
 		{ SPA_META_Header, sizeof(input_header), &input_header },
 		{ SPA_META_Acquisition, sizeof(input_acquisition),
 				&input_acquisition },
+		{ SPA_META_Busy, sizeof(input_busy), &input_busy },
 	};
-	struct spa_meta output_metas[2] = {
+	struct spa_meta output_metas[3] = {
+		{ SPA_META_Busy, sizeof(output_busy), &output_busy },
 		{ SPA_META_Acquisition, sizeof(output_acquisition),
 				&output_acquisition },
 		{ SPA_META_Header, sizeof(output_header), &output_header },
@@ -60,11 +64,11 @@ static void test_copy(void)
 				.maxsize = sizeof(output_bytes), .chunk = &output_chunks[1] },
 	};
 	struct spa_buffer input = {
-		.n_metas = 2, .metas = input_metas,
+		.n_metas = 3, .metas = input_metas,
 		.n_datas = 2, .datas = input_data,
 	};
 	struct spa_buffer output = {
-		.n_metas = 2, .metas = output_metas,
+		.n_metas = 3, .metas = output_metas,
 		.n_datas = 2, .datas = output_data,
 	};
 	uint32_t i;
@@ -76,6 +80,7 @@ static void test_copy(void)
 	CHECK(memcmp(&input_header, &output_header, sizeof(input_header)) == 0);
 	CHECK(memcmp(&input_acquisition, &output_acquisition,
 			sizeof(input_acquisition)) == 0);
+	CHECK(output_busy.count == 3);
 	CHECK(memcmp(&input_chunks, &output_chunks, sizeof(input_chunks)) == 0);
 	CHECK(memcmp(&input_bytes[3], &output_bytes[3], 7) == 0);
 	CHECK(memcmp(&input_bytes[14], &output_bytes[14], 5) == 0);

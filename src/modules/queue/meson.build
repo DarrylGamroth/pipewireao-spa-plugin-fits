@@ -60,4 +60,26 @@ if get_option('tests').allowed()
     depends: queue_module,
     env: queue_module_test_env,
   )
+
+  queue_live_test = executable(
+    'pipewireao-queue-live-test',
+    'test-live.c',
+    dependencies: [spa_dep, pipewire_dep, threads_dep],
+  )
+  test(
+    'pipewireao-queue-live',
+    queue_live_test,
+    args: queue_module.full_path(),
+    depends: queue_module,
+    env: queue_module_test_env,
+    timeout: 30,
+  )
+  benchmark(
+    'pipewireao-queue-producer-cycle',
+    queue_live_test,
+    args: [queue_module.full_path(), '--benchmark'],
+    depends: queue_module,
+    env: queue_module_test_env,
+    timeout: 30,
+  )
 endif

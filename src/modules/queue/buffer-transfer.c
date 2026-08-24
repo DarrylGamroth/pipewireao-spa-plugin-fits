@@ -50,7 +50,7 @@ int pwao_queue_buffer_transfer(const struct spa_buffer *input,
 		const struct spa_meta *in = &input->metas[i];
 		struct spa_meta *out = spa_buffer_find_meta(output, in->type);
 
-		if (in->size > 0)
+		if (in->type != SPA_META_Busy && in->size > 0)
 			memcpy(out->data, in->data, in->size);
 	}
 	for (i = 0; i < input->n_datas; i++) {
