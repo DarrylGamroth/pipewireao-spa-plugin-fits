@@ -27,6 +27,7 @@ plugin_include = include_directories('include')
 install_headers(
   'include/pipewireao-plugins/alpao.h',
   'include/pipewireao-plugins/calculon.h',
+  'include/pipewireao-plugins/fits.h',
   subdir: 'pipewireao-plugins-0.1/pipewireao-plugins',
 )
 

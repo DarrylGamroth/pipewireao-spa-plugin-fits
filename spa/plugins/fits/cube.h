@@ -25,11 +25,14 @@ enum fits_cube_output {
 struct fits_cube_options {
 	const char *path;
 	uint32_t hdu;
+	uint32_t frame_rank;
 	enum fits_cube_io_mode io_mode;
 	bool prefault;
 };
 
 struct fits_cube_info {
+	uint32_t frame_rank;
+	uint32_t shape[2];
 	uint32_t width;
 	uint32_t height;
 	uint64_t frames;
