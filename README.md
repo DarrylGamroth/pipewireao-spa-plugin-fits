@@ -4,9 +4,10 @@ This repository is the out-of-tree home for native SPA hardware plugins built
 for PipeWireAO. Each plugin is a loadable shared object that exports ordinary
 SPA factories and uses PipeWireAO's installed public SPA interfaces.
 
-The first implementation is `api.alpao.sink`, an ALPAO deformable-mirror sink
-for normalized actuator commands. Its test suite has an SDK-independent mock,
-and the installed plugin can optionally use the proprietary ALPAO SDK (ASDK).
+The hardware integrations are `api.alpao.sink`, `api.egrabber.source`, and
+`api.bgapi2.source`. The camera sources use PipeWireAO-owned image buffers and
+RTC node execution directly; their proprietary SDKs remain optional build
+dependencies.
 Proprietary SDKs, drivers, device configuration files, calibration files, and
 redistributable binaries do not belong in this repository.
 
@@ -40,6 +41,23 @@ meson setup build-asdk \
   -Dalpao-sdk-root=/path/to/alpao
 meson compile -C build-asdk
 ```
+
+Build both camera plugins against an installed PipeWireAO development package
+with:
+
+```console
+meson setup build-cameras \
+  -Degrabber=enabled \
+  -Dbgapi2=enabled
+meson compile -C build-cameras
+meson test -C build-cameras --print-errorlogs \
+  'spa-egrabber*' 'spa-bgapi2*'
+```
+
+`-Degrabber-prefix=PATH` and `-Dbgapi2-prefix=PATH` override the default SDK
+locations. A development build may point Meson's `pkg_config_path` at a
+PipeWireAO `build/meson-uninstalled` directory; no source include flags are
+required.
 
 The ASDK simulator smoke test also uses
 [alpao-binary-config](https://github.com/DarrylGamroth/alpao-binary-config) to
@@ -141,6 +159,8 @@ plugin directory.
 docs/                         maintained contracts and qualification records
 include/pipewireao-plugins/   public C vocabulary for plugin factories
 spa/plugins/alpao/            ALPAO SPA factories and optional SDK backend
+spa/plugins/egrabber/         Euresys camera manager, device, and source factories
+spa/plugins/bgapi2/           Baumer GAPI camera source factory
 spa/plugins/calculon/         Calculon SPA factory build and C ABI tests
 crates/calculon-spa-node/     reusable Rust SPA ABI adapter
 crates/calculon-spa-plugins/  Rust algorithm factories

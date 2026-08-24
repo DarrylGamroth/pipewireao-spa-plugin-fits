@@ -209,7 +209,7 @@ Vendor calls that allocate, lock, wait, perform I/O, or have unbounded work must
 be identified and qualified. A functional SDK call is not by itself evidence
 for strict BusySpin admission.
 
-## Planned repository layout
+## Repository layout
 
 ```text
 pipewireao-spa-plugins/
@@ -222,7 +222,9 @@ pipewireao-spa-plugins/
 │   └── pipewireao-plugins/
 ├── spa/
 │   └── plugins/
-│       └── alpao/
+│       ├── alpao/
+│       ├── bgapi2/
+│       └── egrabber/
 └── tests/
 ```
 
@@ -278,6 +280,11 @@ Add other adapters independently. An existing in-tree plugin may move here only
 after the public installed SPA interface proves sufficient and one release
 does not install duplicate factories from both repositories.
 
+The eGrabber and BGAPI2 sources satisfied this gate on 2026-08-23. Both build
+only against the public `libspa-ao-0.2` package, and their complete connected
+camera matrix passes from this repository. Their factory identities and SPA
+install paths did not change during migration.
+
 ## Validation matrix
 
 | Layer | Required evidence |
@@ -297,8 +304,8 @@ does not install duplicate factories from both repositories.
 - Making PipeWireAO interpret ALPAO commands.
 - Treating vector extent as an actuator-order contract.
 - Redistributing or installing vendor SDKs and drivers.
-- Moving the existing eGrabber implementation before the public out-of-tree
-  interface has been demonstrated.
+- Reimplementing generic camera buffer transport or RTC scheduling in a vendor
+  plugin.
 
 ## Completion criteria
 

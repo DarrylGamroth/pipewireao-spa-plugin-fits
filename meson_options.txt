@@ -32,3 +32,31 @@ option(
   value: 'auto',
   description: 'Build SDK-independent and available simulator tests',
 )
+
+option(
+  'egrabber',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the Euresys eGrabber SPA source',
+)
+
+option(
+  'egrabber-prefix',
+  type: 'string',
+  value: '/opt/euresys/egrabber',
+  description: 'Euresys eGrabber SDK installation prefix',
+)
+
+option(
+  'bgapi2',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the Baumer GAPI2 SPA source',
+)
+
+option(
+  'bgapi2-prefix',
+  type: 'string',
+  value: '/opt/baumer-gapi-sdk-c',
+  description: 'Baumer GAPI2 SDK installation prefix',
+)

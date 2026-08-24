@@ -29,6 +29,15 @@ AddressSanitizer and UndefinedBehaviorSanitizer complete the capture test when
 leak detection is disabled. This evidence does not attribute the retained SDK
 state to the capture benchmark, and it does not qualify ASDK as leak-free.
 
+## Camera sources
+
+| ID | Requirement | Implementation | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| CAMERA-001 | Build vendor camera sources outside the PipeWireAO fork using only public SPA headers. | `spa/plugins/egrabber`, `spa/plugins/bgapi2`, and optional Meson SDK features | Clean out-of-tree debug-optimized build through `libspa-ao-0.2`; no source include overrides. | Verified |
+| CAMERA-002 | Preserve the existing eGrabber factory, discovery, complete-frame, progressive, metadata, controls, and fan-out behavior. | Migrated eGrabber plugin and qualification harness | Ten eGrabber unit/factory/device/capture tests pass with the connected Euresys Gigelink camera. | Verified for complete Gigelink; progressive hardware remains open |
+| CAMERA-003 | Preserve BGAPI2 complete-frame behavior with both qualified producers. | Migrated BGAPI2 source and callback/SPSC camera adapter | Factory, adapter, and ten-frame source tests pass through Euresys Gigelink and Baumer BGAPI2 2.16.1 CTIs. | Verified |
+| CAMERA-004 | Preserve daemon loading without duplicating factories between repositories. | Factory names and install paths remain `egrabber/libspa-egrabber` and `bgapi2/libspa-bgapi2`; PipeWireAO retains loader mappings only. | Requires the corresponding in-tree sources to be removed before installation qualification. | Migration in progress |
+
 ## Calculon pixel calibration
 
 | ID | Requirement | Implementation | Evidence | Status |
