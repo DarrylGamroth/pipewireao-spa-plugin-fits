@@ -596,32 +596,13 @@ unsafe extern "C" fn node_send_command<N: Node>(
                 }
                 state.ready()?;
                 state.node.start()?;
-                let port_count = state.node.ports().len();
-                for index in 0..port_count {
-                    if let Err(error) = state.node.ports_mut()[index].worker_begin() {
-                        for rollback in (0..index).rev() {
-                            let _ = state.node.ports_mut()[rollback].worker_end();
-                        }
-                        state.node.pause();
-                        return Err(error);
-                    }
-                }
                 state.started = true;
                 Ok(0)
             }
             sys::SPA_NODE_COMMAND_Pause => {
                 if state.started {
                     state.started = false;
-                    let mut worker_error = None;
-                    for port in state.node.ports_mut().iter_mut().rev() {
-                        if let Err(error) = port.worker_end() {
-                            worker_error.get_or_insert(error);
-                        }
-                    }
                     state.node.pause();
-                    if let Some(error) = worker_error {
-                        return Err(error);
-                    }
                 }
                 Ok(0)
             }
@@ -687,7 +668,6 @@ unsafe extern "C" fn node_port_enum_params<N: Node>(
                     port.key.direction,
                     &port.constraints,
                     port.format.as_ref(),
-                    port.latest_allowed(),
                 )?
             };
             let Some(value) = value else {
@@ -823,7 +803,6 @@ unsafe extern "C" fn node_port_use_buffers<N: Node>(
             port.buffers[buffer_index].available = direction == sys::SPA_DIRECTION_OUTPUT;
         }
         port.n_buffers = supplied.len();
-        port.update_latest_buffers();
         Ok(0)
     })
 }
@@ -840,23 +819,11 @@ unsafe extern "C" fn node_port_set_io<N: Node>(
         let instance = instance_mut::<N>(object)?;
         let mut state = claim(instance)?;
         let index = port_index(&state.node, direction, port_id)?;
-        let started = state.started;
-        let port = &mut state.node.ports_mut()[index];
-        if started && !port.is_latest_io(id) {
+        if state.started {
             return Err(-libc::EBUSY);
         }
-        if started {
-            port.worker_end()?;
-        }
-        if let Err(error) = port.set_io(id, data, size) {
-            if started {
-                let _ = port.worker_begin();
-            }
-            return Err(error);
-        }
-        if started {
-            port.worker_begin()?;
-        }
+        let port = &mut state.node.ports_mut()[index];
+        port.set_io(id, data, size)?;
         Ok(0)
     })
 }

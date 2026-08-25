@@ -121,7 +121,7 @@ int main(int argc, char **argv)
 		const struct spa_dict_item manager_items[] = {
 			{ SPA_KEY_API_EGRABBER_PRODUCER, "gigelink" },
 			{ SPA_KEY_API_EGRABBER_BUFFER_COUNT, "12" },
-			{ SPA_KEY_API_EGRABBER_PROGRESSIVE, "offer" },
+			{ SPA_KEY_API_EGRABBER_OUTPUT_MODE, "frame" },
 			{ SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES,
 					"/opt/clprotocol-one:/opt/clprotocol-two" },
 			{ SPA_KEY_API_EGRABBER_CLPROTOCOL_DEVICE, "CRED2" },
@@ -158,7 +158,7 @@ int main(int argc, char **argv)
 			spa_assert_se(property(camera, SPA_KEY_API_EGRABBER_DEVICE_INDEX) != nullptr);
 			spa_assert_se(property(camera, SPA_KEY_API_EGRABBER_STREAM_INDEX) != nullptr);
 			spa_assert_se(*property(camera, SPA_KEY_API_EGRABBER_BUFFER_COUNT) == "12");
-			spa_assert_se(*property(camera, SPA_KEY_API_EGRABBER_PROGRESSIVE) == "offer");
+			spa_assert_se(*property(camera, SPA_KEY_API_EGRABBER_OUTPUT_MODE) == "frame");
 			spa_assert_se(*property(camera,
 					SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES) ==
 					"/opt/clprotocol-one:/opt/clprotocol-two");
@@ -200,7 +200,7 @@ int main(int argc, char **argv)
 			spa_assert_se(*property(device_observation.objects[0],
 					SPA_KEY_API_EGRABBER_BUFFER_COUNT) == "12");
 			spa_assert_se(*property(device_observation.objects[0],
-					SPA_KEY_API_EGRABBER_PROGRESSIVE) == "offer");
+					SPA_KEY_API_EGRABBER_OUTPUT_MODE) == "frame");
 			spa_assert_se(*property(device_observation.objects[0],
 					SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES) ==
 					"/opt/clprotocol-one:/opt/clprotocol-two");

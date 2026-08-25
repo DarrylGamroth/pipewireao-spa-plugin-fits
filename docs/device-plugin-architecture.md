@@ -31,7 +31,7 @@ PipeWireAO core continues to own:
 
 - the `application/ndarray` structural format;
 - generic negotiated semantic-schema and profile properties;
-- fixed buffer-pool, ordinary graph, and progressive-lease ownership contracts;
+- fixed buffer-pool and ordinary graph ownership contracts;
 - regular graph scheduling, polling data loops, and activation wake policies;
 - metadata ABIs and generic SPA format utilities; and
 - the host-side discovery, loading, lifecycle, and graph integration needed by
@@ -197,13 +197,8 @@ The regular PipeWire scheduler owns dependency ordering for every production
 factory. Sources set `node.driver=true` and `SPA_NODE_FLAG_POLL_DRIVER`; their
 bounded, nonblocking `process()` methods are probed on configured busy-spin data
 loops. BGAPI2, Aravis, and FITS publish ordinary complete buffers. eGrabber
-retains the latest/progressive lease only where in-progress camera rows must
-remain zero-copy. ALPAO is an ordinary scheduled follower and accepts
-`SPA_IO_Buffers`.
-
-No production factory sets `SPA_NODE_FLAG_RTC_PROCESS` or creates
-`pw_rtc_data_loop`. Those core surfaces remain temporary ABI compatibility for
-unmigrated consumers, not part of this repository's execution model.
+publishes either complete video frames or copied, complete row-block ndarrays.
+ALPAO is an ordinary scheduled follower and accepts `SPA_IO_Buffers`.
 
 A polled source does not bypass the graph. One successful source publication
 starts one normal graph cycle; the source is not probed again until the graph's
@@ -217,9 +212,9 @@ format, buffers, I/O, required ports, and device state are prepared. Pause,
 Suspend, final link removal, and destruction remove the poll source before SDK
 or buffer teardown, so lifecycle calls cannot overlap `process()`.
 
-The exceptional eGrabber progressive lease terminates at pixel calibration.
-Calibrated row-block ndarrays and every later artifact use ordinary complete
-buffers. See [Scheduled nodes and progressive row blocks](scheduled-node-migration.md).
+The changing eGrabber camera allocation remains private in row-block mode.
+Only complete copied row-block ndarrays cross its output port. See
+[Scheduled nodes and row-block ndarrays](scheduled-node-migration.md).
 
 Vendor calls that allocate, lock, wait, perform I/O, or have unbounded work must
 be identified and qualified. A functional SDK call is not by itself evidence
@@ -307,7 +302,7 @@ install paths did not change during migration.
 | --- | --- |
 | Vocabulary | Stable property IDs, schema strings, profile test vectors, C ABI and binding parity where applicable. |
 | Build | Clean SDK-disabled build; explicit SDK-root build; install and load against a supported installed PipeWireAO. |
-| SPA contract | Factory enumeration, parameters, exact format filtering, ordinary buffer I/O, commands, and lifecycle; progressive lease I/O only for an adapter that explicitly requires it. |
+| SPA contract | Factory enumeration, parameters, exact format filtering, ordinary buffer I/O, commands, and lifecycle. |
 | Failure | Missing SDK, missing configuration, mismatched profile, malformed payload, device rejection, timeout, and teardown with work active. |
 | Repeated path | Bounded work, allocation and lock evidence, wait behavior, latency distribution, and overload policy. |
 | Deployment | Package contains no proprietary artifact and resolves only declared runtime dependencies. |

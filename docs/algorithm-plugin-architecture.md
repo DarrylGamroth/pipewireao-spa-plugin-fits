@@ -34,11 +34,10 @@ adapter unwraps that representation before parsing but rejects every
 unresolved choice. It then applies the same exact format constraint, including
 schema and profile, as it does to a directly encoded fixed value.
 
-The buffer I/O contract is negotiated separately from the ndarray format.
-Ordinary `SPA_IO_Buffers` is the default on every port. Only pixel
-calibration's raw input opts into the PipeWireAO latest-buffer types, and only
-to retain one progressively filled eGrabber lease. Choosing that transport does
-not change or relax the raw video format.
+Every port uses ordinary `SPA_IO_Buffers`. Pixel calibration offers two exact
+raw-input formats: a complete `GRAY16_LE` video frame, or a complete U16
+row-block ndarray. Format negotiation selects one artifact granularity for the
+stream; buffers never change after publication.
 
 ## Language boundary
 
@@ -80,13 +79,14 @@ Factory construction requires:
 
 | Direction and ID | Role | Negotiated format |
 | --- | --- | --- |
-| input 0 | raw detector frame | `video/raw`, `GRAY16_LE`, exact size and rate |
+| input 0 | raw detector pixels | complete `video/raw` `GRAY16_LE` frame, or U16 `org.calculon.ao.raw-pixel-row-block/1` ndarray |
 | input 1 | prepared flat calibration | F32 ndarray, `org.calculon.ao.flat-calibration/1`, no rate |
 | input 2 | prepared background calibration | F32 ndarray, `org.calculon.ao.background-calibration/1`, no rate |
 | output 0 | calibrated detector frame or row block | F32 ndarray; complete calibrated-pixels schema at frame rate, or calibrated-pixel-row-block schema `[N,width]` at block rate |
 
-All ndarray ports require `[height, width]`, `ROW_MAJOR`, and the same exact
-detector profile. The profile is currently a trusted lowercase
+Full-frame ndarray ports require `[height, width]`; row-block ports require
+`[N, width]`. Both use `ROW_MAJOR` and the same exact detector profile. The
+profile is currently a trusted lowercase
 `sha256:<64-hex-digits>` identifier; canonical profile serialization remains a
 separate specification task.
 
@@ -97,18 +97,15 @@ flat and background sequence numbers together, so a complete calibration pair
 becomes active atomically between frame callbacks. Sequence `-1` selects the
 identity plane: one for flat and zero for background.
 
-Complete-frame raw input and calibrated output use standard
-`SPA_IO_Buffers`, preserving synchronous back pressure. In row-block mode the
-raw input holds one latest/progressive lease until its terminal state. Each
-process call calibrates at most one newly committed row quantum and publishes
-one complete ordinary output block. Prepared artifacts always use ordinary
-buffers and are inspected at most once per port per process call; there is no
-private queue.
+Complete-frame and row-block paths both use standard `SPA_IO_Buffers`. Each
+row-block callback consumes one complete raw block and publishes one complete
+calibrated block. Prepared artifacts are inspected at most once per port per
+callback; there is no private queue.
 
-The calibration plan is snapshotted when a progressive frame starts, so a flat
-or background selection cannot change midway through the frame. An aborted
-input discards the partial workspace, releases the lease, and marks the next
-output discontinuous.
+The calibration plan is snapshotted at offset zero, so a flat or background
+selection cannot change midway through one block sequence. A gap, unexpected
+sequence, or invalid marker abandons that sequence and marks the next output
+discontinuous.
 
 ## Frame-assembly factory
 
@@ -151,16 +148,14 @@ deployed profiles require their calibrated conversion artifact.
 See `reference-shwfs-alpao-system.md` for the complete graph, construction
 keys, correctness gate, simulator invocation, and latency boundary.
 
-## Progressive execution and transactional algorithms
+## Row-block execution and transactional algorithms
 
 Standard complete-buffer processing remains the default Calculon adapter mode.
-The implemented progressive region uses regular scheduler dependencies rather
-than a private RTC-island executor. Pixel calibration maps the acquire-loaded
-camera prefix to Calculon semantic work units and calls the maintained
-range-processing plan. Its outputs are complete row-block micro-buffers, not
-progressively changing algorithm buffers.
+The row-block region uses regular scheduler dependencies. Pixel calibration
+maps each immutable raw block to a Calculon semantic work unit and publishes an
+immutable calibrated block.
 
-Progressive MVM input does not imply progressive MVM output. A cumulative MVM
+Row-block MVM input does not imply row-block MVM output. A cumulative MVM
 partial sum can modify every output element when another slope arrives and is
 therefore not an immutable output prefix. For a strict controller, the MVM and
 the linear part of TFC/CLWC instead accumulate into private next-frame state:
@@ -185,7 +180,7 @@ public row-block artifacts are immutable. Stateful controller output remains a
 terminal transaction: incomplete or aborted input must not advance controller
 history or publish a mirror command.
 
-See [Scheduled nodes and progressive row blocks](scheduled-node-migration.md)
+See [Scheduled nodes and row-block ndarrays](scheduled-node-migration.md)
 for polling, row identity, assembly, and observer isolation.
 
 ## Build boundary

@@ -193,7 +193,6 @@ int main(int argc, char *argv[])
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_IO_MODE, "mmap"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PREFAULT, "true"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_LOOP, "true"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PROGRESSIVE, "disabled"),
 	};
 	const struct spa_dict source_info = SPA_DICT_INIT(source_items,
 			SPA_N_ELEMENTS(source_items));

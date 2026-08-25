@@ -49,7 +49,6 @@ struct source_case {
 	uint32_t format_index;
 	enum spa_element_type expected_element;
 	uint32_t expected_size;
-	const char *progressive_policy;
 };
 
 static void on_result(void *data, int seq SPA_UNUSED, int res,
@@ -180,8 +179,7 @@ static const char *format_string(const struct spa_pod *format, uint32_t key)
 }
 
 static struct spa_node *make_node(const struct spa_handle_factory *factory,
-		const char *path, uint32_t rank, const char *progressive,
-		struct spa_handle **handle)
+		const char *path, uint32_t rank, struct spa_handle **handle)
 {
 	char rank_text[8];
 	const struct spa_dict_item items[] = {
@@ -191,7 +189,6 @@ static struct spa_node *make_node(const struct spa_handle_factory *factory,
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_SCHEMA, TEST_SCHEMA),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PROFILE, TEST_PROFILE),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_LOOP, "true"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PROGRESSIVE, progressive),
 	};
 	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
 	struct spa_node *node = NULL;
@@ -222,7 +219,7 @@ static void run_source(const struct spa_handle_factory *factory,
 	struct spa_hook listener;
 	struct spa_handle *handle;
 	struct spa_node *node = make_node(factory, test->path, test->sample_rank,
-			test->progressive_policy, &handle);
+			&handle);
 	struct spa_pod *format, *buffers_param;
 	int32_t payload_size = 0;
 	uint32_t id, i;
@@ -322,7 +319,6 @@ int main(int argc, char *argv[])
 		.sample_rank = 1,
 		.expected_element = SPA_ELEMENT_TYPE_F64_LE,
 		.expected_size = 4u * sizeof(double),
-		.progressive_policy = "disabled",
 	});
 	run_source(factory, &(const struct source_case) {
 		.path = image_path,
@@ -330,7 +326,6 @@ int main(int argc, char *argv[])
 		.format_index = 1,
 		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
 		.expected_size = 4u * 3u * sizeof(uint16_t),
-		.progressive_policy = "disabled",
 	});
 	spa_assert_se(dlclose(library) == 0);
 	spa_assert_se(unlink(vector_path) == 0);

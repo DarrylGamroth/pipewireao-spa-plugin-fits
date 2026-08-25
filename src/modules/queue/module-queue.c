@@ -464,8 +464,7 @@ static int validate_capture_pool(struct impl *impl)
 			sample->n_metas > MAX_METAS)
 		return -EINVAL;
 	for (i = 0; i < sample->n_metas; i++)
-		if (sample->metas[i].type == SPA_META_Progressive ||
-				sample->metas[i].type == SPA_META_SyncTimeline)
+		if (sample->metas[i].type == SPA_META_SyncTimeline)
 			return -ENOTSUP;
 	for (i = 0; i < impl->n_capture_buffers; i++) {
 		struct spa_buffer *buffer;

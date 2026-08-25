@@ -53,15 +53,13 @@ std::array<std::uint8_t, 16> parse_acquisition_domain(const char *value)
 	return domain;
 }
 
-ProgressivePolicy parse_progressive_policy(const char *value)
+OutputMode parse_output_mode(const char *value)
 {
-	if (spa_streq(value, "disabled"))
-		return ProgressivePolicy::disabled;
-	if (spa_streq(value, "offer"))
-		return ProgressivePolicy::offer;
-	if (spa_streq(value, "require"))
-		return ProgressivePolicy::require;
-	throw std::invalid_argument("progressive policy must be disabled, offer, or require");
+	if (spa_streq(value, "frame"))
+		return OutputMode::frame;
+	if (spa_streq(value, "row-block"))
+		return OutputMode::row_block;
+	throw std::invalid_argument("eGrabber output mode must be frame or row-block");
 }
 
 std::vector<std::string> parse_clprotocol_libraries(const char *value)
@@ -88,17 +86,15 @@ std::vector<std::string> parse_clprotocol_libraries(const char *value)
 
 } // namespace
 
-const char *progressive_policy_name(ProgressivePolicy policy) noexcept
+const char *output_mode_name(OutputMode mode) noexcept
 {
-	switch (policy) {
-	case ProgressivePolicy::disabled:
-		return "disabled";
-	case ProgressivePolicy::offer:
-		return "offer";
-	case ProgressivePolicy::require:
-		return "require";
+	switch (mode) {
+	case OutputMode::frame:
+		return "frame";
+	case OutputMode::row_block:
+		return "row-block";
 	}
-	return "disabled";
+	return "frame";
 }
 
 std::string format_acquisition_domain(
@@ -151,11 +147,13 @@ void read_options(Options &options, const struct spa_dict *info)
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS)))
 		options.control_timeout_ms = parse_unsigned<std::uint32_t>(value,
 				SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS);
-	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_PROGRESSIVE)))
-		options.progressive = parse_progressive_policy(value);
-	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_PROGRESSIVE_ROWS)))
-		options.progressive_rows = parse_unsigned<std::uint32_t>(value,
-				SPA_KEY_API_EGRABBER_PROGRESSIVE_ROWS);
+	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_OUTPUT_MODE)))
+		options.output_mode = parse_output_mode(value);
+	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_ROW_BLOCK_ROWS)))
+		options.row_block_rows = parse_unsigned<std::uint32_t>(value,
+				SPA_KEY_API_EGRABBER_ROW_BLOCK_ROWS);
+	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_DETECTOR_PROFILE)))
+		options.detector_profile = value;
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN)))
 		options.acquisition_domain = parse_acquisition_domain(value);
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_ACQUISITION_GENERATION)))
@@ -179,8 +177,12 @@ void read_options(Options &options, const struct spa_dict *info)
 
 	if (options.buffer_count < 2)
 		throw std::invalid_argument("eGrabber buffer count must be at least two");
-	if (options.progressive_rows == 0)
-		throw std::invalid_argument("eGrabber progressive rows must be positive");
+	if (options.row_block_rows == 0)
+		throw std::invalid_argument("eGrabber row-block rows must be positive");
+	if (options.output_mode == OutputMode::row_block &&
+			(!options.detector_profile || options.detector_profile->empty()))
+		throw std::invalid_argument(
+				"eGrabber row-block mode requires a detector profile");
 	if (options.control != "auto" && options.control != "remote" &&
 			options.control != "clprotocol" && options.control != "none")
 		throw std::invalid_argument("eGrabber control must be auto, remote, clprotocol, or none");

@@ -3,8 +3,7 @@
 `api.fits.source` publishes one complete plane of a FITS array at a configured
 fixed rate. It is a regular PipeWire graph driver with
 `SPA_NODE_FLAG_POLL_DRIVER`: its configured busy-spin data loop checks the
-monotonic deadline without a timer fd, sleep, eventfd, private thread, or
-private `pw_rtc_data_loop`.
+monotonic deadline without a timer fd, sleep, eventfd, or private thread.
 
 CFITSIO reads each due plane directly into an ordinary PipeWire output buffer.
 Buffered file access is the default. FITS values may require byte-order,
@@ -26,7 +25,6 @@ during construction.
 | `api.fits.io-mode` | default `file` | `file` or private read-only `mmap` backing |
 | `api.fits.prefault` | default `false` | touch mapped pages before startup; valid only with `mmap` |
 | `api.fits.loop` | default `true` | wrap after the final plane |
-| `api.fits.progressive` | compatibility only | omitted or `disabled`; other values return `-ENOTSUP` |
 
 The file axes define repeated values without a separate shape property:
 
@@ -60,5 +58,5 @@ Cache misses, page faults, storage faults, and library internals prevent a
 generic strict-real-time claim even though scheduler activation is syscall-free.
 
 The source supports mapped `MemPtr` and `MemFd` pool buffers. It does not offer
-DMA-BUF or synthetic progressive output. Progressive behavior is tested at the
-real eGrabber boundary and the Calculon row-block integration instead.
+DMA-BUF or row-block output. Row-block behavior is implemented at the real
+eGrabber boundary and in the Calculon calibration and assembly nodes.

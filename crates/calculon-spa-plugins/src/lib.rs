@@ -25,6 +25,9 @@ pub use shwfs_controller::SHWFS_CONTROLLER_FACTORY_NAME;
 /// Schema for one complete immutable block of calibrated detector rows.
 pub const CALIBRATED_PIXEL_ROW_BLOCK_V1: &str = "org.calculon.ao.calibrated-pixel-row-block/1";
 
+/// Schema for one complete immutable block of raw detector rows.
+pub const RAW_PIXEL_ROW_BLOCK_V1: &str = "org.calculon.ao.raw-pixel-row-block/1";
+
 static FACTORIES: [&Factory; 4] = [
     &pixel_calibration::FACTORY,
     &frame_assembly::FACTORY,

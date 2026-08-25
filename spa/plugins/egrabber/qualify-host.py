@@ -62,15 +62,30 @@ def list_source(paths, environment):
     return None if match is None else (match.group(1), match.group(2))
 
 
-def connect_latest(paths, environment, source_name, client_name):
+def create_source(paths, environment):
+    run_tool(
+        paths,
+        environment,
+        "cli",
+        "create-node",
+        "spa-node-factory",
+        (
+            "{ factory.name=api.egrabber.source object.linger=true "
+            "node.loop.name=rtc }"
+        ),
+    )
+    return wait_for(
+        lambda: list_source(paths, environment), 5, "eGrabber source node"
+    )
+
+
+def connect_stream(paths, environment, source_name, client_name):
     def attempt():
         result = run_tool(
             paths,
             environment,
             "link",
             "-w",
-            "-p",
-            "{ link.buffer-latest = true }",
             source_name,
             client_name,
             timeout=2,
@@ -78,7 +93,7 @@ def connect_latest(paths, environment, source_name, client_name):
         )
         return result.returncode == 0
 
-    wait_for(attempt, 5, f"latest-buffer link to {client_name}")
+    wait_for(attempt, 5, f"ordinary stream link to {client_name}")
 
 
 def start_client(paths, environment, directory, source_name, name, frames, hold=0):
@@ -94,7 +109,7 @@ def start_client(paths, environment, directory, source_name, name, frames, hold=
         stdout=output,
         stderr=subprocess.STDOUT,
     )
-    connect_latest(paths, environment, source_name, name)
+    connect_stream(paths, environment, source_name, name)
     return process, output, output_path
 
 
@@ -133,39 +148,6 @@ def finish_client(process, output, output_path, timeout=15):
     if frames == 0 or last < first:
         raise QualificationError(f"invalid capture summary:\n{text}")
     return text.strip(), (frames, first, last)
-
-
-def qualify_fanout(paths, environment, directory, source_name):
-    first = None
-    second = None
-    try:
-        first = start_client(
-            paths,
-            environment,
-            directory,
-            source_name,
-            "egrabber-primary",
-            80,
-            2000,
-        )
-        wait_for(
-            lambda: "holding=" in first[2].read_text(encoding="utf-8"),
-            10,
-            "primary subscriber lease",
-        )
-        second = start_client(
-            paths, environment, directory, source_name, "egrabber-live-join", 10
-        )
-        second_text, second_summary = finish_client(*second)
-        if first[0].poll() is not None:
-            raise QualificationError("primary subscriber ended before live leave")
-        first_text, first_summary = finish_client(*first)
-        if first_summary[0] <= second_summary[0]:
-            raise QualificationError("primary capture did not span live join and leave")
-        return first_text, second_text
-    finally:
-        stop_client(second)
-        stop_client(first)
 
 
 def qualify_active_teardown(paths, environment, directory, node_id, source_name):
@@ -243,7 +225,16 @@ def main():
     daemon_log_path = temporary / "daemon.log"
     daemon_log = daemon_log_path.open("w+", encoding="utf-8")
     daemon = subprocess.Popen(
-        [str(paths["daemon"])],
+        [
+            str(paths["daemon"]),
+            "-P",
+            (
+                "{ context.data-loops = [ "
+                "{ loop.name=ordinary loop.class=data.rt loop.idle=eventfd } "
+                "{ loop.name=rtc loop.class=data.rt loop.idle=busy-spin } "
+                "] }"
+            ),
+        ],
         env=environment,
         text=True,
         stdout=daemon_log,
@@ -252,20 +243,7 @@ def main():
     try:
         socket = runtime / "pipewire-ao-0"
         wait_for(lambda: socket.is_socket(), 5, "PipeWireAO daemon socket")
-        run_tool(
-            paths,
-            environment,
-            "cli",
-            "create-node",
-            "spa-node-factory",
-            "{ factory.name=api.egrabber.source object.linger=true }",
-        )
-        source = wait_for(
-            lambda: list_source(paths, environment), 5, "eGrabber source node"
-        )
-        primary, joining = qualify_fanout(
-            paths, environment, temporary, source[1]
-        )
+        source = create_source(paths, environment)
         retained = qualify_active_teardown(
             paths, environment, temporary, source[0], source[1]
         )
@@ -275,8 +253,6 @@ def main():
         daemon_text = daemon_log_path.read_text(encoding="utf-8")
         if "error unset format" in daemon_text or "Device or resource busy" in daemon_text:
             raise QualificationError(f"teardown warning in daemon log:\n{daemon_text}")
-        print(primary)
-        print(joining)
         print(retained)
         print("eGrabber host qualification passed")
         return 0

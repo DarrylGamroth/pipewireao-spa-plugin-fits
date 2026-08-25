@@ -92,7 +92,7 @@ The source's polling data loop is the sole consumer and remains responsible for
 validating and publishing the frame. A successful publication starts one
 regular PipeWire graph cycle.
 
-The source intentionally has no direct-polling or progressive profile. The
+The source intentionally has no row-block profile. The
 camera-adapter benchmark retains timeout-zero `GetFilledBuffer` only as a
 diagnostic comparison; both tested producers build error details on empty
 polls, and Euresys allocates on that path.

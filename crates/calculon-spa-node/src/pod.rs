@@ -12,7 +12,7 @@ use libspa::sys;
 use libspa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle};
 
 use crate::format::{Format, FormatClass, FormatConstraint, Rate};
-use crate::latest;
+use crate::pod_bridge;
 
 /// One property within an SPA object POD.
 pub use libspa::pod::Property;
@@ -47,7 +47,6 @@ pub(crate) fn port_param(
     direction: sys::spa_direction,
     constraints: &[FormatConstraint],
     format: Option<&Format>,
-    latest_allowed: bool,
 ) -> Result<Option<Value>, i32> {
     let value = match id_ {
         sys::SPA_PARAM_EnumFormat => {
@@ -71,17 +70,6 @@ pub(crate) fn port_param(
                 ),
             ],
         ),
-        sys::SPA_PARAM_Meta if index == 1 && latest_allowed => object(
-            sys::SPA_TYPE_OBJECT_ParamMeta,
-            id_,
-            vec![
-                property(sys::SPA_PARAM_META_type, id(sys::SPA_META_Progressive)),
-                property(
-                    sys::SPA_PARAM_META_size,
-                    Value::Int(size_of::<sys::spa_meta_progressive>() as i32),
-                ),
-            ],
-        ),
         sys::SPA_PARAM_IO => match (direction, index) {
             (_, 0) => object(
                 sys::SPA_TYPE_OBJECT_ParamIO,
@@ -91,28 +79,6 @@ pub(crate) fn port_param(
                     property(
                         sys::SPA_PARAM_IO_size,
                         Value::Int(size_of::<sys::spa_io_buffers>() as i32),
-                    ),
-                ],
-            ),
-            (_, 1) if latest_allowed => object(
-                sys::SPA_TYPE_OBJECT_ParamIO,
-                id_,
-                vec![
-                    property(sys::SPA_PARAM_IO_id, id(sys::SPA_IO_BuffersLatest)),
-                    property(
-                        sys::SPA_PARAM_IO_size,
-                        Value::Int(size_of::<sys::spa_io_buffers_latest>() as i32),
-                    ),
-                ],
-            ),
-            (_, 2) if latest_allowed => object(
-                sys::SPA_TYPE_OBJECT_ParamIO,
-                id_,
-                vec![
-                    property(sys::SPA_PARAM_IO_id, id(sys::SPA_IO_BuffersLatestLink)),
-                    property(
-                        sys::SPA_PARAM_IO_size,
-                        Value::Int(size_of::<sys::spa_io_buffers_latest_link>() as i32),
                     ),
                 ],
             ),
@@ -307,7 +273,7 @@ pub fn parse_props(value: Value) -> Result<Vec<Property>, i32> {
 }
 
 pub(crate) unsafe fn decode(pod: *const sys::spa_pod) -> Result<Value, i32> {
-    let storage = unsafe { latest::unwrap_fixed_pod(pod)? };
+    let storage = unsafe { pod_bridge::unwrap_fixed_pod(pod)? };
     let pod = storage.as_ptr().cast::<sys::spa_pod>();
     let pod = unsafe { pod.as_ref() }.ok_or(-libc::EINVAL)?;
     let length = size_of::<sys::spa_pod>()

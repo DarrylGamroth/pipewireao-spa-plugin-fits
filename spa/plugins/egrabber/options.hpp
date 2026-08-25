@@ -13,7 +13,7 @@
 
 namespace egrabber_pipewire {
 
-enum class ProgressivePolicy { disabled, offer, require };
+enum class OutputMode { frame, row_block };
 
 struct Options {
     std::string producer = "gigelink";
@@ -25,8 +25,9 @@ struct Options {
     std::optional<std::string> camera_serial;
     std::optional<std::string> genapi_runtime;
     std::uint32_t control_timeout_ms = 1000;
-    ProgressivePolicy progressive = ProgressivePolicy::disabled;
-    std::uint32_t progressive_rows = 1;
+    OutputMode output_mode = OutputMode::frame;
+    std::uint32_t row_block_rows = 1;
+    std::optional<std::string> detector_profile;
     std::optional<std::array<std::uint8_t, 16>> acquisition_domain;
     std::uint64_t acquisition_generation = 0;
     std::uint32_t acquisition_sequence_context = 0;
@@ -37,7 +38,7 @@ struct Options {
 };
 
 void read_options(Options &options, const struct spa_dict *info);
-const char *progressive_policy_name(ProgressivePolicy policy) noexcept;
+const char *output_mode_name(OutputMode mode) noexcept;
 std::string format_acquisition_domain(
 		const std::array<std::uint8_t, 16> &domain);
 std::string format_clprotocol_libraries(

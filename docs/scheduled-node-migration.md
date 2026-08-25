@@ -1,58 +1,89 @@
-# Scheduled nodes and progressive row blocks
+# Scheduled nodes and row-block ndarrays
 
 This is the implemented execution and buffer model for the PipeWireAO SPA
-plugins. It replaces private per-node RTC execution for production nodes while
-preserving zero-copy progressive eGrabber readout at one explicit boundary.
+plugins. Production nodes use the regular PipeWire scheduler and ordinary
+complete buffers. Latency-critical sources can be polled by a named data loop;
+eGrabber can publish fixed row-block ndarrays so calibration starts before the
+camera finishes the frame.
 
 ## Result
 
-All complete artifacts use ordinary `SPA_IO_Buffers` and regular PipeWire
-dependency scheduling. Sources that cannot expose a useful readiness file
-descriptor use `SPA_NODE_FLAG_POLL_DRIVER` on a named busy-spin data loop. The
-flag makes the source a polled graph driver; it does not opt the rest of the
-graph out of `module-scheduler-v1`.
+The migration removes four private contracts:
 
-The exceptional progressive path is:
+- no `SPA_NODE_FLAG_RTC_PROCESS`;
+- no `pw_rtc_data_loop`;
+- no latest-buffer transport; and
+- no progressively changing buffer metadata.
 
-```mermaid
-flowchart LR
-    Camera["eGrabber DMA into mapped frame"]
-    Lease["Latest-buffer progressive lease"]
-    Cal["Pixel calibration"]
-    Block["Complete calibrated row block"]
-    Assembly["Frame assembly"]
-    Frame["Complete calibrated frame"]
-    Queue["Capacity-one observer queue"]
-    GUI["Telemetry or GUI"]
-
-    Camera --> Lease --> Cal --> Block --> Assembly --> Frame --> Queue --> GUI
-```
-
-`SPA_META_Progressive` describes which rows of the camera buffer are immutable.
-Pixel calibration is the only Calculon node that reads this changing metadata.
-Its output is no longer progressive: every `[N,width]` ndarray is a complete,
-immutable, normally leased buffer.
+The remaining PipeWireAO facilities are ordinary ndarray formats, acquisition
+metadata, a polling data-loop idle policy, `SPA_NODE_FLAG_POLL_DRIVER`, and
+the activation flag that permits polling across processes.
 
 ## Node matrix
 
-| Factory | Driver or follower | Process wake | Port I/O |
+| Factory | Scheduling role | Wake/readiness | Buffer contract |
 | --- | --- | --- | --- |
-| `api.fits.source` | driver | busy polling | ordinary complete output |
-| `api.bgapi2.source` | driver | busy polling | ordinary complete output |
-| `api.aravis.source` | driver | busy polling | ordinary complete output |
-| `api.egrabber.source` | driver | busy polling | retained latest/progressive output boundary |
-| `api.calculon.pixel-calibration` | follower | graph dependency | latest raw input only; ordinary output |
-| `api.calculon.frame-assembly` | follower | graph dependency | ordinary input and output |
-| Other Calculon factories | followers | graph dependency | ordinary complete buffers |
-| `api.alpao.sink` | follower | graph dependency | ordinary complete input |
+| `api.fits.source` | graph driver | nonblocking source probe | complete ordinary output |
+| `api.bgapi2.source` | graph driver | nonblocking camera probe | complete ordinary output |
+| `api.aravis.source` | comparison graph driver | nonblocking camera probe | complete ordinary output |
+| `api.egrabber.source` | graph driver | nonblocking camera or row-readout probe | complete video frames or complete raw row blocks |
+| `api.calculon.pixel-calibration` | follower | graph dependency | complete frame or row-block input and output |
+| `api.calculon.frame-assembly` | follower | graph dependency | complete row blocks in, complete frames out |
+| Other Calculon factories | followers | graph dependency | ordinary complete ndarrays |
+| `api.alpao.sink` | terminal follower | graph dependency | ordinary complete commands |
+| `libpipewire-module-queue` | asynchronous topology boundary | separate input/output graphs | ordinary complete buffers |
 
-No production factory in this repository sets `SPA_NODE_FLAG_RTC_PROCESS` or
-constructs `pw_rtc_data_loop`.
+## Complete-frame topology
 
-## Polling data-loop configuration
+Complete-frame camera operation preserves normal PipeWire and camera-pool
+ownership:
 
-Define the polling loop in the process that owns the SPA node's `process()`
-method and select it with the existing node loop properties:
+```mermaid
+flowchart LR
+    Camera["Camera or FITS source"]
+    Raw["Complete raw frame"]
+    Calibration["Pixel calibration"]
+    Frame["Complete calibrated ndarray"]
+    Algorithm["Full-frame algorithm"]
+    Sink["ALPAO or another follower"]
+
+    Camera --> Raw --> Calibration --> Frame --> Algorithm --> Sink
+```
+
+eGrabber complete-frame mode may announce the negotiated SPA buffers directly
+to the camera, including the qualified DMA-BUF path. The camera completes the
+whole allocation before the source publishes it.
+
+## Row-block topology
+
+Row-block mode intentionally copies at the eGrabber boundary:
+
+```mermaid
+flowchart LR
+    DMA["Private eGrabber DMA frame"]
+    Copy["Copy N complete rows"]
+    Raw["Complete U16 row-block ndarray"]
+    Calibration["Pixel calibration"]
+    Block["Complete F32 row-block ndarray"]
+    RowRTC["Row-block algorithm"]
+    Assembly["Frame assembly"]
+    Frame["Complete calibrated frame"]
+    Queue["Queue: capacity 1, drop oldest"]
+    Observer["Telemetry, GUI, recorder"]
+
+    DMA --> Copy --> Raw --> Calibration --> Block
+    Block --> RowRTC
+    Block --> Assembly --> Frame --> Queue --> Observer
+```
+
+The private camera allocation may still be changing, but every published
+PipeWire buffer is complete and immutable. No downstream node observes camera
+fill state or retains ownership of an in-progress camera allocation.
+
+## Configuration
+
+A latency-critical source runs on a named polling loop in the process that owns
+its SPA `process()` method:
 
 ```ini
 context.data-loops = [
@@ -75,107 +106,108 @@ context.data-loops = [
 ]
 ```
 
+Assign the source:
+
 ```ini
 node.loop.name = rtc-input
 ```
 
-For an exported node, this configuration belongs in the client process. The
-daemon's remote representation participates in topology and shares the
-activation record, but it does not execute the remote node or consume a polling
-slot. The activation owner advertises its polling wake policy in that shared
-record, so producers omit the eventfd write even across processes.
+Configure eGrabber row blocks and the matching Calculon artifact size:
 
-A local `SPA_NODE_FLAG_POLL_DRIVER` fails preparation unless its selected loop
-uses `loop.idle=busy-spin`. This avoids silently falling back to an eventfd or a
-timeout-zero syscall-polling path.
+```ini
+api.egrabber.output-mode = row-block
+api.egrabber.row-block-rows = 8
+api.egrabber.detector-profile = detector-profile-id
+api.calculon.row-block-rows = 8
+```
+
+`N` must be positive, smaller than the detector height, and divide the
+height. Row-block eGrabber operation requires qualified
+`StartOfCameraReadout` and filled-size support. `frame` is the default
+output mode.
+
+An exported source configures the polling loop in its client process. The
+daemon's remote node participates in topology and shares activation state, but
+does not execute or poll the source.
 
 ## One polled-driver cycle
-
-The source and scheduler have distinct responsibilities:
 
 ```mermaid
 stateDiagram-v2
     [*] --> Probe
     Probe --> Probe: no source quantum
-    Probe --> Schedule: one quantum published
+    Probe --> Schedule: one complete buffer published
     Schedule --> Followers: dependencies released
-    Followers --> Complete: all followers finish
-    Complete --> Probe: cycle closed
+    Followers --> Complete: synchronous followers finish
+    Complete --> Probe: cycle closes
 ```
 
-While the driver activation is `FINISHED`, its busy loop calls the source's
-bounded, nonblocking `process()`. `SPA_STATUS_OK` means no quantum is ready. A
-data result starts an ordinary graph cycle. The source is not polled again
-until the dependency graph finishes. The driver's final self-activation closes
-the cycle without calling its source method again, preventing an unscheduled
-next quantum from being consumed.
+While the source activation is `FINISHED`, the polling loop calls its bounded
+nonblocking `process()`. `SPA_STATUS_OK` means nothing is ready. A data
+status enters the ordinary driver-ready path. The scheduler resets dependency
+counts, moves output I/O, and starts one normal graph cycle.
 
-This path has no eventfd write, eventfd read, or kernel polling syscall per
-activation. Lifecycle and contended loop-control operations may still enter the
-kernel. Busy spinning consumes a reserved CPU and must be qualified with power,
-IRQ, affinity, and scheduling policy.
+The source is not probed again until that cycle completes. Camera DMA can
+continue concurrently, but public artifacts are published at most one per
+completed synchronous graph cycle. This prevents the source from consuming a
+second block without starting the corresponding dependency cycle.
 
-## eGrabber progressive ingress
+The polling activation path omits eventfd writes and reads. An eventfd-driven
+follower can still consume the same source: wake policy is selected per target.
 
-Progressive mode requires Grablink or Coaxlink
-`StartOfCameraReadout`/filled-size behavior and mapped host memory. Configure:
+## Row-block formats
 
-```ini
-api.egrabber.progressive = require
-api.egrabber.progressive-rows = 8
-api.calculon.row-block-rows = 8
-```
-
-The row count must be positive, divide detector height, and agree at the camera,
-calibration, and assembly nodes. eGrabber publishes at most one newly committed
-row quantum per completed graph cycle even when DMA has advanced farther. DMA
-still proceeds concurrently.
-
-The progressive buffer's normal chunk stride is one camera row. Its metadata
-commit granularity is `N * row_stride`; these values are intentionally
-different. Pixel calibration acquire-loads the metadata and exposes only full
-rows within the committed prefix. It keeps the camera lease until `COMPLETE` or
-`ABORTED`.
-
-Progressive DMA-BUF is not supported because the CPU must observe in-progress
-mapped rows. Complete-frame DMA-BUF remains a separate device qualification.
-Gigelink does not provide the required progressive event contract and falls
-back to complete frames for `offer`; it rejects `require`.
-
-## Row-block identity
-
-Calibration publishes F32 ndarray schema
-[`org.calculon.ao.calibrated-pixel-row-block/1`](schemas/calibrated-pixel-row-block-1.md),
-shape `[N,width]`, at rate:
+The raw schema is
+[`org.calculon.ao.raw-pixel-row-block/1`](schemas/raw-pixel-row-block-1.md):
 
 ```text
-frame_rate * height / N
+elementType = U16_LE
+shape = [N, width]
+layout = ROW_MAJOR
+rate = frame_rate * height / N
 ```
 
-It uses existing header fields rather than a new block metadata type:
+Pixel calibration emits
+[`org.calculon.ao.calibrated-pixel-row-block/1`](schemas/calibrated-pixel-row-block-1.md)
+with the same shape and rate and `F32_LE` elements.
 
-| Header field | Contract |
+The calibration source alternatives are exact: a complete `GRAY16_LE` frame,
+or the raw row-block ndarray schema. Format negotiation selects one alternative
+for the stream. A stream does not mix complete frames and blocks.
+
+## Identity and loss
+
+Every block carries standard `SPA_META_Header`:
+
+| Field | Contract |
 | --- | --- |
-| `seq` | stable frame identity for every block |
-| `offset` | first row of the block |
+| `seq` | stable frame/acquisition identity shared by every block |
+| `offset` | zero-based first detector row |
 | `MARKER` | set only on the final block |
-| `DISCONT` | loss, abort, invalid input, or prior incomplete frame |
-| `pts` | inherited frame timestamp |
+| `DISCONT` | set on the first block after an abandoned or lost frame |
+| `CORRUPTED` | set on a corrupt terminal camera block |
+| `pts` | final completion timestamp when known; early camera blocks may be invalid |
 
-The selected flat/background calibration pair is snapshotted at frame start.
-A control update cannot split one frame across calibration generations.
+Offsets are `0, N, 2N, ... height-N`. Consumers must use sequence, offset,
+and marker, not arrival time, to identify a frame.
 
-## Assembly and observers
+If output storage is unavailable, layout is invalid, readout overlaps, or the
+camera aborts, eGrabber abandons the remainder and marks the next frame
+discontinuous. It never publishes the final block before terminal camera
+completion validates the frame.
 
-`api.calculon.frame-assembly` requires exact sequential offsets for one `seq`.
-It copies blocks into one preallocated full-frame workspace. A gap, overlap,
-unexpected sequence, or invalid marker abandons the partial frame; the next
-published full frame carries `DISCONT`. A discontinuity on any constituent
-block is retained on the result.
+Pixel calibration snapshots the selected flat/background pair at offset zero.
+It applies one plan to the whole sequence and emits at most one complete
+calibrated block per input block.
 
-Complete-frame telemetry and GUI consumers attach after assembly. To prevent a
-slow observer from retaining critical buffers or backpressuring the RTC graph,
-insert the queue module with:
+## Assembly and observer isolation
+
+`api.calculon.frame-assembly` owns a preallocated frame workspace. It accepts
+only the next offset for one sequence. A gap, overlap, unexpected sequence,
+out-of-range block, or invalid marker abandons the partial frame. Nothing is
+published until a complete frame is assembled.
+
+Telemetry and GUI branches normally attach after assembly. Isolate them with:
 
 ```ini
 queue.max-buffers = 1
@@ -183,31 +215,34 @@ queue.overflow = drop-oldest
 queue.storage = copy
 ```
 
-`copy` uses an observer-owned pool and releases the critical input lease after
-one bounded copy. `lease` avoids the payload copy but may retain one critical
-pool buffer for the queued item and another while downstream holds the
-delivered item. Pool sizing must include that ownership budget.
+`copy` copies once into an observer-owned pool and immediately releases the
+critical input lease. `lease` avoids the payload copy but may retain one
+critical pool buffer for the queued item and another while an observer holds
+the delivered item.
 
-## Failure and overload behavior
+The queue is a real asynchronous boundary. Assigning synchronous nodes to two
+threads does not by itself overlap graph cycles or prevent a slow observer from
+affecting pool reuse.
 
-- Ordinary critical links backpressure when their bounded buffers are held.
-- Progressive abort never publishes a partial calibrated block or assembled
-  frame.
-- A missing block abandons only its frame and makes loss visible through
-  sequence gaps and `DISCONT`.
-- The observer queue applies its explicit overflow policy; it does not stall
-  the producer under `drop-oldest` or `drop-newest`.
-- Independently clocked multi-camera inputs still require an acquisition-key
-  join, deadline, and missing-input policy. Scheduler ordering is not a
-  semantic rendezvous.
-- PipeWire ASYNC mode is a one-cycle scheduling pipeline, not a bounded leaky
-  queue and not an observer-isolation policy.
+## What scheduling does not solve
 
-## What remains to qualify
+- PipeWire dependency ordering does not match independently clocked cameras by
+  acquisition identity.
+- ASYNC scheduling is a cycle-indexed pipeline, not a capacity-one leaky queue.
+- Polling reduces wake-up latency but does not isolate overload.
+- Row blocks change public artifact granularity; all consumers must negotiate
+  the block schema or sit after assembly.
 
-The automated suite covers all complete-frame factories and a synthetic
-progressive calibration-to-assembly path. It does not establish a deployment
-latency bound. Promotion requires connected Grablink/Coaxlink testing,
-fixed-arrival p50/p99/p99.9/max measurements, overload and restart cases, CPU
-and IRQ placement, and a deliberately stalled observer in both queue storage
-modes.
+Semantic joins keep their acquisition-key, deadline, hold, and missing-input
+policies.
+
+## Verification
+
+The automated suite covers complete-frame cameras, the eGrabber camera-backed
+ordinary-buffer path, synthetic raw/calibrated row blocks, malformed block
+recovery, frame assembly, queue overflow modes, and polling activation.
+
+Deployment qualification still needs the target Grablink/Coaxlink hardware,
+pinned-core fixed-arrival latency, p50/p99/p99.9/maximum, xruns, overload,
+pause/restart, device failure, and a deliberately stalled observer in both
+queue storage modes.

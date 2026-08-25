@@ -24,6 +24,12 @@ struct data {
 	struct pw_thread_loop *loop;
 	struct pw_stream *stream;
 	_Atomic int error;
+	_Atomic bool ready;
+	_Atomic uint32_t received;
+	uint32_t requested;
+	uint32_t first_hold_msec;
+	uint64_t first_sequence;
+	uint64_t last_sequence;
 };
 
 static uint64_t monotonic_nsec(void)
@@ -35,17 +41,6 @@ static uint64_t monotonic_nsec(void)
 	return (uint64_t)now.tv_sec * SPA_NSEC_PER_SEC + now.tv_nsec;
 }
 
-static inline void cpu_relax(void)
-{
-#if defined(__x86_64__) || defined(__i386__)
-	__asm__ __volatile__("pause" ::: "memory");
-#elif defined(__aarch64__)
-	__asm__ __volatile__("yield" ::: "memory");
-#else
-	__asm__ __volatile__("" ::: "memory");
-#endif
-}
-
 static void on_state_changed(void *user_data, enum pw_stream_state old,
 		enum pw_stream_state state, const char *error)
 {
@@ -55,12 +50,92 @@ static void on_state_changed(void *user_data, enum pw_stream_state old,
 		fprintf(stderr, "stream error: %s\n", error ? error : "unknown");
 		atomic_store_explicit(&data->error, EIO, memory_order_release);
 	}
+	if (state == PW_STREAM_STATE_PAUSED || state == PW_STREAM_STATE_STREAMING)
+		atomic_store_explicit(&data->ready, true, memory_order_release);
 	pw_thread_loop_signal(data->loop, false);
+}
+
+static void on_process(void *user_data)
+{
+	struct data *data = user_data;
+	struct pw_buffer *pw_buffer;
+
+	while ((pw_buffer = pw_stream_dequeue_buffer(data->stream)) != NULL) {
+		struct spa_buffer *buffer = pw_buffer->buffer;
+		struct spa_meta_header *header;
+		struct spa_meta *acquisition_meta;
+		struct spa_meta_acquisition *acquisition;
+		uint32_t received = atomic_load_explicit(&data->received,
+				memory_order_relaxed);
+		int error = 0;
+
+		if (buffer->n_datas == 0 || buffer->datas[0].data == NULL ||
+				buffer->datas[0].chunk == NULL ||
+				buffer->datas[0].chunk->size == 0 ||
+				buffer->datas[0].chunk->offset > buffer->datas[0].maxsize ||
+				buffer->datas[0].chunk->size > buffer->datas[0].maxsize -
+					buffer->datas[0].chunk->offset) {
+			fprintf(stderr, "invalid payload buffer\n");
+			error = EPROTO;
+			goto done;
+		}
+		header = spa_buffer_find_meta_data(buffer, SPA_META_Header,
+				sizeof(*header));
+		acquisition_meta = spa_buffer_find_meta(buffer, SPA_META_Acquisition);
+		acquisition = acquisition_meta != NULL ? acquisition_meta->data : NULL;
+		if (header == NULL || acquisition == NULL ||
+				!spa_meta_acquisition_is_valid(acquisition_meta) ||
+				(SPA_FLAG_IS_SET(acquisition->flags,
+					SPA_META_ACQUISITION_FLAG_IDENTITY_VALID) &&
+				 header->seq != acquisition->sequence) ||
+				(received != 0 && header->seq <= data->last_sequence)) {
+			fprintf(stderr, "invalid metadata\n");
+			error = EPROTO;
+			goto done;
+		}
+		if (received == 0)
+			data->first_sequence = header->seq;
+		data->last_sequence = header->seq;
+		if (received == 0 && data->first_hold_msec != 0) {
+			const uint64_t retained_sequence = header->seq;
+			const uint8_t retained_first_byte =
+					((const uint8_t *)buffer->datas[0].data)
+					[buffer->datas[0].chunk->offset];
+			const struct timespec hold = {
+				.tv_sec = data->first_hold_msec / 1000u,
+				.tv_nsec = (long)(data->first_hold_msec % 1000u) * 1000000L,
+			};
+
+			printf("holding=%" PRIu64 " msec=%u\n",
+					retained_sequence, data->first_hold_msec);
+			fflush(stdout);
+			nanosleep(&hold, NULL);
+			if (header->seq != retained_sequence ||
+					((const uint8_t *)buffer->datas[0].data)
+					[buffer->datas[0].chunk->offset] != retained_first_byte) {
+				fprintf(stderr, "retained payload changed during hold\n");
+				error = EPROTO;
+			}
+		}
+		if (error == 0 && received < data->requested)
+			atomic_store_explicit(&data->received, received + 1,
+					memory_order_release);
+
+done:
+		if (pw_stream_queue_buffer(data->stream, pw_buffer) < 0 && error == 0)
+			error = EIO;
+		if (error != 0)
+			atomic_store_explicit(&data->error, error, memory_order_release);
+		pw_thread_loop_signal(data->loop, false);
+		if (error != 0 || received + 1 >= data->requested)
+			break;
+	}
 }
 
 static const struct pw_stream_events stream_events = {
 	PW_VERSION_STREAM_EVENTS,
 	.state_changed = on_state_changed,
+	.process = on_process,
 };
 
 static int connect_stream(struct data *data, const char *target, const char *name)
@@ -107,8 +182,7 @@ static int connect_stream(struct data *data, const char *target, const char *nam
 	res = pw_stream_connect(data->stream, PW_DIRECTION_INPUT, PW_ID_ANY,
 			PW_STREAM_FLAG_AUTOCONNECT |
 			PW_STREAM_FLAG_MAP_BUFFERS |
-			PW_STREAM_FLAG_NO_CONVERT |
-			PW_STREAM_FLAG_BUFFER_LATEST,
+			PW_STREAM_FLAG_NO_CONVERT,
 			params, SPA_N_ELEMENTS(params));
 	pw_thread_loop_unlock(data->loop);
 	if (res < 0)
@@ -122,142 +196,39 @@ static int connect_stream(struct data *data, const char *target, const char *nam
 				memory_order_acquire);
 		if (error != 0)
 			return -error;
-		res = pw_stream_buffer_latest_worker_begin(data->stream);
-		if (res == 0)
+		if (atomic_load_explicit(&data->ready, memory_order_acquire))
 			return 0;
-		if (res != -ENOTCONN && res != -EBUSY)
-			return res;
 		nanosleep(&delay, NULL);
 	}
 	return -ETIMEDOUT;
 }
 
-static int receive_frames(struct data *data, uint32_t requested,
-		uint32_t first_hold_msec)
+static int receive_frames(struct data *data)
 {
-	struct pw_stream_buffer_latest_poller poller =
-			PW_STREAM_BUFFER_LATEST_POLLER_INIT;
-	uint64_t first_sequence = 0, last_sequence = 0;
 	uint64_t deadline = monotonic_nsec() + 10 * SPA_NSEC_PER_SEC;
-	uint32_t received = 0;
-	int res;
+	while (monotonic_nsec() < deadline) {
+		const int error = atomic_load_explicit(&data->error,
+				memory_order_acquire);
+		const uint32_t received = atomic_load_explicit(&data->received,
+				memory_order_acquire);
+		const struct timespec delay = { .tv_nsec = 1000000 };
 
-	if ((res = pw_stream_buffer_latest_poller_init(&poller, data->stream)) < 0) {
-		fprintf(stderr, "poller init failed: %s\n", spa_strerror(res));
-		return res;
-	}
-	while (received < requested && monotonic_nsec() < deadline) {
-		struct pw_buffer *pw_buffer;
-		struct spa_buffer *buffer;
-		struct spa_meta_header *header;
-		struct spa_meta *acquisition_meta;
-		struct spa_meta_acquisition *acquisition;
-		uint64_t retained_header_sequence;
-		uint8_t retained_first_byte;
-		uint64_t submission_sequence;
-
-		res = pw_stream_buffer_latest_poller_try_dequeue(&poller,
-				&pw_buffer, &submission_sequence);
-		if (res == 0) {
-			cpu_relax();
-			continue;
-		}
-		if (res < 0) {
-			fprintf(stderr, "poller dequeue failed: %s\n", spa_strerror(res));
-			goto done;
-		}
-		buffer = pw_buffer->buffer;
-		if (buffer->n_datas == 0 || buffer->datas[0].data == NULL ||
-				buffer->datas[0].chunk == NULL ||
-				buffer->datas[0].chunk->size == 0 ||
-				buffer->datas[0].chunk->offset > buffer->datas[0].maxsize ||
-				buffer->datas[0].chunk->size > buffer->datas[0].maxsize -
-					buffer->datas[0].chunk->offset) {
-			fprintf(stderr, "invalid payload buffer: datas=%u data=%p chunk=%p size=%u\n",
-					buffer->n_datas,
-					buffer->n_datas == 0 ? NULL : buffer->datas[0].data,
-					buffer->n_datas == 0 ? NULL :
-						(void *)buffer->datas[0].chunk,
-					buffer->n_datas == 0 || buffer->datas[0].chunk == NULL ? 0 :
-						buffer->datas[0].chunk->size);
-			res = -EPROTO;
-			goto return_buffer;
-		}
-		header = spa_buffer_find_meta_data(buffer, SPA_META_Header,
-				sizeof(*header));
-		acquisition_meta = spa_buffer_find_meta(buffer, SPA_META_Acquisition);
-		acquisition = acquisition_meta != NULL ? acquisition_meta->data : NULL;
-		if (header == NULL || acquisition == NULL ||
-				!spa_meta_acquisition_is_valid(acquisition_meta) ||
-				(SPA_FLAG_IS_SET(acquisition->flags,
-					SPA_META_ACQUISITION_FLAG_IDENTITY_VALID) &&
-				 header->seq != acquisition->sequence) ||
-				(received != 0 && header->seq <= last_sequence)) {
-			fprintf(stderr, "invalid metadata: header=%p acquisition=%p"
-					" valid=%d header-seq=%" PRIu64
-					" acquisition-seq=%" PRIu64 " last=%" PRIu64 "\n",
-					(void *)header, (void *)acquisition,
-					spa_meta_acquisition_is_valid(acquisition_meta),
-					header == NULL ? 0 : header->seq,
-					acquisition == NULL ? 0 : acquisition->sequence,
-					last_sequence);
-			res = -EPROTO;
-			goto return_buffer;
-		}
-		if (received == 0)
-			first_sequence = header->seq;
-		last_sequence = header->seq;
-		if (received == 0 && first_hold_msec != 0) {
-			struct timespec hold = {
-				.tv_sec = first_hold_msec / 1000u,
-				.tv_nsec = (long)(first_hold_msec % 1000u) * 1000000L,
-			};
-
-			retained_header_sequence = header->seq;
-			retained_first_byte = ((const uint8_t *)buffer->datas[0].data)
-					[buffer->datas[0].chunk->offset];
-			printf("holding=%" PRIu64 " msec=%u\n",
-					retained_header_sequence, first_hold_msec);
-			fflush(stdout);
-			nanosleep(&hold, NULL);
-			if (header->seq != retained_header_sequence ||
-					((const uint8_t *)buffer->datas[0].data)
-						[buffer->datas[0].chunk->offset] != retained_first_byte) {
-				fprintf(stderr, "retained payload changed during hold\n");
-				res = -EPROTO;
-				goto return_buffer;
-			}
-		}
-		received++;
-		res = 0;
-
-return_buffer:
-		if (pw_stream_queue_buffer(data->stream, pw_buffer) < 0 && res == 0)
-			res = -EIO;
-		if (res < 0)
-			goto done;
-		if (received < requested &&
-				(res = pw_stream_buffer_latest_poller_init(
-					&poller, data->stream)) < 0) {
-			fprintf(stderr, "poller reset failed: %s\n", spa_strerror(res));
-			goto done;
-		}
-	}
-	res = received == requested ? 0 : -ETIMEDOUT;
-
-done:
-	pw_stream_buffer_latest_poller_clear(&poller);
-	if (res == 0)
+		if (error != 0)
+			return -error;
+		if (received >= data->requested) {
 		printf("frames=%u first=%" PRIu64 " last=%" PRIu64 "\n",
-				received, first_sequence, last_sequence);
-	return res;
+				received, data->first_sequence, data->last_sequence);
+			return 0;
+		}
+		nanosleep(&delay, NULL);
+	}
+	return -ETIMEDOUT;
 }
 
 static void clear(struct data *data)
 {
 	if (data->stream != NULL) {
 		pw_thread_loop_lock(data->loop);
-		(void)pw_stream_buffer_latest_worker_end(data->stream);
 		(void)pw_stream_disconnect(data->stream);
 		pw_stream_destroy(data->stream);
 		pw_thread_loop_unlock(data->loop);
@@ -297,12 +268,14 @@ int main(int argc, char **argv)
 			return 2;
 		}
 	}
+	data.requested = frames;
+	data.first_hold_msec = (uint32_t)parsed_hold;
 	pw_init(&argc, &argv);
 	res = connect_stream(&data, argv[1], argv[3]);
 	if (res < 0)
 		fprintf(stderr, "stream connect failed: %s\n", spa_strerror(res));
 	if (res == 0)
-		res = receive_frames(&data, frames, (uint32_t)parsed_hold);
+		res = receive_frames(&data);
 	if (res < 0)
 		fprintf(stderr, "host capture failed: %s\n", spa_strerror(res));
 	clear(&data);

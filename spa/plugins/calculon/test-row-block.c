@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <spa/node/buffer-latest.h>
 #include <spa/node/command.h>
 #include <spa/node/io.h>
 #include <spa/node/node.h>
@@ -18,7 +17,7 @@
 #define HEIGHT 4u
 #define BLOCK_ROWS 2u
 #define PIXELS (WIDTH * HEIGHT)
-#define RAW_BYTES (PIXELS * sizeof(uint16_t))
+#define RAW_BLOCK_BYTES (WIDTH * BLOCK_ROWS * sizeof(uint16_t))
 #define BLOCK_BYTES (WIDTH * BLOCK_ROWS * sizeof(float))
 #define FRAME_BYTES (PIXELS * sizeof(float))
 
@@ -40,9 +39,8 @@ struct instance {
 
 struct buffer {
 	struct spa_buffer buffer;
-	struct spa_meta metas[2];
+	struct spa_meta metas[1];
 	struct spa_meta_header header;
-	struct spa_meta_progressive progressive;
 	struct spa_data data;
 	struct spa_chunk chunk;
 	_Alignas(8) uint8_t payload[FRAME_BYTES];
@@ -97,19 +95,20 @@ static void make_node(struct instance *instance,
 }
 
 static struct spa_pod *enum_format(struct instance *instance,
-		enum spa_direction direction)
+		enum spa_direction direction, uint32_t index)
 {
 	instance->capture.expected = SPA_PARAM_EnumFormat;
 	instance->capture.param = NULL;
 	spa_assert_se(spa_node_port_enum_params(instance->node, 1, direction, 0,
-			SPA_PARAM_EnumFormat, 0, 1, NULL) == 0);
+			SPA_PARAM_EnumFormat, index, 1, NULL) == 0);
 	spa_assert_se(instance->capture.param != NULL);
 	return instance->capture.param;
 }
 
-static void configure(struct instance *instance, enum spa_direction direction)
+static void configure(struct instance *instance, enum spa_direction direction,
+		uint32_t index)
 {
-	struct spa_pod *format = enum_format(instance, direction);
+	struct spa_pod *format = enum_format(instance, direction, index);
 
 	spa_assert_se(spa_node_port_set_param(instance->node, direction, 0,
 			SPA_PARAM_Format, 0, format) == 0);
@@ -122,8 +121,8 @@ static void negotiate(struct instance *output, struct instance *input)
 	struct spa_pod *negotiated = NULL;
 
 	spa_assert_se(spa_pod_filter(&builder, &negotiated,
-			enum_format(output, SPA_DIRECTION_OUTPUT),
-			enum_format(input, SPA_DIRECTION_INPUT)) == 0);
+			enum_format(output, SPA_DIRECTION_OUTPUT, 0),
+			enum_format(input, SPA_DIRECTION_INPUT, 0)) == 0);
 	spa_assert_se(negotiated != NULL);
 	spa_assert_se(spa_node_port_set_param(output->node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_PARAM_Format, 0, negotiated) == 0);
@@ -131,19 +130,13 @@ static void negotiate(struct instance *output, struct instance *input)
 			SPA_PARAM_Format, 0, negotiated) == 0);
 }
 
-static void init_buffer(struct buffer *buffer, uint32_t size, int32_t stride,
-		bool progressive)
+static void init_buffer(struct buffer *buffer, uint32_t size, int32_t stride)
 {
 	memset(buffer, 0, sizeof(*buffer));
 	buffer->metas[0] = (struct spa_meta) {
 		.type = SPA_META_Header,
 		.size = sizeof(buffer->header),
 		.data = &buffer->header,
-	};
-	buffer->metas[1] = (struct spa_meta) {
-		.type = SPA_META_Progressive,
-		.size = sizeof(buffer->progressive),
-		.data = &buffer->progressive,
 	};
 	buffer->data.type = SPA_DATA_MemPtr;
 	buffer->data.fd = -1;
@@ -152,7 +145,7 @@ static void init_buffer(struct buffer *buffer, uint32_t size, int32_t stride,
 	buffer->data.chunk = &buffer->chunk;
 	buffer->chunk.size = size;
 	buffer->chunk.stride = stride;
-	buffer->buffer.n_metas = progressive ? 2 : 1;
+	buffer->buffer.n_metas = 1;
 	buffer->buffer.metas = buffer->metas;
 	buffer->buffer.n_datas = 1;
 	buffer->buffer.datas = &buffer->data;
@@ -187,14 +180,9 @@ int main(int argc, char **argv)
 	const struct spa_handle_factory *pixel_factory, *assembly_factory;
 	struct instance pixel, assembly;
 	struct buffer raw, block, frame;
-	struct spa_buffer *raw_buffers[] = { &raw.buffer };
-	struct spa_buffer_latest *producer;
-	struct spa_io_buffers_latest latest_io = { 0 };
-	struct spa_io_buffers_latest_link latest_link = {
-		.id = 1,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &latest_io,
-		.notify_fd = -1,
+	struct spa_io_buffers raw_io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
 	};
 	struct spa_io_buffers block_io = {
 		.status = SPA_STATUS_NEED_DATA,
@@ -208,7 +196,7 @@ int main(int argc, char **argv)
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
 	uint16_t *raw_values;
 	const float *frame_values;
-	uint32_t raw_id, i;
+	uint32_t i;
 	void *library, *symbol;
 
 	spa_assert_se(argc == 2);
@@ -224,25 +212,20 @@ int main(int argc, char **argv)
 	spa_assert_se(pixel_factory != NULL && assembly_factory != NULL);
 	make_node(&pixel, pixel_factory, &info);
 	make_node(&assembly, assembly_factory, &info);
-	configure(&pixel, SPA_DIRECTION_INPUT);
+	/* The second exact input alternative is the raw U16 row-block ndarray. */
+	configure(&pixel, SPA_DIRECTION_INPUT, 1);
 	negotiate(&pixel, &assembly);
-	configure(&assembly, SPA_DIRECTION_OUTPUT);
+	configure(&assembly, SPA_DIRECTION_OUTPUT, 0);
 
-	init_buffer(&raw, RAW_BYTES, WIDTH * sizeof(uint16_t), true);
-	init_buffer(&block, BLOCK_BYTES, WIDTH * sizeof(float), false);
-	init_buffer(&frame, FRAME_BYTES, WIDTH * sizeof(float), false);
+	init_buffer(&raw, RAW_BLOCK_BYTES, WIDTH * sizeof(uint16_t));
+	init_buffer(&block, BLOCK_BYTES, WIDTH * sizeof(float));
+	init_buffer(&frame, FRAME_BYTES, WIDTH * sizeof(float));
 	use_buffer(&pixel, SPA_DIRECTION_INPUT, &raw);
 	use_buffer(&pixel, SPA_DIRECTION_OUTPUT, &block);
 	use_buffer(&assembly, SPA_DIRECTION_INPUT, &block);
 	use_buffer(&assembly, SPA_DIRECTION_OUTPUT, &frame);
-	producer = spa_buffer_latest_new(SPA_DIRECTION_OUTPUT, NULL, NULL);
-	spa_assert_se(producer != NULL);
-	spa_buffer_latest_set_buffers(producer, raw_buffers,
-			SPA_N_ELEMENTS(raw_buffers));
-	spa_assert_se(spa_buffer_latest_set_io(producer,
-			SPA_IO_BuffersLatestLink, &latest_link, sizeof(latest_link)) == 0);
 	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link, sizeof(latest_link)) == 0);
+			SPA_IO_Buffers, &raw_io, sizeof(raw_io)) == 0);
 	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, &block_io, sizeof(block_io)) == 0);
 	spa_assert_se(spa_node_port_set_io(assembly.node, SPA_DIRECTION_INPUT, 0,
@@ -252,31 +235,27 @@ int main(int argc, char **argv)
 
 	spa_assert_se(spa_node_send_command(assembly.node, &start) == 0);
 	spa_assert_se(spa_node_send_command(pixel.node, &start) == 0);
-	spa_assert_se(spa_buffer_latest_worker_begin(producer) == 0);
-	spa_assert_se(spa_buffer_latest_dequeue(producer, &raw_id, NULL) == 1);
-	spa_assert_se(raw_id == 0);
 	raw_values = (uint16_t *)raw.payload;
-	for (i = 0; i < PIXELS; i++)
+	for (i = 0; i < WIDTH * BLOCK_ROWS; i++)
 		raw_values[i] = (uint16_t)(i + 1u);
 	raw.header.flags = SPA_META_HEADER_FLAG_DISCONT;
+	raw.header.offset = 0;
 	raw.header.seq = 42;
 	raw.header.pts = 123456;
-	spa_assert_se(spa_meta_progressive_init(&raw.progressive, 0, 0,
-			RAW_BYTES, BLOCK_ROWS * WIDTH * sizeof(uint16_t)));
-	spa_meta_progressive_store_release(&raw.progressive,
-			spa_meta_progressive_snapshot_encode(RAW_BYTES / 2u,
-					SPA_META_PROGRESSIVE_STATE_ACTIVE));
-	spa_assert_se(spa_buffer_latest_begin_progressive(producer, raw_id) == 0);
+	raw_io.buffer_id = 0;
+	raw_io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(pixel.node) == SPA_STATUS_HAVE_DATA);
 	spa_assert_se(block.header.seq == 42 && block.header.offset == 0);
 	spa_assert_se((block.header.flags & SPA_META_HEADER_FLAG_DISCONT) != 0);
 	spa_assert_se((block.header.flags & SPA_META_HEADER_FLAG_MARKER) == 0);
 	spa_assert_se(spa_node_process(assembly.node) == SPA_STATUS_NEED_DATA);
 
-	spa_meta_progressive_store_release(&raw.progressive,
-			spa_meta_progressive_snapshot_encode(RAW_BYTES,
-					SPA_META_PROGRESSIVE_STATE_COMPLETE));
-	spa_assert_se(spa_buffer_latest_end_progressive(producer, raw_id) == 0);
+	for (i = 0; i < WIDTH * BLOCK_ROWS; i++)
+		raw_values[i] = (uint16_t)(WIDTH * BLOCK_ROWS + i + 1u);
+	raw.header.flags = SPA_META_HEADER_FLAG_MARKER;
+	raw.header.offset = BLOCK_ROWS;
+	raw_io.buffer_id = 0;
+	raw_io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(pixel.node) == SPA_STATUS_HAVE_DATA);
 	spa_assert_se(block.header.seq == 42 && block.header.offset == BLOCK_ROWS);
 	spa_assert_se((block.header.flags & SPA_META_HEADER_FLAG_MARKER) != 0);
@@ -326,14 +305,6 @@ int main(int argc, char **argv)
 
 	spa_assert_se(spa_node_send_command(pixel.node, &pause) == 0);
 	spa_assert_se(spa_node_send_command(assembly.node, &pause) == 0);
-	spa_assert_se(spa_buffer_latest_worker_end(producer) == 0);
-	latest_link.flags = 0;
-	latest_link.io = NULL;
-	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link, sizeof(latest_link)) == 0);
-	spa_assert_se(spa_buffer_latest_set_io(producer,
-			SPA_IO_BuffersLatestLink, &latest_link, sizeof(latest_link)) == 0);
-	spa_buffer_latest_destroy(producer);
 	destroy(&assembly);
 	destroy(&pixel);
 	spa_assert_se(dlclose(library) == 0);

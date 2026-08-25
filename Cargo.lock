@@ -227,7 +227,6 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libspa-ao"
 version = "0.10.1"
-source = "git+https://github.com/DarrylGamroth/PipeWireAO-rs.git?rev=d6a34012b091753eb74e82ae4a2574ea9e1b846d#d6a34012b091753eb74e82ae4a2574ea9e1b846d"
 dependencies = [
  "bitflags",
  "cc",
@@ -242,7 +241,6 @@ dependencies = [
 [[package]]
 name = "libspa-ao-sys"
 version = "0.10.1"
-source = "git+https://github.com/DarrylGamroth/PipeWireAO-rs.git?rev=d6a34012b091753eb74e82ae4a2574ea9e1b846d#d6a34012b091753eb74e82ae4a2574ea9e1b846d"
 dependencies = [
  "bindgen",
  "cc",

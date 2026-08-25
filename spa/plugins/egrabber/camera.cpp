@@ -88,7 +88,7 @@ std::string producer_path(const std::string &producer) {
     return producer;
 }
 
-bool supports_progressive_dma(const Options &options, const CameraIdentity &identity) {
+bool supports_row_readout(const Options &options, const CameraIdentity &identity) {
     const auto named_frame_grabber = options.producer == "grablink" ||
         options.producer == "coaxlink" ||
         options.producer.find("grablink.cti") != std::string::npos ||
@@ -190,7 +190,7 @@ public:
           discovery_(std::make_unique<Euresys::EGrabberDiscovery>(gentl_)),
           selection_(select_camera(*discovery_, options)), grabber_(selection_),
           buffer_count_(options.buffer_count),
-          progressive_supported_(supports_progressive_dma(options, selection_.identity)) {
+          row_readout_supported_(supports_row_readout(options, selection_.identity)) {
         discovery_.reset();
         configure_control(options);
         update_identity_from_control();
@@ -218,7 +218,7 @@ public:
     const std::vector<Feature> &features() const { return features_; }
     const CameraIdentity &identity() const { return selection_.identity; }
     const std::string &camera_serial() const { return camera_serial_; }
-    bool progressive_supported() const { return progressive_supported_; }
+    bool row_readout_supported() const { return row_readout_supported_; }
     std::size_t buffer_count() const { return buffer_count_; }
     std::size_t announce_minimum() const { return announce_minimum_; }
     std::size_t buffer_alignment() const { return buffer_alignment_; }
@@ -871,7 +871,7 @@ private:
     std::size_t buffer_alignment_ = 1;
     std::string pixel_format_;
     std::string host_memory_type_;
-    bool progressive_supported_ = false;
+    bool row_readout_supported_ = false;
     std::vector<Feature> features_;
     QuerySupport frame_id_support_ = QuerySupport::unknown;
     QuerySupport timestamp_support_ = QuerySupport::unknown;
@@ -907,7 +907,7 @@ const std::string &Camera::pixel_format() const { return impl_->pixel_format(); 
 const std::vector<Feature> &Camera::features() const { return impl_->features(); }
 const CameraIdentity &Camera::identity() const { return impl_->identity(); }
 const std::string &Camera::camera_serial() const { return impl_->camera_serial(); }
-bool Camera::progressive_supported() const { return impl_->progressive_supported(); }
+bool Camera::row_readout_supported() const { return impl_->row_readout_supported(); }
 bool Camera::dma_buf_supported() { return impl_->dma_buf_supported(); }
 void Camera::set_frame_callback(FrameCallback callback) { impl_->set_frame_callback(std::move(callback)); }
 void Camera::clear_frame_callback() { impl_->clear_frame_callback(); }

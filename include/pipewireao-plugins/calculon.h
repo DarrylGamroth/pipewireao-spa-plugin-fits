@@ -36,6 +36,8 @@
 	"org.calculon.ao.demanded-pdm-command/1"
 #define SPA_CALCULON_SCHEMA_CALIBRATED_PIXEL_ROW_BLOCK \
 	"org.calculon.ao.calibrated-pixel-row-block/1"
+#define SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK \
+	"org.calculon.ao.raw-pixel-row-block/1"
 
 #define SPA_PROP_CALCULON_PIXEL_CALIBRATION_FLAT_SEQ \
 	(SPA_PROP_START_CUSTOM + 0)

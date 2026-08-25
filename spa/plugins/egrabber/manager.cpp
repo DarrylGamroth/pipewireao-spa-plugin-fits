@@ -106,6 +106,8 @@ int emit_camera(impl *self, uint32_t id)
 					self->options.clprotocol_libraries);
 	const std::string control_timeout_ms = std::to_string(
 			self->options.control_timeout_ms);
+	const std::string row_block_rows = std::to_string(
+			self->options.row_block_rows);
 	struct spa_dict_item items[32];
 	uint32_t n_items = 0;
 
@@ -136,8 +138,12 @@ int emit_camera(impl *self, uint32_t id)
 				self->options.genapi_runtime->c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS,
 			control_timeout_ms.c_str());
-	ADD_ITEM(SPA_KEY_API_EGRABBER_PROGRESSIVE,
-			egrabber_pipewire::progressive_policy_name(self->options.progressive));
+	ADD_ITEM(SPA_KEY_API_EGRABBER_OUTPUT_MODE,
+			egrabber_pipewire::output_mode_name(self->options.output_mode));
+	ADD_ITEM(SPA_KEY_API_EGRABBER_ROW_BLOCK_ROWS, row_block_rows.c_str());
+	if (self->options.detector_profile)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_DETECTOR_PROFILE,
+				self->options.detector_profile->c_str());
 	if (self->options.acquisition_domain) {
 		ADD_ITEM(SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN,
 				acquisition_domain.c_str());

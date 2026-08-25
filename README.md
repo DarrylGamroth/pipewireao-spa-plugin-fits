@@ -19,7 +19,7 @@ The separate scientific-algorithm boundary is recorded in
 [Algorithm plugin architecture](docs/algorithm-plugin-architecture.md).
 The generic bounded handoff for isolating telemetry, GUI, and recorder graphs
 is specified in [Bounded queue module](docs/queue.md).
-The complete-frame and progressive row-block topology is described in
+The complete-frame and row-block topology is described in
 [Scheduled node and row-block migration](docs/scheduled-node-migration.md).
 
 ## Build
@@ -149,8 +149,8 @@ discard actuator commands when ASDK is absent or unavailable.
 ## Ownership boundary
 
 - PipeWireAO owns generic transport and execution contracts, including native
-  ndarray formats, semantic-schema and profile negotiation, ordinary graph
-  I/O, polling data loops, and the narrow progressive-lease interfaces.
+  ndarray formats, acquisition metadata, semantic-schema and profile
+  negotiation, ordinary graph I/O, and polling data loops.
 - This repository owns the optional `libpipewire-module-queue` topology adapter
   that applies an explicit finite capacity, overflow policy, and copy or lease
   storage boundary between producer and observer graphs.
@@ -169,11 +169,11 @@ detector frames into `F32_LE` calibrated-pixel ndarrays. Optional flat and
 background artifact ports use Calculon-owned schemas and standard Header
 sequence numbers; a node `Props` update activates a complete pair atomically.
 Complete-frame operation uses standard `SPA_IO_Buffers`. With
-`api.calculon.row-block-rows=N`, its raw port retains the exceptional eGrabber
-progressive lease and publishes complete `[N,width]` micro-buffers through
-ordinary I/O. `api.calculon.frame-assembly` reconstructs complete frames for
-the remaining algorithms and observers. Both factories perform no steady-state
-heap allocation in `process`.
+`api.calculon.row-block-rows=N`, its raw port accepts complete U16
+`[N,width]` ndarray blocks and publishes complete F32 `[N,width]` blocks.
+`api.calculon.frame-assembly` reconstructs complete frames for the remaining
+algorithms and observers. Both factories perform no steady-state heap
+allocation in `process`.
 
 The adapter and algorithm are Rust. The exported shared object is nevertheless
 an ordinary C SPA plugin. See the architecture document for port formats,

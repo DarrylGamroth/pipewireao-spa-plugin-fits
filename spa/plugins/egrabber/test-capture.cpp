@@ -237,15 +237,12 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 				static_cast<uint32_t>(alignment));
 		buffers[i] = &storage[i].buffer;
 	}
-	struct spa_io_buffers_latest io = {};
-	struct spa_io_buffers_latest_link link = {
-		.id = 1,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &io,
-		.notify_fd = -1,
+	struct spa_io_buffers io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
 	};
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link)) == 0);
+			SPA_IO_Buffers, &io, sizeof(io)) == 0);
 	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 			buffers.data(), buffers.size()) == 0);
 	format = enum_one(node, params, SPA_PARAM_Format);
@@ -270,14 +267,11 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 	int64_t last_pts = SPA_TIME_INVALID;
 	while (frames < requested_frames) {
 		spa_assert_se(spa_node_process(node) >= SPA_STATUS_OK);
-		uint64_t submission;
-		uint32_t id;
-		const int received = spa_io_buffers_latest_receive(&io, &submission, &id);
-		if (received == -EPIPE) {
+		if (io.status != SPA_STATUS_HAVE_DATA) {
 			spa_assert_se(monotonic_nsec() < deadline);
 			continue;
 		}
-		spa_assert_se(received == 0);
+		const uint32_t id = io.buffer_id;
 		spa_assert_se(id < storage.size());
 		spa_assert_se(storage[id].chunk.size > 0);
 		spa_assert_se(storage[id].chunk.size <=
@@ -287,15 +281,14 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 			spa_assert_se(storage[id].header.pts > last_pts);
 		last_pts = storage[id].header.pts;
 		spa_assert_se(spa_meta_acquisition_is_valid(&storage[id].metas[1]));
-		spa_assert_se(spa_io_buffers_latest_complete(&io, id) == 0);
+		io.status = SPA_STATUS_NEED_DATA;
 		frames++;
 	}
 
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
-	link.flags = 0;
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link)) == 0);
+			SPA_IO_Buffers, nullptr, 0) == 0);
 	format = enum_one(node, params, SPA_PARAM_Format);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_PARAM_Format, 0, format) == 0);
@@ -322,12 +315,14 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 	return 0;
 }
 
-void reject_required_progressive_on_gigelink(
+void reject_row_blocks_on_gigelink(
 		const struct spa_handle_factory *factory)
 {
-	const struct spa_dict_item item = SPA_DICT_ITEM_INIT(
-			SPA_KEY_API_EGRABBER_PROGRESSIVE, "require");
-	const struct spa_dict info = SPA_DICT_INIT(&item, 1);
+	const struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_EGRABBER_OUTPUT_MODE, "row-block"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_EGRABBER_DETECTOR_PROFILE, "test-detector"),
+	};
+	const struct spa_dict info = SPA_DICT_INIT_ARRAY(items);
 	const size_t size = factory->get_size(factory, &info);
 	std::unique_ptr<void, decltype(&free)> memory(calloc(1, size), free);
 	spa_assert_se(memory != nullptr);
@@ -354,7 +349,7 @@ int main(int argc, char **argv)
 	const char *producer = argc == 3 ? argv[2] : nullptr;
 	const int res = capture(factory, producer);
 	if (res == 0 && producer == nullptr)
-		reject_required_progressive_on_gigelink(factory);
+		reject_row_blocks_on_gigelink(factory);
 	spa_assert_se(dlclose(library) == 0);
 	return res;
 }

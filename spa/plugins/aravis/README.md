@@ -8,7 +8,7 @@ cost than the direct eGrabber and BGAPI2 integrations.
 The plugin remains useful for functional GenTL compatibility experiments and
 for comparing a GLib-based acquisition stack with the vendor-specific
 adapters. It supports complete frames in mapped host memory. It does not
-provide progressive acquisition, native Aravis GigE Vision qualification,
+provide row-block acquisition, native Aravis GigE Vision qualification,
 hotplug discovery, or a real-time performance claim.
 
 Build it explicitly against Aravis 0.10:

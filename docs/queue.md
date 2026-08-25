@@ -68,16 +68,15 @@ queue.storage = copy
 
 `queue.storage = lease` selects the bounded zero-payload-copy alternative.
 
-For progressive camera processing, place the queue after complete-frame
-assembly, not on the changing camera lease or between row-block producers and
-the assembler:
+For row-block camera processing, place the queue after complete-frame
+assembly, not between row-block producers and the assembler:
 
 ```text
 eGrabber -> pixel calibration -> frame assembly -> capacity-one queue -> GUI
 ```
 
-This keeps progressive ownership inside the real-time graph and makes the
-queue's input a complete immutable ndarray, as required by QUEUE-001.
+This makes the queue's input a complete immutable frame ndarray, as required
+by QUEUE-001, and leaves row-block sequencing inside the real-time graph.
 
 A PipeWire configuration fragment can load the module as follows:
 
@@ -139,11 +138,11 @@ reason that `backpressure` is not the observer-isolation profile.
 The module MUST expose one input stream and one output stream using ordinary
 PipeWire complete-buffer transport. It MUST negotiate one exact
 `application/ndarray` format on the input and advertise that exact format on
-the output. It MUST NOT require PipeWireAO latest-buffer or progressive-buffer
-I/O.
+the output. It MUST NOT require a private buffer-ownership protocol on either
+side.
 
 Verification intent (informative): inspect stream flags and negotiated PODs;
-exercise an exact ndarray format without latest-buffer I/O.
+exercise an exact ndarray format through ordinary stream I/O.
 
 ### QUEUE-002 — Finite capacity and admission
 
@@ -192,10 +191,10 @@ tests for unshareable storage.
 
 The initial implementation accepts at most eight data blocks and 32 metadata
 records per buffer. Copy storage requires CPU-mapped input data. Lease storage
-requires every data block to be a shareable `MemFd` or `DmaBuf`. Progressive
-metadata and explicit `SyncTimeline`/`SyncObj` DMA synchronization are rejected
-in this version; supporting them requires a separate synchronization contract,
-not a silent fallback.
+requires every data block to be a shareable `MemFd` or `DmaBuf`. Explicit
+`SyncTimeline`/`SyncObj` DMA synchronization is rejected in this version;
+supporting it requires a separate synchronization contract, not a silent
+fallback.
 
 ### QUEUE-005 — Producer repeated path
 
@@ -330,7 +329,7 @@ ownership but do not reset them.
 - An unbounded queue or dynamically growing repeated-path storage.
 - Byte, duration, or watermark capacity in the first profile.
 - A producer-side notification, eventfd write, timer, or busy-wait loop.
-- Progressive or partially committed payloads.
+- Partially committed payloads.
 - Semantic joins, timestamp rendezvous, zero-order hold, or missing-input
   policy.
 - A claim that zero-copy is faster than copy storage without measurement.

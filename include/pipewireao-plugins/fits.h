@@ -13,6 +13,5 @@
 #define SPA_KEY_API_FITS_IO_MODE "api.fits.io-mode"
 #define SPA_KEY_API_FITS_PREFAULT "api.fits.prefault"
 #define SPA_KEY_API_FITS_LOOP "api.fits.loop"
-#define SPA_KEY_API_FITS_PROGRESSIVE "api.fits.progressive"
 
 #endif /* PIPEWIREAO_PLUGINS_FITS_H */

@@ -44,9 +44,9 @@ if get_option('tests').allowed()
     include_directories: plugin_include,
     c_args: ['-Wno-pedantic'],
   )
-  calculon_progressive_test = executable(
-    'spa-calculon-progressive-test',
-    'test-progressive.c',
+  calculon_row_block_test = executable(
+    'spa-calculon-row-block-test',
+    'test-row-block.c',
     dependencies: [spa_dep, dl_dep],
     include_directories: plugin_include,
     c_args: ['-Wno-pedantic'],
@@ -74,8 +74,8 @@ if get_option('tests').allowed()
     depends: [calculon_lib, alpao_mock_lib],
   )
   test(
-    'spa-calculon-progressive',
-    calculon_progressive_test,
+    'spa-calculon-row-block',
+    calculon_row_block_test,
     args: [calculon_lib.full_path()],
     depends: calculon_lib,
   )

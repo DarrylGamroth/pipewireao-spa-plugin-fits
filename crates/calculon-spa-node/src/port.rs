@@ -6,7 +6,6 @@ use libspa::sys;
 
 use crate::Format;
 use crate::format::FormatConstraint;
-use crate::latest::LatestBuffers;
 
 pub(crate) const MAX_BUFFERS: usize = 16;
 
@@ -46,9 +45,6 @@ pub struct Port {
     pub(crate) buffers: [BufferSlot; MAX_BUFFERS],
     pub(crate) n_buffers: usize,
     pub(crate) io: *mut sys::spa_io_buffers,
-    pub(crate) latest: LatestBuffers,
-    latest_input_id: u32,
-    latest_allowed: bool,
     pub(crate) required: bool,
     pub(crate) configuration: bool,
 }
@@ -85,9 +81,6 @@ impl Port {
             buffers: std::array::from_fn(|_| BufferSlot::empty()),
             n_buffers: 0,
             io: ptr::null_mut(),
-            latest: LatestBuffers::empty(),
-            latest_input_id: sys::SPA_ID_INVALID,
-            latest_allowed: false,
             required,
             configuration,
         };
@@ -98,15 +91,6 @@ impl Port {
         port.info.params = port.params.as_mut_ptr();
         port.info.n_params = port.params.len() as u32;
         port
-    }
-
-    /// Allows the exceptional latest-buffer transport on this port.
-    ///
-    /// Ordinary scheduled buffers remain available. This opt-in is reserved
-    /// for ports that must retain a progressively filled producer lease.
-    pub fn with_latest_transport(mut self) -> Self {
-        self.latest_allowed = true;
-        self
     }
 
     /// Returns the stable port reference.
@@ -129,23 +113,6 @@ impl Port {
         if self.key.direction != sys::SPA_DIRECTION_INPUT {
             return Err(-libc::EINVAL);
         }
-        if self.latest.has_links() {
-            let id = if self.latest_input_id == sys::SPA_ID_INVALID {
-                let Some(id) = self.latest.dequeue()? else {
-                    return Ok(None);
-                };
-                self.latest_input_id = id;
-                id
-            } else {
-                self.latest_input_id
-            };
-            let slot = self
-                .buffers
-                .get(id as usize)
-                .filter(|_| (id as usize) < self.n_buffers)
-                .ok_or(-libc::EPROTO)?;
-            return Ok(Some((id, slot.buffer)));
-        }
         let io = unsafe { self.io.as_mut() }.ok_or(-libc::EIO)?;
         if io.status != sys::SPA_STATUS_HAVE_DATA as i32 {
             return Ok(None);
@@ -161,13 +128,6 @@ impl Port {
 
     /// Releases the current input buffer back to its upstream owner.
     pub fn consume_input(&mut self) -> Result<(), i32> {
-        if self.latest.has_links() {
-            let id = std::mem::replace(&mut self.latest_input_id, sys::SPA_ID_INVALID);
-            if id == sys::SPA_ID_INVALID {
-                return Err(-libc::EINVAL);
-            }
-            return self.latest.queue(id);
-        }
         let io = unsafe { self.io.as_mut() }.ok_or(-libc::EIO)?;
         io.status = sys::SPA_STATUS_NEED_DATA as i32;
         Ok(())
@@ -177,9 +137,6 @@ impl Port {
     pub fn reject_input(&mut self, error: i32) -> Result<(), i32> {
         if error >= 0 {
             return Err(-libc::EINVAL);
-        }
-        if self.latest.has_links() {
-            return self.consume_input();
         }
         let io = unsafe { self.io.as_mut() }.ok_or(-libc::EIO)?;
         io.status = error;
@@ -192,9 +149,6 @@ impl Port {
     pub fn output_pending(&mut self) -> Result<bool, i32> {
         if self.key.direction != sys::SPA_DIRECTION_OUTPUT {
             return Err(-libc::EINVAL);
-        }
-        if self.latest.has_links() {
-            return Ok(false);
         }
         let io = unsafe { self.io.as_mut() }.ok_or(-libc::EIO)?;
         if io.status == sys::SPA_STATUS_HAVE_DATA as i32 {
@@ -212,18 +166,6 @@ impl Port {
         if self.output_pending()? {
             return Ok(None);
         }
-        if self.latest.has_links() {
-            let Some(id) = self.latest.dequeue()? else {
-                return Ok(None);
-            };
-            let buffer = self
-                .buffers
-                .get(id as usize)
-                .filter(|_| (id as usize) < self.n_buffers)
-                .ok_or(-libc::EPROTO)?
-                .buffer;
-            return Ok(Some((id, buffer)));
-        }
         let Some(id) = self.buffers[..self.n_buffers]
             .iter()
             .position(|slot| slot.available)
@@ -236,9 +178,6 @@ impl Port {
 
     /// Returns a reserved output buffer to this port without publishing it.
     pub fn cancel_output(&mut self, id: u32) -> Result<(), i32> {
-        if self.latest.has_links() {
-            return self.latest.return_buffer(id);
-        }
         let slot = self
             .buffers
             .get_mut(id as usize)
@@ -252,9 +191,6 @@ impl Port {
     pub fn publish_output(&mut self, id: u32) -> Result<(), i32> {
         if id as usize >= self.n_buffers {
             return Err(-libc::EINVAL);
-        }
-        if self.latest.has_links() {
-            return self.latest.queue(id);
         }
         let io = unsafe { self.io.as_mut() }.ok_or(-libc::EIO)?;
         io.buffer_id = id;
@@ -273,24 +209,12 @@ impl Port {
     }
 
     pub(crate) fn clear_buffers(&mut self) {
-        self.latest.clear_buffers();
-        self.latest_input_id = sys::SPA_ID_INVALID;
         self.buffers = std::array::from_fn(|_| BufferSlot::empty());
         self.n_buffers = 0;
     }
 
     pub(crate) fn ready(&self) -> bool {
-        self.format.is_some()
-            && (!self.io.is_null() || self.latest.has_links())
-            && self.n_buffers > 0
-    }
-
-    pub(crate) fn update_latest_buffers(&mut self) {
-        let mut buffers: Vec<_> = self.buffers[..self.n_buffers]
-            .iter()
-            .map(|slot| slot.buffer)
-            .collect();
-        self.latest.set_buffers(&mut buffers);
+        self.format.is_some() && !self.io.is_null() && self.n_buffers > 0
     }
 
     pub(crate) fn set_io(
@@ -299,57 +223,14 @@ impl Port {
         data: *mut std::ffi::c_void,
         size: usize,
     ) -> Result<(), i32> {
-        match id {
-            sys::SPA_IO_Buffers => {
-                if !data.is_null() && size < std::mem::size_of::<sys::spa_io_buffers>() {
-                    return Err(-libc::ENOSPC);
-                }
-                self.io = data.cast();
-                Ok(())
-            }
-            sys::SPA_IO_BuffersLatest
-            | sys::SPA_IO_BuffersLatestNotify
-            | sys::SPA_IO_BuffersLatestLink => {
-                if !self.latest_allowed {
-                    return Err(-libc::ENOENT);
-                }
-                let owner = std::ptr::from_mut(self).cast();
-                let mut buffers: Vec<_> = self.buffers[..self.n_buffers]
-                    .iter()
-                    .map(|slot| slot.buffer)
-                    .collect();
-                self.latest
-                    .set_io(self.key.direction, owner, id, data, size, &mut buffers)
-            }
-            _ => Err(-libc::ENOENT),
+        if id != sys::SPA_IO_Buffers {
+            return Err(-libc::ENOENT);
         }
-    }
-
-    pub(crate) fn is_latest_io(&self, id: u32) -> bool {
-        self.latest_allowed
-            && matches!(
-                id,
-                sys::SPA_IO_BuffersLatest
-                    | sys::SPA_IO_BuffersLatestNotify
-                    | sys::SPA_IO_BuffersLatestLink
-            )
-    }
-
-    pub(crate) const fn latest_allowed(&self) -> bool {
-        self.latest_allowed
-    }
-
-    /// Returns whether this port is currently bound to a latest-buffer link.
-    pub fn uses_latest_transport(&self) -> bool {
-        self.latest.has_links()
-    }
-
-    pub(crate) fn worker_begin(&mut self) -> Result<(), i32> {
-        self.latest.worker_begin()
-    }
-
-    pub(crate) fn worker_end(&mut self) -> Result<(), i32> {
-        self.latest.worker_end()
+        if !data.is_null() && size < std::mem::size_of::<sys::spa_io_buffers>() {
+            return Err(-libc::ENOSPC);
+        }
+        self.io = data.cast();
+        Ok(())
     }
 }
 

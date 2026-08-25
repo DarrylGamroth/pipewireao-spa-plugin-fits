@@ -47,7 +47,7 @@ endif
 egrabber_lib = shared_library(
   'spa-egrabber',
   egrabber_sources,
-  include_directories: egrabber_includes,
+  include_directories: egrabber_includes + [plugin_include],
   dependencies: egrabber_dependencies,
   cpp_args: egrabber_cpp_args,
   install: true,

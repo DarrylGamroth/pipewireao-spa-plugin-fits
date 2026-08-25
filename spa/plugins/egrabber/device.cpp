@@ -41,6 +41,7 @@ struct impl {
 	std::string buffer_count;
 	std::string clprotocol_libraries;
 	std::string control_timeout_ms;
+	std::string row_block_rows;
 	std::string acquisition_domain;
 	std::string acquisition_generation;
 	std::string acquisition_sequence_context;
@@ -71,8 +72,13 @@ void add_identity_items(const impl *self, struct spa_dict_item *items,
 				self->options.genapi_runtime->c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS,
 			self->control_timeout_ms.c_str());
-	ADD_ITEM(SPA_KEY_API_EGRABBER_PROGRESSIVE,
-			egrabber_pipewire::progressive_policy_name(self->options.progressive));
+	ADD_ITEM(SPA_KEY_API_EGRABBER_OUTPUT_MODE,
+			egrabber_pipewire::output_mode_name(self->options.output_mode));
+	ADD_ITEM(SPA_KEY_API_EGRABBER_ROW_BLOCK_ROWS,
+			self->row_block_rows.c_str());
+	if (self->options.detector_profile)
+		ADD_ITEM(SPA_KEY_API_EGRABBER_DETECTOR_PROFILE,
+				self->options.detector_profile->c_str());
 	if (self->options.acquisition_domain) {
 		ADD_ITEM(SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN,
 				self->acquisition_domain.c_str());
@@ -237,6 +243,7 @@ int init(const struct spa_handle_factory *, struct spa_handle *handle,
 					self->options.clprotocol_libraries);
 	self->control_timeout_ms = std::to_string(
 			self->options.control_timeout_ms);
+	self->row_block_rows = std::to_string(self->options.row_block_rows);
 	if (self->options.acquisition_domain)
 		self->acquisition_domain = egrabber_pipewire::format_acquisition_domain(
 				*self->options.acquisition_domain);

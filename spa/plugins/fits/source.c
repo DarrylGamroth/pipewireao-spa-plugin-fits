@@ -843,9 +843,6 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	value = spa_dict_lookup(info, SPA_KEY_API_FITS_LOOP);
 	if (parse_bool(value, true, &self->loop) < 0)
 		return -EINVAL;
-	value = spa_dict_lookup(info, SPA_KEY_API_FITS_PROGRESSIVE);
-	if (value != NULL && !spa_streq(value, "disabled"))
-		return -ENOTSUP;
 	options.path = self->path;
 	if ((res = fits_cube_open(&self->cube, &options, message,
 			sizeof(message))) < 0) {
