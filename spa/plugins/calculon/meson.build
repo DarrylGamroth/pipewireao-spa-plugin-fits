@@ -1,12 +1,7 @@
 cargo = find_program('cargo')
 python = import('python').find_installation('python3')
 cargo_profile = get_option('buildtype') in ['release', 'minsize'] ? 'release' : 'debug'
-configured_pkg_config_path = run_command(
-  python,
-  '-c',
-  'import os; print(os.environ.get("PKG_CONFIG_PATH", ""))',
-  check: true,
-).stdout().strip()
+configured_pkg_config_path = ':'.join(get_option('pkg_config_path'))
 
 calculon_lib = custom_target(
   'spa-calculon',
