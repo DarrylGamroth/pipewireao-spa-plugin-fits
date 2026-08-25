@@ -21,6 +21,13 @@ int main()
 		threw = true;
 	}
 	assert(threw);
+	threw = false;
+	try {
+		(void) sequence.observe(102);
+	} catch (const std::runtime_error &) {
+		threw = true;
+	}
+	assert(threw);
 
 	AcquisitionKeySequence duplicate(42);
 	(void) duplicate.observe(100);

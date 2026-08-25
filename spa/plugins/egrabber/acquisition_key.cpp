@@ -13,9 +13,11 @@ AcquisitionKeySequence::AcquisitionKeySequence(std::uint64_t generation) noexcep
 
 AcquisitionKey AcquisitionKeySequence::observe(std::uint32_t sequence)
 {
-	if (last_sequence_ && sequence <= *last_sequence_)
+	if (invalid_ || (last_sequence_ && sequence <= *last_sequence_)) {
+		invalid_ = true;
 		throw std::runtime_error(
 				"non-increasing acquisition sequence requires a new shared generation");
+	}
 	last_sequence_ = sequence;
 	return {generation_, sequence};
 }

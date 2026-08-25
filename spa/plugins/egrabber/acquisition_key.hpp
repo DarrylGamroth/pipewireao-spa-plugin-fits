@@ -20,6 +20,7 @@ public:
 private:
 	std::uint64_t generation_ = 0;
 	std::optional<std::uint32_t> last_sequence_;
+	bool invalid_ = false;
 };
 
 } // namespace egrabber_pipewire
