@@ -222,7 +222,7 @@ static void run_source(const struct spa_handle_factory *factory,
 			&handle);
 	struct spa_pod *format, *buffers_param;
 	int32_t payload_size = 0;
-	uint32_t id, i;
+	uint32_t cycle, id, i, second_pass = 0;
 	int res;
 
 	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
@@ -259,28 +259,34 @@ static void run_source(const struct spa_handle_factory *factory,
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, &io, sizeof(io)) == 0);
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
-	while (io.status != SPA_STATUS_HAVE_DATA) {
-		res = spa_node_process(node);
-		spa_assert_se(res >= SPA_STATUS_OK);
-	}
-	id = io.buffer_id;
-	spa_assert_se(id < N_BUFFERS);
-	spa_assert_se(storage[id].chunk.size == test->expected_size);
-	spa_assert_se(storage[id].header.pts != SPA_TIME_INVALID);
-	if (test->sample_rank == 1) {
-		const double *values = storage[id].payload;
-		uint64_t frame = storage[id].header.seq % 3u;
+	for (cycle = 0; cycle < N_BUFFERS * 2u; cycle++) {
+		while (io.status != SPA_STATUS_HAVE_DATA) {
+			res = spa_node_process(node);
+			spa_assert_se(res >= SPA_STATUS_OK);
+		}
+		id = io.buffer_id;
+		spa_assert_se(id < N_BUFFERS);
+		if (cycle >= N_BUFFERS)
+			second_pass |= 1u << id;
+		spa_assert_se(storage[id].chunk.size == test->expected_size);
+		spa_assert_se(storage[id].header.pts != SPA_TIME_INVALID);
+		if (test->sample_rank == 1) {
+			const double *values = storage[id].payload;
+			uint64_t frame = storage[id].header.seq % 3u;
 
-		for (i = 0; i < 4; i++)
-			spa_assert_se(values[i] == frame * 10.0 + i);
-	} else {
-		const uint16_t *values = storage[id].payload;
-		uint64_t frame = storage[id].header.seq % 2u;
+			for (i = 0; i < 4; i++)
+				spa_assert_se(values[i] == frame * 10.0 + i);
+		} else {
+			const uint16_t *values = storage[id].payload;
+			uint64_t frame = storage[id].header.seq % 2u;
 
-		for (i = 0; i < 12; i++)
-			spa_assert_se(values[i] == frame * 100u + (i / 4u) * 10u + i % 4u);
+			for (i = 0; i < 12; i++)
+				spa_assert_se(values[i] ==
+						frame * 100u + (i / 4u) * 10u + i % 4u);
+		}
+		io.status = SPA_STATUS_NEED_DATA;
 	}
-	io.status = SPA_STATUS_NEED_DATA;
+	spa_assert_se(second_pass == (1u << N_BUFFERS) - 1u);
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, NULL, 0) == 0);

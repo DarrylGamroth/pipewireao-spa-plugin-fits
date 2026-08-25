@@ -41,6 +41,15 @@ install_headers(
   subdir: 'pipewireao-plugins-0.1/pipewireao-plugins',
 )
 
+if get_option('tests').allowed()
+  image_frame_test = executable(
+    'spa-image-frame-test',
+    'spa/plugins/test-image-frame.c',
+    dependencies: spa_dep,
+  )
+  test('spa-image-frame', image_frame_test)
+endif
+
 subdir('spa/plugins/alpao')
 subdir('spa/plugins/calculon')
 subdir('src/modules/queue')

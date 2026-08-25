@@ -13,6 +13,7 @@ extern "C" {
 #endif
 
 #define BGAPI2_CAMERA_ANY_INTERFACE UINT32_MAX
+#define BGAPI2_CAMERA_MAX_BUFFERS 64u
 
 enum bgapi2_camera_completion_mode {
 	BGAPI2_CAMERA_COMPLETION_CALLBACK,

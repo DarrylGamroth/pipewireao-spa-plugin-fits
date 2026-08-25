@@ -9,9 +9,9 @@
 #include <string.h>
 #include <time.h>
 
-#include <spa/buffer/image-source-buffers.h>
 #include <spa/buffer/meta.h>
 #include <spa/monitor/device.h>
+#include <spa/node/io.h>
 #include <spa/node/keys.h>
 #include <spa/node/node.h>
 #include <spa/node/utils.h>
@@ -28,9 +28,10 @@
 
 #include "cube.h"
 #include "fits.h"
+#include "../image-frame.h"
 
 #define MIN_BUFFERS 2u
-#define MAX_BUFFERS SPA_IMAGE_SOURCE_MAX_BUFFERS
+#define MAX_BUFFERS 64u
 #define TEXT_SIZE 512u
 
 enum output_kind {
@@ -39,11 +40,26 @@ enum output_kind {
 	OUTPUT_GRAY16,
 };
 
+enum buffer_state {
+	BUFFER_AVAILABLE,
+	BUFFER_PRODUCER,
+	BUFFER_PUBLISHED,
+};
+
+struct buffer {
+	struct spa_buffer *buffer;
+	uint32_t id;
+	enum buffer_state state;
+};
+
 struct port {
 	uint64_t info_all;
 	struct spa_port_info info;
 	struct spa_param_info params[5];
 	enum output_kind output;
+	struct spa_io_buffers *io;
+	struct buffer buffers[MAX_BUFFERS];
+	uint32_t scan_hint;
 	bool have_format;
 	uint32_t n_buffers;
 };
@@ -78,8 +94,6 @@ struct impl {
 	char prefault_text[8];
 	char loop_text[8];
 	struct port port;
-	struct spa_image_source_buffers transport;
-	struct spa_image_source source;
 	struct fits_cube *cube;
 	struct fits_cube_info cube_info;
 	struct spa_fraction rate;
@@ -293,7 +307,7 @@ static int node_send_command(void *object, const struct spa_command *command)
 	switch (SPA_NODE_COMMAND_ID(command)) {
 	case SPA_NODE_COMMAND_Start:
 		if (!self->port.have_format || self->port.n_buffers == 0 ||
-				self->transport.io == NULL)
+				self->port.io == NULL)
 			return -EIO;
 		if (self->started)
 			return 0;
@@ -565,14 +579,14 @@ static int port_set_param(void *object, enum spa_direction direction,
 
 static int release_buffers(struct impl *self)
 {
-	int res;
+	uint32_t i;
 
 	if (self->started)
 		return -EBUSY;
-	res = spa_image_source_buffers_teardown(&self->transport, &self->source);
-	if (res < 0)
-		return res;
+	for (i = 0; i < self->port.n_buffers; i++)
+		memset(&self->port.buffers[i], 0, sizeof(self->port.buffers[i]));
 	self->port.n_buffers = 0;
+	self->port.scan_hint = 0;
 	return 0;
 }
 
@@ -583,7 +597,6 @@ static int port_use_buffers(void *object, enum spa_direction direction,
 	struct impl *self = object;
 	size_t required;
 	uint32_t i;
-	int res;
 
 	spa_return_val_if_fail(direction == SPA_DIRECTION_OUTPUT && port_id == 0,
 			-EINVAL);
@@ -606,11 +619,14 @@ static int port_use_buffers(void *object, enum spa_direction direction,
 				data->maxsize < required || data->chunk == NULL)
 			return -EINVAL;
 	}
-	res = spa_image_source_buffers_prepare(&self->transport, &self->source,
-			buffers, n_buffers);
-	if (res < 0)
-		return res;
+	for (i = 0; i < n_buffers; i++)
+		self->port.buffers[i] = (struct buffer) {
+			.buffer = buffers[i],
+			.id = i,
+			.state = BUFFER_AVAILABLE,
+		};
 	self->port.n_buffers = n_buffers;
+	self->port.scan_hint = 0;
 	return 0;
 }
 
@@ -623,7 +639,10 @@ static int port_set_io(void *object, enum spa_direction direction,
 			-EINVAL);
 	if (id != SPA_IO_Buffers)
 		return -ENOENT;
-	return spa_image_source_buffers_set_io(&self->transport, data, size);
+	if (data != NULL && size < sizeof(struct spa_io_buffers))
+		return -EINVAL;
+	self->port.io = data;
+	return 0;
 }
 
 static int port_reuse_buffer(void *object SPA_UNUSED,
@@ -632,12 +651,64 @@ static int port_reuse_buffer(void *object SPA_UNUSED,
 	return -ENOTSUP;
 }
 
+static int recycle_buffer(struct impl *self)
+{
+	struct spa_io_buffers *io = self->port.io;
+	struct buffer *buffer;
+	uint32_t id;
+
+	if (io == NULL || io->status == SPA_STATUS_HAVE_DATA ||
+			io->buffer_id == SPA_ID_INVALID)
+		return 0;
+	id = io->buffer_id;
+	if (id >= self->port.n_buffers)
+		return -EPROTO;
+	buffer = &self->port.buffers[id];
+	if (buffer->state != BUFFER_PUBLISHED)
+		return -EPROTO;
+	io->buffer_id = SPA_ID_INVALID;
+	buffer->state = BUFFER_AVAILABLE;
+	self->port.scan_hint = id + 1u;
+	if (self->port.scan_hint == self->port.n_buffers)
+		self->port.scan_hint = 0;
+	return 1;
+}
+
+static struct buffer *take_buffer(struct impl *self)
+{
+	uint32_t i;
+
+	for (i = 0; i < self->port.n_buffers; i++) {
+		uint32_t id = self->port.scan_hint + i;
+		struct buffer *buffer;
+
+		if (id >= self->port.n_buffers)
+			id -= self->port.n_buffers;
+		buffer = &self->port.buffers[id];
+		if (buffer->state != BUFFER_AVAILABLE)
+			continue;
+		buffer->state = BUFFER_PRODUCER;
+		self->port.scan_hint = id + 1u;
+		if (self->port.scan_hint == self->port.n_buffers)
+			self->port.scan_hint = 0;
+		return buffer;
+	}
+	return NULL;
+}
+
+static void return_buffer(struct impl *self, struct buffer *buffer)
+{
+	buffer->state = BUFFER_AVAILABLE;
+	self->port.scan_hint = buffer->id + 1u;
+	if (self->port.scan_hint == self->port.n_buffers)
+		self->port.scan_hint = 0;
+}
+
 static int node_process(void *object)
 {
 	struct impl *self = object;
-	struct spa_image_source_buffer *image = NULL;
-	struct spa_image_frame publication;
-	struct spa_buffer *buffer;
+	struct pwao_image_frame publication;
+	struct buffer *output;
 	struct spa_data *data;
 	uint64_t now, sequence, sample, pts;
 	uint32_t size;
@@ -646,35 +717,39 @@ static int node_process(void *object)
 
 	if (!self->started)
 		return SPA_STATUS_OK;
+	if (self->port.io == NULL)
+		return -EIO;
+	if ((res = recycle_buffer(self)) < 0)
+		return res;
 	if ((res = monotonic_nsec(&now)) < 0)
 		return res;
 	if (cadence_due(&self->cadence, now, self->cube_info.samples,
 			self->loop, &sequence, &sample, &pts, &discontinuity) == 0)
 		return SPA_STATUS_OK;
-	res = spa_image_source_try_acquire(&self->source, &image);
-	if (res < 0)
-		return res == -EPIPE ? SPA_STATUS_OK : res;
-	if (res == 0) {
+	if (self->port.io->status == SPA_STATUS_HAVE_DATA) {
+		self->discontinuity = true;
+		return SPA_STATUS_HAVE_DATA;
+	}
+	output = take_buffer(self);
+	if (output == NULL) {
 		self->discontinuity = true;
 		return SPA_STATUS_OK;
 	}
-	buffer = spa_image_source_buffer_get_buffer(image);
-	if (buffer == NULL || buffer->n_datas == 0) {
-		(void)spa_image_source_return_buffer(&self->source, image);
+	if (output->buffer == NULL || output->buffer->n_datas == 0) {
+		return_buffer(self, output);
 		return -EPROTO;
 	}
-	data = &buffer->datas[0];
+	data = &output->buffer->datas[0];
 	res = fits_cube_read_plane(self->cube, sample,
 			self->port.output == OUTPUT_NDARRAY ?
 					FITS_CUBE_OUTPUT_NATIVE : FITS_CUBE_OUTPUT_GRAY16,
 			data->data, data->maxsize);
 	if (res < 0) {
-		(void)spa_image_source_return_buffer(&self->source, image);
+		return_buffer(self, output);
 		return res;
 	}
 	size = (uint32_t)output_size(self);
-	publication = (struct spa_image_frame) {
-		.version = SPA_VERSION_IMAGE_FRAME,
+	publication = (struct pwao_image_frame) {
 		.data_index = 0,
 		.header_flags = (discontinuity || self->discontinuity) ?
 				SPA_META_HEADER_FLAG_DISCONT : 0,
@@ -684,15 +759,17 @@ static int node_process(void *object)
 		.sequence = sequence,
 		.pts = (int64_t)pts,
 	};
-	res = spa_image_source_publish_complete(&self->source, image, &publication);
-	if (res == -EBUSY) {
-		self->discontinuity = true;
-		(void)spa_image_source_return_buffer(&self->source, image);
-		return SPA_STATUS_OK;
+	res = pwao_image_frame_write(output->buffer, &publication,
+			PWAO_IMAGE_FRAME_REQUIRE_HEADER);
+	if (res < 0) {
+		return_buffer(self, output);
+		return res;
 	}
-	if (res >= 0)
-		self->discontinuity = false;
-	return res < 0 ? res : SPA_STATUS_HAVE_DATA;
+	self->port.io->buffer_id = output->id;
+	self->port.io->status = SPA_STATUS_HAVE_DATA;
+	output->state = BUFFER_PUBLISHED;
+	self->discontinuity = false;
+	return SPA_STATUS_HAVE_DATA;
 }
 
 static const struct spa_node_methods node_methods = {
@@ -790,12 +867,6 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 		.hdu = 1,
 		.sample_rank = 2,
 		.io_mode = FITS_CUBE_IO_FILE,
-	};
-	struct spa_image_source_config source_config = {
-		.version = SPA_VERSION_IMAGE_SOURCE_CONFIG,
-		.min_buffers = MIN_BUFFERS,
-		.max_buffers = MAX_BUFFERS,
-		.flags = SPA_IMAGE_SOURCE_FLAG_REQUIRE_HEADER,
 	};
 	const struct fits_cube_info *cube_info;
 	const char *value;
@@ -904,10 +975,6 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	};
 	self->port.info.params = self->port.params;
 	self->port.info.n_params = SPA_N_ELEMENTS(self->port.params);
-	res = spa_image_source_buffers_init(&self->transport, &self->source,
-			&source_config);
-	if (res < 0)
-		goto error;
 	return 0;
 
 error:

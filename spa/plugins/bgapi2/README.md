@@ -73,11 +73,11 @@ stopped. Layout-changing controls also require all buffers to be released and
 invalidate format and buffer negotiation. GenICam command nodes are not exposed
 as persistent SPA properties.
 
-The plugin uses `spa_image_source` with its ordinary-buffer transport adapter.
-It has no `pw_stream`, libpipewire client, private image pool, payload copy,
-private thread, latest-buffer transport, or private RTC scheduler.
+The source tracks the negotiated `SPA_IO_Buffers` leases directly in its camera
+slots. It has no `pw_stream`, libpipewire client, private image pool, payload
+copy, private thread, latest-buffer transport, or private RTC scheduler.
 
-The SPA node and transport adapter are C. `camera.cpp` is a narrow C++
+The SPA node is C. `camera.cpp` is a narrow C++
 containment boundary because BGAPI2 can propagate C++ GenApi exceptions through
 its nominal C API. Every vendor call is caught before it can unwind through C;
 the adapter otherwise exposes a C interface and does not use BGAPI2's C++ object
@@ -97,9 +97,10 @@ camera-adapter benchmark retains timeout-zero `GetFilledBuffer` only as a
 diagnostic comparison; both tested producers build error details on empty
 polls, and Euresys allocates on that path.
 
-The ring contains at most the 64 buffers allowed by `spa_image_source`; overflow
-is a fatal acquisition error, not a lossy overwrite. An overflow would mean the
-vendor delivered more unique completions than the announced pool can contain.
+The ring contains at most the 64 buffers accepted by the camera adapter;
+overflow is a fatal acquisition error, not a lossy overwrite. An overflow would
+mean the vendor delivered more unique completions than the announced pool can
+contain.
 The event handler is installed at Start and synchronously removed after
 acquisition stops on Pause or Suspend. Restart creates an empty completion
 queue before the handler is enabled again.

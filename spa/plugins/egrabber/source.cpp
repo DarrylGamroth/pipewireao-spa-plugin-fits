@@ -19,9 +19,9 @@
 #include <time.h>
 #include <vector>
 
-#include <spa/buffer/image-source-buffers.h>
 #include <spa/buffer/meta.h>
 #include <spa/monitor/device.h>
+#include <spa/node/io.h>
 #include <spa/node/keys.h>
 #include <spa/node/node.h>
 #include <spa/node/utils.h>
@@ -55,6 +55,7 @@
 #include "options.hpp"
 #include "params.hpp"
 #include "timestamp_mapper.hpp"
+#include "../image-frame.h"
 
 namespace {
 
@@ -72,10 +73,22 @@ using egrabber_pipewire::NegotiatedFrameLayout;
 using egrabber_pipewire::Options;
 using egrabber_pipewire::TimestampMapper;
 
-constexpr uint32_t max_buffers = SPA_IMAGE_SOURCE_MAX_BUFFERS;
+constexpr uint32_t max_buffers = 64;
+
+enum class output_buffer_state {
+	available,
+	producer,
+	published,
+};
+
+struct output_buffer {
+	struct spa_buffer *buffer = nullptr;
+	uint32_t id = SPA_ID_INVALID;
+	output_buffer_state state = output_buffer_state::available;
+};
 
 struct buffer_slot {
-	struct spa_image_source_buffer *image = nullptr;
+	output_buffer *output = nullptr;
 	void *camera_data = nullptr;
 	BufferIndexRange range;
 	std::optional<Buffer> completed;
@@ -166,6 +179,9 @@ struct port {
 	struct spa_port_info info = SPA_PORT_INFO_INIT();
 	struct spa_param_info params[5] = {};
 	struct spa_video_info_raw format = {};
+	struct spa_io_buffers *io = nullptr;
+	output_buffer buffers[max_buffers];
+	uint32_t scan_hint = 0;
 	bool have_format = false;
 	uint32_t n_buffers = 0;
 };
@@ -198,8 +214,6 @@ struct impl {
 #ifdef HAVE_EGRABBER_DRM
 	std::unique_ptr<egrabber_pipewire::DmaBufSyncContext> dma_sync;
 #endif
-	struct spa_image_source_buffers transport = {};
-	struct spa_image_source source = {};
 	buffer_slot slots[max_buffers];
 	buffer_submission_queue submissions;
 	std::vector<BufferIndexRange> ranges;
@@ -328,6 +342,72 @@ struct spa_meta_acquisition acquisition_metadata(const impl *self,
 	return acquisition;
 }
 
+int reclaim_output_buffer(impl *self, output_buffer **reclaimed)
+{
+	auto *io = self->output.io;
+	*reclaimed = nullptr;
+	if (io == nullptr || io->status == SPA_STATUS_HAVE_DATA ||
+			io->buffer_id == SPA_ID_INVALID)
+		return 0;
+	if (io->buffer_id >= self->output.n_buffers)
+		return -EPROTO;
+	auto &output = self->output.buffers[io->buffer_id];
+	if (output.state != output_buffer_state::published)
+		return -EPROTO;
+	io->buffer_id = SPA_ID_INVALID;
+	output.state = output_buffer_state::producer;
+	*reclaimed = &output;
+	return 1;
+}
+
+output_buffer *take_available_output(impl *self)
+{
+	for (uint32_t offset = 0; offset < self->output.n_buffers; offset++) {
+		auto id = self->output.scan_hint + offset;
+		if (id >= self->output.n_buffers)
+			id -= self->output.n_buffers;
+		auto &output = self->output.buffers[id];
+		if (output.state != output_buffer_state::available)
+			continue;
+		output.state = output_buffer_state::producer;
+		self->output.scan_hint = id + 1u;
+		if (self->output.scan_hint == self->output.n_buffers)
+			self->output.scan_hint = 0;
+		return &output;
+	}
+	return nullptr;
+}
+
+void release_output(impl *self, output_buffer &output)
+{
+	if (output.state != output_buffer_state::producer)
+		throw std::runtime_error("eGrabber returned an unowned output buffer");
+	output.state = output_buffer_state::available;
+	self->output.scan_hint = output.id + 1u;
+	if (self->output.scan_hint == self->output.n_buffers)
+		self->output.scan_hint = 0;
+}
+
+int publish_output(impl *self, output_buffer &output,
+		const struct pwao_image_frame &frame)
+{
+	if (output.state != output_buffer_state::producer || output.buffer == nullptr)
+		return -EPROTO;
+	if (self->output.io == nullptr)
+		return -EIO;
+	if (self->output.io->status == SPA_STATUS_HAVE_DATA)
+		return -EBUSY;
+	int res = pwao_image_frame_write(output.buffer, &frame,
+			PWAO_IMAGE_FRAME_REQUIRE_HEADER |
+			PWAO_IMAGE_FRAME_REQUIRE_ACQUISITION);
+	if (res < 0)
+		return res;
+	self->output.io->buffer_id = output.id;
+	self->output.io->status = SPA_STATUS_HAVE_DATA;
+	output.state = output_buffer_state::published;
+	return 0;
+}
+
 void finish_row_slot(impl *self, buffer_slot &slot)
 {
 	auto completed = std::move(slot.completed);
@@ -357,8 +437,8 @@ bool publish_row_block(impl *self)
 		self->row_discontinuity = true;
 		return false;
 	}
-	if (self->transport.io == nullptr ||
-			self->transport.io->status == SPA_STATUS_HAVE_DATA)
+	if (self->output.io == nullptr ||
+			self->output.io->status == SPA_STATUS_HAVE_DATA)
 		return false;
 
 	const auto pitch = self->camera->natural_line_pitch();
@@ -381,24 +461,20 @@ bool publish_row_block(impl *self)
 			(end_row == rows && !slot->row_terminal_ready))
 		return false;
 
-	struct spa_image_source_buffer *image = nullptr;
-	const int acquired = spa_image_source_try_acquire(&self->source, &image);
-	if (acquired < 0)
-		throw std::runtime_error("could not acquire a row-block output buffer");
-	if (acquired == 0) {
+	auto *output = take_available_output(self);
+	if (output == nullptr) {
 		slot->row_drop = true;
 		self->row_discontinuity = true;
 		return false;
 	}
-	if (image == nullptr || image->buffer == nullptr ||
-			image->buffer->n_datas == 0) {
-		(void) spa_image_source_return_buffer(&self->source, image);
+	if (output->buffer == nullptr || output->buffer->n_datas == 0) {
+		release_output(self, *output);
 		throw std::runtime_error("row-block output buffer is invalid");
 	}
-	auto &data = image->buffer->datas[0];
+	auto &data = output->buffer->datas[0];
 	const auto bytes = pitch * quantum;
 	if (data.data == nullptr || data.chunk == nullptr || data.maxsize < bytes) {
-		(void) spa_image_source_return_buffer(&self->source, image);
+		release_output(self, *output);
 		throw std::runtime_error("row-block output storage is too small");
 	}
 	std::memcpy(data.data,
@@ -418,8 +494,7 @@ bool publish_row_block(impl *self)
 					SPA_CHUNK_FLAG_CORRUPTED))
 		header_flags |= SPA_META_HEADER_FLAG_CORRUPTED;
 	const auto acquisition = acquisition_metadata(self, *slot);
-	const struct spa_image_frame frame = {
-		.version = SPA_VERSION_IMAGE_FRAME,
+	const struct pwao_image_frame frame = {
 		.data_index = 0,
 		.header_flags = header_flags,
 		.chunk_flags = end_row == rows ? slot->terminal_chunk_flags : 0u,
@@ -431,10 +506,9 @@ bool publish_row_block(impl *self)
 		.pts = slot->row_terminal_ready ? slot->terminal_pts : SPA_TIME_INVALID,
 		.acquisition = &acquisition,
 	};
-	const int published = spa_image_source_publish_complete(
-			&self->source, image, &frame);
+	const int published = publish_output(self, *output, frame);
 	if (published < 0) {
-		(void) spa_image_source_return_buffer(&self->source, image);
+		release_output(self, *output);
 		slot->row_drop = true;
 		self->row_discontinuity = true;
 		return false;
@@ -1032,9 +1106,7 @@ int release_buffers(impl *self)
 	self->ranges.clear();
 	self->submissions.clear();
 	for (auto &slot : self->slots) {
-		if (slot.image != nullptr)
-			spa_image_source_buffer_set_user_data(slot.image, nullptr);
-		slot.image = nullptr;
+		slot.output = nullptr;
 		slot.recycle_pending = false;
 		slot.dma_point = 0;
 #ifdef HAVE_EGRABBER_DRM
@@ -1047,14 +1119,10 @@ int release_buffers(impl *self)
 	self->pending_readout.reset();
 	self->row_slot = nullptr;
 	self->direct_dma_buf = false;
-	if (self->output.n_buffers != 0) {
-		int teardown = spa_image_source_buffers_teardown(
-				&self->transport, &self->source);
-		if (res == 0)
-			res = teardown;
-		if (teardown == 0)
-			self->output.n_buffers = 0;
-	}
+	for (auto &output : self->output.buffers)
+		output = {};
+	self->output.n_buffers = 0;
+	self->output.scan_hint = 0;
 	return res;
 }
 
@@ -1135,13 +1203,14 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 		}
 	}
 	self->direct_dma_buf = direct_dma_buf;
-	res = spa_image_source_buffers_prepare(&self->transport, &self->source,
-			buffers, n_buffers);
-	if (res < 0) {
-		self->direct_dma_buf = false;
-		return res;
-	}
+	for (i = 0; i < n_buffers; i++)
+		self->output.buffers[i] = {
+			.buffer = buffers[i],
+			.id = i,
+			.state = output_buffer_state::available,
+		};
 	self->output.n_buffers = n_buffers;
+	self->output.scan_hint = 0;
 	try {
 		const auto camera_buffers = row_blocks
 			? self->camera->buffer_count() : n_buffers;
@@ -1165,15 +1234,13 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 				self->submissions.submit(slot);
 			}
 		} else for (i = 0; i < n_buffers; i++) {
-			struct spa_image_source_buffer *image = nullptr;
 			struct spa_data *data = &buffers[i]->datas[0];
 
-			if (spa_image_source_try_acquire(&self->source, &image) != 1 ||
-					image == nullptr)
+			auto *output = take_available_output(self);
+			if (output == nullptr || output->id != i)
 				throw std::runtime_error("PipeWireAO image pool is incomplete");
 			buffer_slot &slot = self->slots[i];
-			slot.image = image;
-			spa_image_source_buffer_set_user_data(image, &slot);
+			slot.output = output;
 #ifdef HAVE_EGRABBER_DRM
 			if (self->direct_dma_buf) {
 				if (!self->dma_sync)
@@ -1194,7 +1261,7 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 		self->camera->set_frame_callback([self, row_blocks](const NewBufferData &data) {
 			auto *slot = static_cast<buffer_slot *>(data.userPointer);
 			if (slot == nullptr ||
-					(!row_blocks && slot->image == nullptr) ||
+					(!row_blocks && slot->output == nullptr) ||
 					(row_blocks && slot->camera_data == nullptr))
 				throw std::runtime_error("eGrabber completion has no image slot");
 			self->submissions.complete(*slot);
@@ -1269,8 +1336,7 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 			if (!layout)
 				throw std::runtime_error("eGrabber delivered an invalid frame layout");
 			const auto acquisition = acquisition_metadata(self, *slot);
-			struct spa_image_frame frame = {
-				.version = SPA_VERSION_IMAGE_FRAME,
+			struct pwao_image_frame frame = {
 				.data_index = 0,
 				.header_flags = slot->frame_discontinuity || timestamp.discontinuity ||
 						slot->acquisition_discontinuity ||
@@ -1294,8 +1360,7 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 				slot->dma_sync.signal_acquire(++slot->dma_point);
 			}
 #endif
-			const int publish = spa_image_source_publish_complete(
-					&self->source, slot->image, &frame);
+			const int publish = publish_output(self, *slot->output, frame);
 			if (publish < 0) {
 				auto failed = std::move(slot->completed);
 				reset_observation(*slot);
@@ -1338,9 +1403,7 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 		self->row_slot = nullptr;
 		self->direct_dma_buf = false;
 		for (auto &slot : self->slots) {
-			if (slot.image != nullptr)
-				spa_image_source_buffer_set_user_data(slot.image, nullptr);
-			slot.image = nullptr;
+			slot.output = nullptr;
 			slot.completed.reset();
 			slot.recycle_pending = false;
 			slot.dma_point = 0;
@@ -1351,8 +1414,10 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 			slot.camera_data = nullptr;
 		}
 		self->camera_memory.clear();
-		(void) spa_image_source_buffers_teardown(&self->transport, &self->source);
+		for (auto &output : self->output.buffers)
+			output = {};
 		self->output.n_buffers = 0;
+		self->output.scan_hint = 0;
 		return -EIO;
 	}
 	return 0;
@@ -1368,8 +1433,10 @@ int port_set_io(void *object, enum spa_direction direction, uint32_t port_id,
 			-EINVAL);
 	if (id != SPA_IO_Buffers)
 		return -ENOENT;
-	return spa_image_source_buffers_set_io(&self->transport,
-			static_cast<struct spa_io_buffers *>(data), size);
+	if (data != nullptr && size < sizeof(struct spa_io_buffers))
+		return -EINVAL;
+	self->output.io = static_cast<struct spa_io_buffers *>(data);
+	return 0;
 }
 
 int reuse_buffer(void *, uint32_t, uint32_t)
@@ -1398,7 +1465,6 @@ int recycle_slot(impl *self, buffer_slot &slot)
 int recycle_buffers(impl *self)
 {
 	bool changed = false;
-	uint32_t count;
 
 	for (uint32_t index = 0; index < self->output.n_buffers; index++) {
 		auto &slot = self->slots[index];
@@ -1408,24 +1474,32 @@ int recycle_buffers(impl *self)
 		changed = changed || res > 0;
 	}
 
-	for (count = 0; count < self->output.n_buffers; count++) {
-		struct spa_image_source_buffer *image = nullptr;
-		const int res = spa_image_source_try_acquire(&self->source, &image);
-		if (res < 0)
-			return res;
-		if (res == 0)
-			return changed ? 1 : 0;
-		auto *slot = static_cast<buffer_slot *>(
-				spa_image_source_buffer_get_user_data(image));
-		if (slot == nullptr || slot->image != image || !slot->completed)
+	output_buffer *output = nullptr;
+	const int reclaimed = reclaim_output_buffer(self, &output);
+	if (reclaimed < 0)
+		return reclaimed;
+	if (output != nullptr) {
+		auto &slot = self->slots[output->id];
+		if (slot.output != output || !slot.completed || slot.recycle_pending)
 			return -EPROTO;
-		slot->recycle_pending = true;
-		const int recycled = recycle_slot(self, *slot);
+		slot.recycle_pending = true;
+		const int recycled = recycle_slot(self, slot);
 		if (recycled < 0)
 			return recycled;
 		changed = changed || recycled > 0;
 	}
 	return changed ? 1 : 0;
+}
+
+int recycle_row_output(impl *self)
+{
+	output_buffer *output = nullptr;
+	const int res = reclaim_output_buffer(self, &output);
+	if (res < 0)
+		return res;
+	if (output != nullptr)
+		release_output(self, *output);
+	return res;
 }
 
 int process(void *object)
@@ -1439,6 +1513,9 @@ int process(void *object)
 		self->graph_ready = false;
 		if (self->options.output_mode ==
 				egrabber_pipewire::OutputMode::row_block) {
+			const int res = recycle_row_output(self);
+			if (res < 0)
+				return res;
 			(void) self->camera->process_event();
 			(void) poll_readout(self);
 			(void) publish_row_block(self);
@@ -1468,7 +1545,7 @@ int send_command(void *object, const struct spa_command *command)
 		switch (SPA_NODE_COMMAND_ID(command)) {
 		case SPA_NODE_COMMAND_Start:
 			if (!self->output.have_format || self->output.n_buffers == 0 ||
-					self->transport.io == nullptr)
+					self->output.io == nullptr)
 				return -EIO;
 			if (self->started)
 				return 0;
@@ -1658,13 +1735,6 @@ int init(const struct spa_handle_factory *, struct spa_handle *handle,
 		uint32_t n_support)
 {
 	impl *self;
-	struct spa_image_source_config config = {
-		.version = SPA_VERSION_IMAGE_SOURCE_CONFIG,
-		.min_buffers = 2,
-		.max_buffers = max_buffers,
-		.flags = SPA_IMAGE_SOURCE_FLAG_REQUIRE_HEADER |
-			SPA_IMAGE_SOURCE_FLAG_REQUIRE_ACQUISITION,
-	};
 
 	spa_return_val_if_fail(handle != nullptr, -EINVAL);
 	self = new (handle) impl{};
@@ -1769,15 +1839,7 @@ int init(const struct spa_handle_factory *, struct spa_handle *handle,
 			SPA_PARAM_INFO_READ);
 	self->output.info.params = self->output.params;
 	self->output.info.n_params = SPA_N_ELEMENTS(self->output.params);
-	config.min_buffers = self->options.output_mode ==
-			egrabber_pipewire::OutputMode::row_block
-		? 2u : self->camera->announce_minimum();
-	const int res = spa_image_source_buffers_init(&self->transport,
-			&self->source, &config);
-	if (res < 0) {
-		self->~impl();
-	}
-	return res;
+	return 0;
 }
 
 const struct spa_interface_info interfaces[] = {

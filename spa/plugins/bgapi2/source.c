@@ -6,9 +6,9 @@
 #include <string.h>
 #include <time.h>
 
-#include <spa/buffer/image-source-buffers.h>
 #include <spa/buffer/meta.h>
 #include <spa/monitor/device.h>
+#include <spa/node/io.h>
 #include <spa/node/keys.h>
 #include <spa/node/node.h>
 #include <spa/node/utils.h>
@@ -27,23 +27,27 @@
 #include "bgapi2.h"
 #include "camera.h"
 #include "params.h"
+#include "../image-frame.h"
 
 #define MIN_BUFFERS 2u
-#define MAX_BUFFERS SPA_IMAGE_SOURCE_MAX_BUFFERS
+#define MAX_BUFFERS BGAPI2_CAMERA_MAX_BUFFERS
 
 struct port {
 	uint64_t info_all;
 	struct spa_port_info info;
 	struct spa_param_info params[5];
 	struct spa_video_info_raw format;
+	struct spa_io_buffers *io;
 	bool have_format;
 	uint32_t n_buffers;
 };
 
 struct buffer_slot {
-	struct spa_image_source_buffer *image;
+	struct spa_buffer *buffer;
 	BGAPI2_Buffer *camera_buffer;
+	uint32_t id;
 	bool camera_queued;
+	bool published;
 };
 
 struct impl {
@@ -64,8 +68,6 @@ struct impl {
 	char device_index[16];
 	char stream_index[16];
 	struct port port;
-	struct spa_image_source_buffers transport;
-	struct spa_image_source source;
 	struct bgapi2_camera *camera;
 	struct bgapi2_camera_info camera_info;
 	struct buffer_slot slots[MAX_BUFFERS];
@@ -373,9 +375,7 @@ static int queue_producer_buffers(struct impl *this)
 	for (i = 0; i < this->port.n_buffers; i++) {
 		struct buffer_slot *slot = &this->slots[i];
 
-		if (slot->camera_queued || slot->image == NULL ||
-				spa_image_source_buffer_get_state(slot->image) !=
-				SPA_IMAGE_BUFFER_STATE_PRODUCER)
+		if (slot->camera_queued || slot->published || slot->buffer == NULL)
 			continue;
 		if (queue_slot(this, slot) < 0)
 			return -EIO;
@@ -412,7 +412,7 @@ static int impl_node_send_command(void *object,
 	switch (SPA_NODE_COMMAND_ID(command)) {
 	case SPA_NODE_COMMAND_Start:
 		if (!this->port.have_format || this->port.n_buffers == 0 ||
-				this->transport.io == NULL)
+				this->port.io == NULL)
 			return -EIO;
 		if (this->started)
 			return 0;
@@ -589,12 +589,6 @@ static int release_buffers(struct impl *this)
 
 	if ((res = bgapi2_camera_discard_buffers(this->camera)) < 0)
 		first_error = res;
-	for (i = 0; i < this->port.n_buffers; i++)
-		if (this->slots[i].image != NULL)
-			spa_image_source_buffer_set_user_data(this->slots[i].image, NULL);
-	res = spa_image_source_buffers_teardown(&this->transport, &this->source);
-	if (res < 0)
-		return first_error == 0 ? res : first_error;
 	for (i = 0; i < this->port.n_buffers; i++) {
 		struct buffer_slot *slot = &this->slots[i];
 
@@ -613,7 +607,6 @@ static int impl_node_port_use_buffers(void *object,
 		uint32_t port_id, struct spa_buffer **buffers, uint32_t n_buffers)
 {
 	struct impl *this = object;
-	bool prepared = false;
 	uint32_t i;
 	int res;
 
@@ -642,28 +635,14 @@ static int impl_node_port_use_buffers(void *object,
 		struct buffer_slot *slot = &this->slots[i];
 		struct spa_data *data = &buffers[i]->datas[0];
 
+		slot->buffer = buffers[i];
+		slot->id = i;
 		if ((res = bgapi2_camera_announce(this->camera, data->data,
 				data->maxsize, slot, &slot->camera_buffer)) < 0 ||
 				(res = queue_slot(this, slot)) < 0)
 			goto error;
 	}
-	res = spa_image_source_buffers_prepare(&this->transport, &this->source,
-			buffers, n_buffers);
-	if (res < 0)
-		goto error;
-	prepared = true;
 	this->port.n_buffers = n_buffers;
-	for (i = 0; i < n_buffers; i++) {
-		struct spa_image_source_buffer *image = NULL;
-		struct buffer_slot *slot = &this->slots[i];
-
-		if (spa_image_source_try_acquire(&this->source, &image) != 1) {
-			res = -EPROTO;
-			goto error;
-		}
-		slot->image = image;
-		spa_image_source_buffer_set_user_data(image, slot);
-	}
 	return 0;
 
 error:
@@ -673,12 +652,8 @@ error:
 
 		if (slot->camera_buffer != NULL)
 			(void) bgapi2_camera_revoke(this->camera, &slot->camera_buffer);
-		if (slot->image != NULL)
-			spa_image_source_buffer_set_user_data(slot->image, NULL);
 		memset(slot, 0, sizeof(*slot));
 	}
-	if (prepared)
-		(void) spa_image_source_buffers_teardown(&this->transport, &this->source);
 	this->port.n_buffers = 0;
 	return res;
 }
@@ -693,7 +668,10 @@ static int impl_node_port_set_io(void *object, enum spa_direction direction,
 			-EINVAL);
 	if (id != SPA_IO_Buffers)
 		return -ENOENT;
-	return spa_image_source_buffers_set_io(&this->transport, data, size);
+	if (data != NULL && size < sizeof(struct spa_io_buffers))
+		return -EINVAL;
+	this->port.io = data;
+	return 0;
 }
 
 static int impl_node_port_reuse_buffer(void *object SPA_UNUSED,
@@ -702,28 +680,27 @@ static int impl_node_port_reuse_buffer(void *object SPA_UNUSED,
 	return -ENOTSUP;
 }
 
-static int recycle_buffers(struct impl *this)
+static int take_recycled_buffer(struct impl *this,
+		struct buffer_slot **recycled)
 {
-	uint32_t count;
-	bool changed = false;
+	struct spa_io_buffers *io = this->port.io;
+	struct buffer_slot *slot;
+	uint32_t id;
 
-	for (count = 0; count < this->port.n_buffers; count++) {
-		struct spa_image_source_buffer *image = NULL;
-		struct buffer_slot *slot;
-		int res = spa_image_source_try_acquire(&this->source, &image);
-
-		if (res < 0)
-			return res;
-		if (res == 0)
-			break;
-		slot = spa_image_source_buffer_get_user_data(image);
-		if (slot == NULL || slot->image != image || slot->camera_queued)
-			return -EPROTO;
-		if (queue_slot(this, slot) < 0)
-			return -EIO;
-		changed = true;
-	}
-	return changed ? 1 : 0;
+	*recycled = NULL;
+	if (io == NULL || io->status == SPA_STATUS_HAVE_DATA ||
+			io->buffer_id == SPA_ID_INVALID)
+		return 0;
+	id = io->buffer_id;
+	if (id >= this->port.n_buffers)
+		return -EPROTO;
+	slot = &this->slots[id];
+	if (!slot->published || slot->camera_queued || slot->buffer == NULL)
+		return -EPROTO;
+	io->buffer_id = SPA_ID_INVALID;
+	slot->published = false;
+	*recycled = slot;
+	return 1;
 }
 
 static int publish_buffer(struct impl *this,
@@ -732,7 +709,7 @@ static int publish_buffer(struct impl *this,
 	const struct bgapi2_frame_info *info = &completion->frame;
 	BGAPI2_Buffer *camera_buffer = completion->buffer;
 	struct spa_meta_acquisition acquisition;
-	struct spa_image_frame frame;
+	struct pwao_image_frame frame;
 	struct buffer_slot *slot;
 	struct spa_buffer *buffer;
 	struct spa_data *data;
@@ -747,7 +724,7 @@ static int publish_buffer(struct impl *this,
 	}
 	slot = completion->user_data;
 	if (slot->camera_buffer != camera_buffer || !slot->camera_queued ||
-			slot->image == NULL)
+			slot->buffer == NULL || slot->published)
 		return -EPROTO;
 	slot->camera_queued = false;
 	if (this->have_sequence && info->frame_id != this->last_sequence + 1)
@@ -758,7 +735,7 @@ static int publish_buffer(struct impl *this,
 		res = completion->result;
 		goto recycle;
 	}
-	buffer = spa_image_source_buffer_get_buffer(slot->image);
+	buffer = slot->buffer;
 	data = &buffer->datas[0];
 	stride = this->camera_info.width * this->bytes_per_pixel + info->x_padding;
 	expected = stride * this->camera_info.height;
@@ -775,8 +752,7 @@ static int publish_buffer(struct impl *this,
 	if (info->incomplete || size != expected)
 		chunk_flags |= SPA_CHUNK_FLAG_CORRUPTED;
 	spa_meta_acquisition_init(&acquisition);
-	frame = (struct spa_image_frame) {
-		.version = SPA_VERSION_IMAGE_FRAME,
+	frame = (struct pwao_image_frame) {
 		.data_index = 0,
 		.header_flags = header_flags,
 		.chunk_flags = chunk_flags,
@@ -787,7 +763,16 @@ static int publish_buffer(struct impl *this,
 		.pts = monotonic_nsec(),
 		.acquisition = &acquisition,
 	};
-	res = spa_image_source_publish_complete(&this->source, slot->image, &frame);
+	if (this->port.io == NULL ||
+			this->port.io->status == SPA_STATUS_HAVE_DATA) {
+		res = -EBUSY;
+	} else if ((res = pwao_image_frame_write(buffer, &frame,
+			PWAO_IMAGE_FRAME_REQUIRE_HEADER |
+			PWAO_IMAGE_FRAME_REQUIRE_ACQUISITION)) >= 0) {
+		this->port.io->buffer_id = slot->id;
+		this->port.io->status = SPA_STATUS_HAVE_DATA;
+		slot->published = true;
+	}
 	if (res >= 0) {
 		this->discontinuity = false;
 		return 1;
@@ -806,25 +791,32 @@ static int impl_node_process(void *object)
 {
 	struct impl *this = object;
 	struct bgapi2_camera_completion completion;
+	struct buffer_slot *recycled = NULL;
 	bool published = false;
-	int res;
+	int res, queue_res;
 
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 	if (!this->started)
 		return SPA_STATUS_OK;
-	res = bgapi2_camera_try_get_completion(this->camera, &completion);
+	res = take_recycled_buffer(this, &recycled);
 	if (res < 0)
 		return res;
+	res = bgapi2_camera_try_get_completion(this->camera, &completion);
+	if (res < 0)
+		goto done;
 	if (res == 1) {
 		res = publish_buffer(this, &completion);
 		if (res < 0)
-			return res;
+			goto done;
 		published = res > 0;
 	}
 	/* QueueBuffer is producer-controlled and may allocate. Return released
 	 * leases only after observing and publishing data that is already ready so
 	 * requeue jitter consumes pool headroom instead of preceding completion. */
-	res = recycle_buffers(this);
+done:
+	if (recycled != NULL && (queue_res = queue_slot(this, recycled)) < 0 &&
+			res >= 0)
+		res = queue_res;
 	if (res < 0)
 		return res;
 	return published ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
@@ -931,13 +923,6 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 		.interface_timeout_ms = 100,
 		.device_timeout_ms = 200,
 	};
-	struct spa_image_source_config config = {
-		.version = SPA_VERSION_IMAGE_SOURCE_CONFIG,
-		.min_buffers = MIN_BUFFERS,
-		.max_buffers = MAX_BUFFERS,
-		.flags = SPA_IMAGE_SOURCE_FLAG_REQUIRE_HEADER |
-			SPA_IMAGE_SOURCE_FLAG_REQUIRE_ACQUISITION,
-	};
 	const struct bgapi2_camera_info *camera_info;
 	int res;
 
@@ -1006,16 +991,7 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 			SPA_PARAM_INFO_READ);
 	this->port.info.params = this->port.params;
 	this->port.info.n_params = SPA_N_ELEMENTS(this->port.params);
-	res = spa_image_source_buffers_init(&this->transport, &this->source,
-			&config);
-	if (res < 0)
-		goto error;
 	return 0;
-
-error:
-	bgapi2_camera_close(this->camera);
-	this->camera = NULL;
-	return res;
 }
 
 static const struct spa_interface_info impl_interfaces[] = {

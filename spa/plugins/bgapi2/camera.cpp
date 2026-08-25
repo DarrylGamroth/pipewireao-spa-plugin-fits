@@ -11,7 +11,6 @@
 #include <string_view>
 #include <vector>
 
-#include <spa/buffer/image-source.h>
 #include <spa/utils/ringbuffer.h>
 
 template <typename Operation>
@@ -53,7 +52,7 @@ struct bgapi2_camera {
 	struct feature_store *feature_store;
 	struct bgapi2_camera_info info;
 	struct spa_ringbuffer_shared completion_ring;
-	struct bgapi2_camera_completion completions[SPA_IMAGE_SOURCE_MAX_BUFFERS];
+	struct bgapi2_camera_completion completions[BGAPI2_CAMERA_MAX_BUFFERS];
 	uint32_t announced_count;
 	uint32_t completion_error;
 	enum bgapi2_camera_completion_mode completion_mode;
@@ -103,13 +102,13 @@ static void BGAPI2CALL buffer_complete(void *owner, BGAPI2_Buffer *buffer)
 	filled = spa_ringbuffer_shared_get_write_index(
 			&camera->completion_ring, &index);
 	if (buffer == NULL || filled < 0 ||
-			filled >= (int32_t)SPA_IMAGE_SOURCE_MAX_BUFFERS) {
+			filled >= (int32_t)BGAPI2_CAMERA_MAX_BUFFERS) {
 		__atomic_store_n(&camera->completion_error, 1u, __ATOMIC_RELEASE);
 		return;
 	}
 	completion.buffer = buffer;
 	completion.result = read_completion(camera, buffer, &completion);
-	camera->completions[index % SPA_IMAGE_SOURCE_MAX_BUFFERS] = completion;
+	camera->completions[index % BGAPI2_CAMERA_MAX_BUFFERS] = completion;
 	spa_ringbuffer_shared_write_update(&camera->completion_ring, index + 1u);
 }
 
@@ -924,7 +923,7 @@ int bgapi2_camera_announce(struct bgapi2_camera *camera, void *memory,
 
 	if (camera == NULL || memory == NULL || buffer == NULL ||
 			size < camera->info.payload_size ||
-			camera->announced_count >= SPA_IMAGE_SOURCE_MAX_BUFFERS)
+			camera->announced_count >= BGAPI2_CAMERA_MAX_BUFFERS)
 		return -EINVAL;
 	*buffer = NULL;
 	if ((res = checked(camera, BGAPI2_CreateBufferWithExternalMemory(buffer,
@@ -1057,9 +1056,9 @@ int bgapi2_camera_try_get_completion(struct bgapi2_camera *camera,
 			&camera->completion_ring, &index);
 	if (available == 0)
 		return 0;
-	if (available < 0 || available > (int32_t)SPA_IMAGE_SOURCE_MAX_BUFFERS)
+	if (available < 0 || available > (int32_t)BGAPI2_CAMERA_MAX_BUFFERS)
 		return -EOVERFLOW;
-	*completion = camera->completions[index % SPA_IMAGE_SOURCE_MAX_BUFFERS];
+	*completion = camera->completions[index % BGAPI2_CAMERA_MAX_BUFFERS];
 	if (completion->buffer == NULL)
 		return -EIO;
 	spa_ringbuffer_shared_read_update(&camera->completion_ring, index + 1u);
