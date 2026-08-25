@@ -710,7 +710,8 @@ static int setup_playback(struct impl *impl)
 			SPA_PARAM_BUFFERS_dataType,
 			SPA_POD_CHOICE_FLAGS_Int(data_types));
 	for (i = 0; i < sample->n_metas; i++) {
-		if (sample->metas[i].type == SPA_META_Busy)
+		if (sample->metas[i].type == SPA_META_Busy ||
+		    sample->metas[i].type >= SPA_META_START_features)
 			continue;
 		if (sample->metas[i].type == SPA_META_Acquisition) {
 			spa_pod_builder_push_object(&builder, &acquisition,
