@@ -57,7 +57,7 @@ The `api.bgapi2.source` factory provides complete-frame capture with:
 - `Mono8` and unpacked `Mono10`, `Mono12`, `Mono14`, and `Mono16` formats;
 - dynamic GenICam Boolean, Integer, Float, Enumeration, and String controls
   through `SPA_PARAM_PropInfo` and `SPA_PARAM_Props`;
-- fixed `SPA_META_Header` and initialized Version 1 `SPA_META_Acquisition`
+- fixed `SPA_META_Header` and initialized Version 2 `SPA_META_Acquisition`
   metadata; and
 - synchronous acquisition stop and event-thread shutdown before pool teardown.
 

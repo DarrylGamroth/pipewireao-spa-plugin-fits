@@ -143,6 +143,7 @@ static int connect_stream(struct data *data, const char *target, const char *nam
 	uint8_t pod_buffer[512];
 	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(pod_buffer,
 			sizeof(pod_buffer));
+	struct spa_pod_frame acquisition;
 	const struct spa_pod *params[3];
 	uint64_t deadline;
 	int res;
@@ -155,11 +156,17 @@ static int connect_stream(struct data *data, const char *target, const char *nam
 			SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 			SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
 			SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
-	params[2] = spa_pod_builder_add_object(&builder,
-			SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+	spa_pod_builder_push_object(&builder, &acquisition,
+			SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta);
+	spa_pod_builder_add(&builder,
 			SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Acquisition),
 			SPA_PARAM_META_size,
-			SPA_POD_Int(sizeof(struct spa_meta_acquisition)));
+			SPA_POD_Int(sizeof(struct spa_meta_acquisition)),
+			0);
+	spa_pod_builder_prop(&builder, SPA_PARAM_META_features,
+			SPA_POD_PROP_FLAG_MANDATORY);
+	spa_pod_builder_int(&builder, SPA_META_FEATURE_ACQUISITION_CURRENT);
+	params[2] = spa_pod_builder_pop(&builder, &acquisition);
 
 	data->loop = pw_thread_loop_new("egrabber-host-client", NULL);
 	if (data->loop == NULL)

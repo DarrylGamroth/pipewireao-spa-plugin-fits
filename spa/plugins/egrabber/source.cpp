@@ -101,7 +101,6 @@ struct buffer_slot {
 #endif
 	bool acquisition_identity_valid = false;
 	bool readout_observed = false;
-	bool acquisition_discontinuity = false;
 	bool frame_discontinuity = false;
 	bool recycle_pending = false;
 	bool row_terminal_ready = false;
@@ -254,7 +253,6 @@ void reset_observation(buffer_slot &slot)
 	slot.acquisition_identity_valid = false;
 	slot.sequence = 0;
 	slot.readout_observed = false;
-	slot.acquisition_discontinuity = false;
 	slot.frame_discontinuity = false;
 	slot.row_terminal_ready = false;
 	slot.row_terminal_valid = false;
@@ -322,7 +320,6 @@ void prepare_readout(impl *self, buffer_slot &slot,
 		slot.acquisition_sequence = key.sequence;
 		slot.sequence = key.sequence;
 		slot.acquisition_identity_valid = true;
-		slot.acquisition_discontinuity = key.discontinuity;
 	}
 	slot.readout_observed = true;
 }
@@ -485,7 +482,7 @@ bool publish_row_block(impl *self)
 	uint32_t header_flags = end_row == rows
 		? SPA_META_HEADER_FLAG_MARKER : 0u;
 	if (slot->next_row == 0 && (self->row_discontinuity ||
-			slot->frame_discontinuity || slot->acquisition_discontinuity ||
+			slot->frame_discontinuity ||
 			(self->options.acquisition_domain &&
 			 !slot->acquisition_identity_valid)))
 		header_flags |= SPA_META_HEADER_FLAG_DISCONT;
@@ -915,11 +912,20 @@ int build_port_param(impl *self, uint32_t id, uint32_t index,
 			return 1;
 		}
 		if (index == 1) {
-			*param = spa_pod_builder_add_object(builder,
-					SPA_TYPE_OBJECT_ParamMeta, id,
+			struct spa_pod_frame object;
+			spa_pod_builder_push_object(builder, &object,
+					SPA_TYPE_OBJECT_ParamMeta, id);
+			spa_pod_builder_add(builder,
 					SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Acquisition),
 					SPA_PARAM_META_size,
-					SPA_POD_Int(sizeof(struct spa_meta_acquisition)));
+					SPA_POD_Int(sizeof(struct spa_meta_acquisition)),
+					0);
+			spa_pod_builder_prop(builder, SPA_PARAM_META_features,
+					SPA_POD_PROP_FLAG_MANDATORY);
+			spa_pod_builder_int(builder,
+					SPA_META_FEATURE_ACQUISITION_CURRENT);
+			*param = static_cast<struct spa_pod *>(
+					spa_pod_builder_pop(builder, &object));
 			return 1;
 		}
 		if (index == 2 && self->dma_buf_offered &&
@@ -1339,7 +1345,6 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 			struct pwao_image_frame frame = {
 				.data_index = 0,
 				.header_flags = slot->frame_discontinuity || timestamp.discontinuity ||
-						slot->acquisition_discontinuity ||
 						(self->options.acquisition_domain &&
 						 !slot->acquisition_identity_valid)
 					? SPA_META_HEADER_FLAG_DISCONT : 0u,
@@ -1552,8 +1557,6 @@ int send_command(void *object, const struct spa_command *command)
 			self->started = true;
 			self->frame_sequence.reset();
 			self->timestamp_mapper.request_reset();
-			if (self->options.acquisition_domain)
-				self->acquisition_keys.start();
 			self->pending_readout.reset();
 			self->row_slot = nullptr;
 			self->row_discontinuity = false;

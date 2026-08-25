@@ -474,13 +474,23 @@ static int build_port_param(struct impl *this, uint32_t id, uint32_t index,
 					SPA_POD_Int(sizeof(struct spa_meta_header)));
 			return 1;
 		case 1:
-			*param = spa_pod_builder_add_object(builder,
-					SPA_TYPE_OBJECT_ParamMeta, id,
+		{
+			struct spa_pod_frame object;
+			spa_pod_builder_push_object(builder, &object,
+					SPA_TYPE_OBJECT_ParamMeta, id);
+			spa_pod_builder_add(builder,
 					SPA_PARAM_META_type,
 					SPA_POD_Id(SPA_META_Acquisition),
 					SPA_PARAM_META_size,
-					SPA_POD_Int(sizeof(struct spa_meta_acquisition)));
+					SPA_POD_Int(sizeof(struct spa_meta_acquisition)),
+					0);
+			spa_pod_builder_prop(builder, SPA_PARAM_META_features,
+					SPA_POD_PROP_FLAG_MANDATORY);
+			spa_pod_builder_int(builder,
+					SPA_META_FEATURE_ACQUISITION_CURRENT);
+			*param = spa_pod_builder_pop(builder, &object);
 			return 1;
+		}
 		default:
 			return 0;
 		}

@@ -90,7 +90,7 @@ and [Raw pixel row-block schema](../../../docs/schemas/raw-pixel-row-block-1.md)
 
 ## Buffer identity and metadata
 
-Both modes negotiate `SPA_META_Header` and Version 1
+Both modes negotiate `SPA_META_Header` and Version 2
 `SPA_META_Acquisition`.
 
 Complete frames use the normal frame sequence and completion timestamp. Row
@@ -107,8 +107,16 @@ blocks use:
 
 An optional 16-byte acquisition domain and vendor event context establish
 physical-acquisition identity on qualified Grablink/Coaxlink hardware. The
-source advances acquisition generation after restart or non-increasing trigger
-sequence and mirrors the valid acquisition sequence into Header `seq`.
+generation is assigned by the shared acquisition control plane, not by the
+source lifecycle. The source retains the last observed trigger sequence across
+Pause and Start. It fails closed on a duplicate or reset sequence instead of
+inventing a host-local generation, and mirrors a valid acquisition sequence
+into Header `seq`. Recreate or reconfigure every participating source with a
+new shared generation before a trigger counter can reset or be reused.
+
+The current device timestamp mapping is host-local and is not a qualified PTP
+exposure-start mapping. The source therefore leaves the cross-host Version 2
+PTP fields invalid.
 
 ## Factory properties
 
@@ -127,7 +135,7 @@ sequence and mirrors the valid acquisition sequence into Header `seq`.
 | `api.egrabber.control` | `auto` | `auto`, `remote`, `clprotocol`, or `none` |
 | `api.egrabber.control-timeout-ms` | `1000` | positive control timeout |
 | `api.egrabber.acquisition-domain` | none | nonzero 128-bit hexadecimal ID |
-| `api.egrabber.acquisition-generation` | `0` | initial generation |
+| `api.egrabber.acquisition-generation` | `0` | externally assigned shared generation |
 | `api.egrabber.acquisition-sequence-context` | `0` | event context 1, 2, or 3; zero disables identity |
 
 CLProtocol properties are documented in

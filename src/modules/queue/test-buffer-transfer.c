@@ -23,14 +23,12 @@
 
 static void test_copy(void)
 {
+	const uint8_t domain[SPA_META_ACQUISITION_DOMAIN_SIZE] = { 1 };
+	const uint8_t grandmaster[SPA_META_ACQUISITION_PTP_CLOCK_ID_SIZE] = { 2 };
 	uint8_t input_bytes[24], output_bytes[24];
 	struct spa_meta_header input_header = { .seq = 42, .pts = 1234 };
 	struct spa_meta_header output_header = { 0 };
-	struct spa_meta_acquisition input_acquisition = {
-		.version = SPA_META_ACQUISITION_VERSION,
-		.abi_size = sizeof(input_acquisition),
-		.sequence = 91,
-	};
+	struct spa_meta_acquisition input_acquisition;
 	struct spa_meta_acquisition output_acquisition = { 0 };
 	struct spa_meta_busy input_busy = { .count = 9 };
 	struct spa_meta_busy output_busy = { .count = 3 };
@@ -73,6 +71,11 @@ static void test_copy(void)
 	};
 	uint32_t i;
 
+	CHECK(spa_meta_acquisition_init(&input_acquisition));
+	CHECK(spa_meta_acquisition_set_identity(&input_acquisition,
+			domain, 7, 91));
+	CHECK(spa_meta_acquisition_set_exposure_start_ptp(&input_acquisition,
+			123456, 9, grandmaster, 3));
 	for (i = 0; i < sizeof(input_bytes); i++)
 		input_bytes[i] = (uint8_t)(i + 1u);
 	memset(output_bytes, 0xa5, sizeof(output_bytes));
