@@ -207,12 +207,9 @@ int main(int argc, char *argv[])
 	struct test_buffer raw[N_RAW_BUFFERS], calibrated;
 	struct spa_buffer *raw_buffers[N_RAW_BUFFERS];
 	struct spa_buffer *calibrated_buffers[] = { &calibrated.buffer };
-	struct spa_io_buffers_latest latest = { 0 };
-	struct spa_io_buffers_latest_link latest_link = {
-		.id = 1,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &latest,
-		.notify_fd = -1,
+	struct spa_io_buffers input = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
 	};
 	struct spa_io_buffers output = {
 		.status = SPA_STATUS_NEED_DATA,
@@ -265,9 +262,9 @@ int main(int argc, char *argv[])
 	spa_assert_se(spa_node_port_use_buffers(pixel.node, SPA_DIRECTION_OUTPUT,
 			0, 0, calibrated_buffers, 1) == 0);
 	spa_assert_se(spa_node_port_set_io(source.node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link, sizeof(latest_link)) == 0);
+			SPA_IO_Buffers, &input, sizeof(input)) == 0);
 	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link, sizeof(latest_link)) == 0);
+			SPA_IO_Buffers, &input, sizeof(input)) == 0);
 	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, &output, sizeof(output)) == 0);
 
@@ -285,12 +282,10 @@ int main(int argc, char *argv[])
 
 	spa_assert_se(spa_node_send_command(source.node, &pause) == 0);
 	spa_assert_se(spa_node_send_command(pixel.node, &pause) == 0);
-	latest_link.flags = 0;
-	latest_link.io = NULL;
 	spa_assert_se(spa_node_port_set_io(source.node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link, sizeof(latest_link)) == 0);
+			SPA_IO_Buffers, NULL, 0) == 0);
 	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link, sizeof(latest_link)) == 0);
+			SPA_IO_Buffers, NULL, 0) == 0);
 	destroy_node(&pixel);
 	destroy_node(&source);
 	spa_assert_se(dlclose(calculon.library) == 0);

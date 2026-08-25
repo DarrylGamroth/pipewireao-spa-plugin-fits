@@ -6,7 +6,7 @@ latency oracle, not a telescope-specific control configuration.
 
 ```text
 GRAY16_LE detector frame
-  -> latest-buffer boundary
+  -> ordinary scheduled buffer
   -> api.calculon.pixel-calibration
   -> org.calculon.ao.calibrated-pixels/1 F32 [height, width]
   -> api.calculon.shwfs-controller
@@ -18,7 +18,7 @@ GRAY16_LE detector frame
   -> org.calculon.ao.demanded-pdm-command/1 F32 [actuator]
   -> api.alpao.command-normalization
   -> org.pipewireao.alpao.normalized-actuator-command/1 F64 [actuator]
-  -> latest-buffer boundary
+  -> ordinary scheduled buffer
   -> api.alpao.sink
   -> ASDK
 ```
@@ -70,14 +70,14 @@ intersection, so schema, profile, element type, shape, layout, and rate are
 link constraints rather than parallel assumptions. It then shares SPA buffers
 between the negotiated ports and drives this sequence:
 
-1. An asymmetric two-subaperture GRAY16 frame crosses a latest-buffer source
-   boundary and is calibrated.
+1. An asymmetric two-subaperture GRAY16 frame crosses an ordinary buffer link
+   and is calibrated.
 2. The fused controller extracts regions, measures nonzero slopes,
    reconstructs eight physical commands, integrates them, and applies
    actuator bounds.
 3. The ALPAO adapter converts the physical F32 vector to the exact F64 ALPAO
    schema and profile.
-4. The vector crosses a latest-buffer link and is accepted by the ALPAO mock
+4. The vector crosses an ordinary buffer link and is accepted by the ALPAO mock
    sink.
 5. A warmed algorithm cycle is checked for zero heap allocations.
 
@@ -88,7 +88,7 @@ are environment-dependent qualification gates.
 `spa-fits-calculon-ingress` supplies a scientist-facing source-boundary test.
 It creates a two-frame FITS image cube, selects the source's
 `video/raw GRAY16_LE` alternative, intersects it with the pixel-calibration
-input constraint, crosses a latest-buffer link, and verifies the calibrated
+input constraint, crosses an ordinary buffer link, and verifies the calibrated
 pixels. FITS is used for functional graph assembly; the synthetic in-memory
 publisher remains the latency source so file access is not folded into the
 control-path floor.
@@ -98,15 +98,15 @@ control-path floor.
 The Meson benchmark `spa-calculon-full-system-latency` is a closed-loop,
 explicitly dispatched service-time baseline. It reports distributions for:
 
-- latest-buffer source publication plus the pixel-calibration,
+- ordinary source publication plus the pixel-calibration,
   fused-controller, and normalization SPA callbacks;
-- latest-buffer submission plus ALPAO sink/backend completion;
+- ordinary buffer submission plus ALPAO sink/backend completion;
 - the complete raw-frame-to-backend path.
 
 It intentionally bypasses the regular PipeWire scheduler. Therefore it
 measures a direct-call lower bound while preserving attribution between
-latest-buffer transport, SPA/Calculon work, and the device boundary. It is
-not yet a scheduler-composed RTC-island measurement. Scheduler, overload, and
+ordinary ownership, SPA/Calculon work, and the device boundary. It is
+not yet a scheduler-composed graph measurement. Scheduler, overload, and
 open-loop deadline tests are separate experiments and must not be inferred
 from this result.
 

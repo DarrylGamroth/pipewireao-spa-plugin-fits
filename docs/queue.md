@@ -68,6 +68,17 @@ queue.storage = copy
 
 `queue.storage = lease` selects the bounded zero-payload-copy alternative.
 
+For progressive camera processing, place the queue after complete-frame
+assembly, not on the changing camera lease or between row-block producers and
+the assembler:
+
+```text
+eGrabber -> pixel calibration -> frame assembly -> capacity-one queue -> GUI
+```
+
+This keeps progressive ownership inside the real-time graph and makes the
+queue's input a complete immutable ndarray, as required by QUEUE-001.
+
 A PipeWire configuration fragment can load the module as follows:
 
 ```ini

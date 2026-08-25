@@ -86,6 +86,10 @@ struct buffer_slot {
 	bool frame_discontinuity = false;
 	bool progressive = false;
 	bool recycle_pending = false;
+	bool terminal_pending = false;
+	uint32_t progressive_committed = 0;
+	uint32_t terminal_committed = 0;
+	uint32_t terminal_flags = 0;
 };
 
 /* EGrabber acquires user buffers in the order they are submitted. */
@@ -172,6 +176,7 @@ struct impl {
 	std::string stream_index;
 	std::string clprotocol_libraries;
 	std::string control_timeout_ms;
+	std::string progressive_rows;
 	std::string acquisition_domain;
 	std::string acquisition_generation;
 	std::string acquisition_sequence_context;
@@ -198,6 +203,7 @@ struct impl {
 	bool progressive_active = false;
 	bool dma_buf_offered = false;
 	bool direct_dma_buf = false;
+	bool graph_ready = false;
 };
 
 uint32_t acquisition_context(const Options &options,
@@ -225,6 +231,20 @@ void reset_observation(buffer_slot &slot)
 	slot.acquisition_discontinuity = false;
 	slot.frame_discontinuity = false;
 	slot.progressive = false;
+	slot.terminal_pending = false;
+	slot.progressive_committed = 0;
+	slot.terminal_committed = 0;
+	slot.terminal_flags = 0;
+}
+
+uint32_t progressive_granularity(const impl *self)
+{
+	const uint64_t bytes = static_cast<uint64_t>(
+			self->camera->natural_line_pitch()) * self->options.progressive_rows;
+	if (bytes == 0 || bytes > self->camera->payload_size() ||
+			bytes > std::numeric_limits<uint32_t>::max())
+		throw std::runtime_error("eGrabber progressive row quantum is invalid");
+	return static_cast<uint32_t>(bytes);
 }
 
 std::size_t delivered_line_pitch(const Camera &camera,
@@ -283,8 +303,11 @@ void begin_progressive(impl *self, buffer_slot &slot,
 		throw std::runtime_error("overlapping progressive camera buffers");
 	const auto acquisition = acquisition_metadata(self, slot);
 	const auto payload_size = static_cast<uint32_t>(self->camera->payload_size());
-	const auto granularity = static_cast<uint32_t>(
-			self->camera->natural_line_pitch());
+	const auto granularity = progressive_granularity(self);
+	const auto available = static_cast<uint32_t>(
+			egrabber_pipewire::committed_prefix(observation.size_filled,
+					payload_size, granularity));
+	const auto committed = std::min(available, granularity);
 	const struct spa_image_frame frame = {
 		.version = SPA_VERSION_IMAGE_FRAME,
 		.data_index = 0,
@@ -295,7 +318,7 @@ void begin_progressive(impl *self, buffer_slot &slot,
 			? SPA_META_HEADER_FLAG_DISCONT : 0u,
 		.offset = 0,
 		.size = payload_size,
-		.stride = static_cast<int32_t>(granularity),
+		.stride = static_cast<int32_t>(self->camera->natural_line_pitch()),
 		.sequence = slot.sequence,
 		.pts = SPA_TIME_INVALID,
 		.acquisition = &acquisition,
@@ -304,16 +327,53 @@ void begin_progressive(impl *self, buffer_slot &slot,
 		.version = SPA_VERSION_IMAGE_PROGRESSIVE,
 		.payload_size = payload_size,
 		.commit_granularity = granularity,
-		.committed = static_cast<uint32_t>(
-				egrabber_pipewire::committed_prefix(observation.size_filled,
-					payload_size, granularity)),
+		.committed = committed,
 	};
 	const int res = spa_image_source_begin_progressive(&self->source,
 			slot.image, &frame, &progressive);
 	if (res < 0)
 		throw std::runtime_error("could not begin progressive eGrabber image");
 	slot.progressive = true;
+	slot.progressive_committed = committed;
 	self->progressive_slot = &slot;
+	self->graph_ready = committed > 0;
+}
+
+void publish_progressive_terminal(impl *self, buffer_slot &slot);
+
+bool advance_progressive(impl *self, buffer_slot &slot, std::size_t observed)
+{
+	const auto payload_size = static_cast<uint32_t>(self->camera->payload_size());
+	const auto granularity = progressive_granularity(self);
+	const auto available = slot.terminal_pending
+		? slot.terminal_committed
+		: static_cast<uint32_t>(egrabber_pipewire::committed_prefix(
+				observed, payload_size, granularity));
+	if (available < slot.progressive_committed)
+		throw std::runtime_error("eGrabber progressive cursor moved backwards");
+	if (available == slot.progressive_committed) {
+		if (!slot.terminal_pending)
+			return false;
+		publish_progressive_terminal(self, slot);
+		return true;
+	}
+	const auto next = static_cast<uint32_t>(std::min<uint64_t>(available,
+			static_cast<uint64_t>(slot.progressive_committed) + granularity));
+	if (slot.terminal_pending && next == slot.terminal_committed) {
+		slot.progressive_committed = next;
+		publish_progressive_terminal(self, slot);
+	} else {
+		const int res = spa_image_source_update_progressive(&self->source,
+				slot.image, next);
+		if (res < 0)
+			throw std::runtime_error(
+					"could not update progressive eGrabber image");
+		if (res == 0)
+			return false;
+		slot.progressive_committed = next;
+	}
+	self->graph_ready = true;
+	return true;
 }
 
 bool poll_readout(impl *self)
@@ -332,21 +392,17 @@ bool poll_readout(impl *self)
 			changed = true;
 		}
 	}
+	if (self->graph_ready)
+		return true;
 	if (self->progressive_slot != nullptr) {
+		if (self->progressive_slot->terminal_pending)
+			return advance_progressive(self, *self->progressive_slot,
+					self->progressive_slot->terminal_committed);
 		const auto progress = self->camera->buffer_progress(
 				self->progressive_slot->range);
-		if (progress) {
-			const auto committed = static_cast<uint32_t>(
-					egrabber_pipewire::committed_prefix(progress->size_filled,
-						self->camera->payload_size(),
-						self->camera->natural_line_pitch()));
-			const int res = spa_image_source_update_progressive(&self->source,
-					self->progressive_slot->image, committed);
-			if (res < 0)
-				throw std::runtime_error(
-						"could not update progressive eGrabber image");
-			changed = changed || res > 0;
-		}
+		if (progress)
+			changed = advance_progressive(self, *self->progressive_slot,
+					progress->size_filled) || changed;
 	}
 	return changed;
 }
@@ -388,20 +444,45 @@ void finish_progressive(impl *self, buffer_slot &slot,
 
 	const bool complete = terminal_flags == 0;
 	const auto observed = metadata.size_filled.value_or(current);
+	const auto granularity = progressive_granularity(self);
 	const auto prefix = static_cast<uint32_t>(
 			egrabber_pipewire::committed_prefix(observed,
 					self->camera->payload_size(),
-					self->camera->natural_line_pitch()));
+					granularity));
 	const uint32_t committed = complete
 		? static_cast<uint32_t>(self->camera->payload_size())
 		: std::max(current, prefix);
+	if (committed < slot.progressive_committed)
+		throw std::runtime_error("eGrabber terminal cursor moved backwards");
+	if (auto *header = static_cast<struct spa_meta_header *>(
+			spa_buffer_find_meta_data(slot.image->buffer, SPA_META_Header,
+					sizeof(struct spa_meta_header))); header != nullptr) {
+		const auto timestamp = self->timestamp_mapper.map(
+				metadata.timestamp_ns.value_or(0), monotonic_nsec());
+		header->pts = timestamp.pts;
+		if (timestamp.discontinuity)
+			header->flags |= SPA_META_HEADER_FLAG_DISCONT;
+	}
+	if (layout && layout->corrupted)
+		slot.image->buffer->datas[0].chunk->flags |= SPA_CHUNK_FLAG_CORRUPTED;
+	slot.terminal_pending = true;
+	slot.terminal_committed = committed;
+	slot.terminal_flags = terminal_flags;
+}
+
+void publish_progressive_terminal(impl *self, buffer_slot &slot)
+{
+	if (!slot.terminal_pending)
+		throw std::runtime_error("eGrabber progressive terminal is not pending");
 	const int res = spa_image_source_finish_progressive(&self->source,
-			slot.image, committed,
-			complete ? SPA_META_PROGRESSIVE_STATE_COMPLETE
+			slot.image, slot.terminal_committed,
+			slot.terminal_flags == 0 ? SPA_META_PROGRESSIVE_STATE_COMPLETE
 				: SPA_META_PROGRESSIVE_STATE_ABORTED,
-			terminal_flags);
+			slot.terminal_flags);
 	if (res < 0)
 		throw std::runtime_error("could not finish progressive eGrabber image");
+	slot.progressive_committed = slot.terminal_committed;
+	slot.terminal_pending = false;
 	if (self->progressive_slot == &slot)
 		self->progressive_slot = nullptr;
 	slot.progressive = false;
@@ -1146,6 +1227,7 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 				self->submissions.submit(*slot);
 				throw std::runtime_error("could not publish eGrabber image");
 			}
+			self->graph_ready = true;
 		});
 		self->camera->set_transport_event_callback(
 				[self](const egrabber_pipewire::TransportEvent &event) {
@@ -1297,24 +1379,21 @@ int process(void *object)
 	if (!self->started)
 		return SPA_STATUS_OK;
 	try {
-		bool changed = false;
+		self->graph_ready = false;
 		int res = recycle_buffers(self, false);
 		if (res < 0)
 			return res;
-		changed = res > 0;
 		const bool processed = self->camera->process_event();
-		changed = poll_readout(self) || changed;
+		(void) poll_readout(self);
 		res = recycle_buffers(self, false);
 		if (res < 0)
 			return res;
-		changed = changed || processed || res > 0;
 		if (!processed && self->submissions.empty()) {
 			res = recycle_buffers(self, true);
 			if (res < 0)
 				return res;
-			changed = changed || res > 0;
 		}
-		return changed ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
+		return self->graph_ready ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
 	} catch (...) {
 		return -EIO;
 	}
@@ -1469,6 +1548,7 @@ void configure_node_props(impl *self)
 					self->options.clprotocol_libraries);
 	self->control_timeout_ms = std::to_string(
 			self->options.control_timeout_ms);
+	self->progressive_rows = std::to_string(self->options.progressive_rows);
 	if (self->options.acquisition_domain)
 		self->acquisition_domain = egrabber_pipewire::format_acquisition_domain(
 				*self->options.acquisition_domain);
@@ -1482,6 +1562,7 @@ void configure_node_props(impl *self)
 	ADD_ITEM(SPA_KEY_DEVICE_API, "egrabber");
 	ADD_ITEM(SPA_KEY_MEDIA_CLASS, "Video/Source");
 	ADD_ITEM(SPA_KEY_MEDIA_ROLE, "Camera");
+	ADD_ITEM(SPA_KEY_NODE_DRIVER, "true");
 	ADD_ITEM(SPA_KEY_NODE_NAME, self->node_name.c_str());
 	ADD_ITEM(SPA_KEY_NODE_DESCRIPTION, self->description.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_PRODUCER, self->options.producer.c_str());
@@ -1508,6 +1589,8 @@ void configure_node_props(impl *self)
 			self->control_timeout_ms.c_str());
 	ADD_ITEM(SPA_KEY_API_EGRABBER_PROGRESSIVE,
 			egrabber_pipewire::progressive_policy_name(self->options.progressive));
+	ADD_ITEM(SPA_KEY_API_EGRABBER_PROGRESSIVE_ROWS,
+			self->progressive_rows.c_str());
 	if (self->options.acquisition_domain) {
 		ADD_ITEM(SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN,
 				self->acquisition_domain.c_str());
@@ -1572,6 +1655,11 @@ int init(const struct spa_handle_factory *, struct spa_handle *handle,
 		self->progressive_offered = self->options.progressive !=
 				egrabber_pipewire::ProgressivePolicy::disabled &&
 				self->camera->progressive_supported();
+		if (self->progressive_offered &&
+				(self->options.progressive_rows > self->camera->height() ||
+				 self->camera->height() % self->options.progressive_rows != 0))
+			throw std::invalid_argument(
+					"progressive rows must divide the camera height");
 		if (self->progressive_offered)
 			config.flags |= SPA_IMAGE_SOURCE_FLAG_ALLOW_PROGRESSIVE;
 		if (self->options.acquisition_domain &&
@@ -1614,7 +1702,7 @@ int init(const struct spa_handle_factory *, struct spa_handle *handle,
 			SPA_NODE_CHANGE_MASK_PARAMS;
 	self->info = SPA_NODE_INFO_INIT();
 	self->info.max_output_ports = 1;
-	self->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_RTC_PROCESS;
+	self->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_POLL_DRIVER;
 	self->params[0] = SPA_PARAM_INFO(SPA_PARAM_PropInfo,
 			SPA_PARAM_INFO_READ);
 	self->params[1] = SPA_PARAM_INFO(SPA_PARAM_Props,

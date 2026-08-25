@@ -168,16 +168,16 @@ impl<N: Node> State<N> {
     }
 
     fn node_flags(&self) -> u64 {
+        let mut flags = sys::SPA_NODE_FLAG_RT as u64;
         if self
             .node
             .ports()
             .iter()
             .any(|port| port.required && port.format.is_none())
         {
-            sys::SPA_NODE_FLAG_NEED_CONFIGURE as u64
-        } else {
-            0
+            flags |= sys::SPA_NODE_FLAG_NEED_CONFIGURE as u64;
         }
+        flags
     }
 
     fn ready(&self) -> Result<(), i32> {
@@ -687,6 +687,7 @@ unsafe extern "C" fn node_port_enum_params<N: Node>(
                     port.key.direction,
                     &port.constraints,
                     port.format.as_ref(),
+                    port.latest_allowed(),
                 )?
             };
             let Some(value) = value else {

@@ -49,8 +49,9 @@ The `api.bgapi2.source` factory provides complete-frame capture with:
 - an explicit GenTL producer path and optional interface, device, and stream
   indices;
 - standard SPA node, port, format, buffer, metadata, I/O, and command methods;
-- immutable `SPA_NODE_FLAG_RTC_PROCESS` ownership;
-- `SPA_IO_BuffersLatestLink` fan-out without graph-ready callbacks;
+- `node.driver=true` with immutable `SPA_NODE_FLAG_POLL_DRIVER` execution on a
+  configured busy-spin data loop;
+- ordinary `SPA_IO_Buffers` output and normal graph-ready dependency scheduling;
 - mapped `MemPtr` or `MemFd` buffers announced directly to BGAPI2, with no
   image copy;
 - `Mono8` and unpacked `Mono10`, `Mono12`, `Mono14`, and `Mono16` formats;
@@ -72,9 +73,9 @@ stopped. Layout-changing controls also require all buffers to be released and
 invalidate format and buffer negotiation. GenICam command nodes are not exposed
 as persistent SPA properties.
 
-The plugin uses `spa_image_source`, `spa_image_source_latest`, and
-`spa_buffer_latest` directly. It has no `pw_stream`, libpipewire client,
-private image pool, payload copy, or graph scheduling path.
+The plugin uses `spa_image_source` with its ordinary-buffer transport adapter.
+It has no `pw_stream`, libpipewire client, private image pool, payload copy,
+private thread, latest-buffer transport, or private RTC scheduler.
 
 The SPA node and transport adapter are C. `camera.cpp` is a narrow C++
 containment boundary because BGAPI2 can propagate C++ GenApi exceptions through
@@ -87,8 +88,9 @@ model.
 BGAPI2's new-buffer event handler runs on a vendor-owned thread. It reads the
 completed buffer's owner and dynamic frame metadata, then publishes one
 fixed-size completion descriptor through SPA's cache-line-isolated SPSC ring.
-The PipeWireAO RTC data loop is the sole consumer and remains responsible for
-validating and publishing the frame.
+The source's polling data loop is the sole consumer and remains responsible for
+validating and publishing the frame. A successful publication starts one
+regular PipeWire graph cycle.
 
 The source intentionally has no direct-polling or progressive profile. The
 camera-adapter benchmark retains timeout-zero `GetFilledBuffer` only as a
@@ -102,8 +104,8 @@ The event handler is installed at Start and synchronously removed after
 acquisition stops on Pause or Suspend. Restart creates an empty completion
 queue before the handler is enabled again.
 
-Returning a subscriber lease still calls `BGAPI2_DataStream_QueueBuffer` from
-the RTC owner. This preserves direct buffer ownership and avoids another bridge
+Returning a downstream lease still calls `BGAPI2_DataStream_QueueBuffer` from
+the polling owner. This preserves direct buffer ownership and avoids another bridge
 thread, but the GenTL producer's queue implementation is part of the real-time
 contract. Each process duty publishes one ready completion before returning
 released leases. Queue latency therefore consumes future pool headroom instead
@@ -172,7 +174,7 @@ strategies:
 Euresys still allocated while the callback queried metadata for each actual
 frame. Those calls now run on the vendor event thread. Both producers made an
 allocation-bearing `DSQueueBuffer` call for each of the nine returned leases.
-The source is therefore qualified for allocation-free empty RTC polling, but it
+The source is therefore qualified for allocation-free empty user-space polling, but it
 is not qualified for a strict zero-allocation BusySpin process path.
 
 The experiment used a debug-optimized build without LTO. Whole-process totals
@@ -222,8 +224,9 @@ run-to-run movement in the Baumer tail confirms that the producer call is not a
 strict deterministic primitive. These service-time results do not include
 completion waiting and do not replace open-loop end-to-end qualification. They
 also do not justify adding a requeue handoff: a helper could move allocation off
-the RTC owner, but it would add scheduling latency and another bounded queue
-without removing the producer work.
+the polling graph driver, but it would add scheduling latency and another bounded queue
+without removing the producer work. Ordinary link backpressure is intentional;
+telemetry or GUI fan-out belongs behind the bounded observer queue.
 
 Heaptrack attributes no allocation to callback-mode
 `bgapi2_camera_try_get_completion` for either producer. Polling calls

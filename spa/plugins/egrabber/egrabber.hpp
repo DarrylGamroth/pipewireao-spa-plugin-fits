@@ -26,6 +26,7 @@
 #define SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS "api.egrabber.control-timeout-ms"
 #define SPA_KEY_API_EGRABBER_TRANSPORT "api.egrabber.transport"
 #define SPA_KEY_API_EGRABBER_PROGRESSIVE "api.egrabber.progressive"
+#define SPA_KEY_API_EGRABBER_PROGRESSIVE_ROWS "api.egrabber.progressive-rows"
 #define SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN "api.egrabber.acquisition-domain"
 #define SPA_KEY_API_EGRABBER_ACQUISITION_GENERATION "api.egrabber.acquisition-generation"
 #define SPA_KEY_API_EGRABBER_ACQUISITION_SEQUENCE_CONTEXT "api.egrabber.acquisition-sequence-context"

@@ -14,7 +14,6 @@
 
 #include <dlfcn.h>
 
-#include <spa/node/buffer-latest.h>
 #include <spa/node/command.h>
 #include <spa/node/io.h>
 #include <spa/node/node.h>
@@ -345,14 +344,8 @@ int main(int argc, char **argv)
 	uint32_t actuator_count = DEFAULT_ACTUATORS;
 	struct node_instance pixel, controller, normalizer, sink;
 	struct test_buffer raw, calibrated, physical, normalized[2];
-	struct spa_buffer *raw_buffers[1];
-	struct spa_buffer_latest *raw_latest;
-	struct spa_io_buffers_latest raw_latest_io = { 0 };
-	struct spa_io_buffers_latest_link raw_latest_link = {
-		.id = 2,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &raw_latest_io,
-		.notify_fd = -1,
+	struct spa_io_buffers raw_input = {
+		.status = SPA_STATUS_NEED_DATA, .buffer_id = SPA_ID_INVALID,
 	};
 	struct spa_io_buffers pixel_output = {
 		.status = SPA_STATUS_NEED_DATA, .buffer_id = SPA_ID_INVALID,
@@ -366,12 +359,8 @@ int main(int argc, char **argv)
 	struct spa_io_buffers normalizer_input = {
 		.status = SPA_STATUS_NEED_DATA, .buffer_id = 0,
 	};
-	struct spa_io_buffers_latest latest = { 0 };
-	struct spa_io_buffers_latest_link latest_link = {
-		.id = 1,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &latest,
-		.notify_fd = -1,
+	struct spa_io_buffers sink_input = {
+		.status = SPA_STATUS_NEED_DATA, .buffer_id = SPA_ID_INVALID,
 	};
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
@@ -491,17 +480,7 @@ int main(int argc, char **argv)
 	use_one_buffer(normalizer.node, SPA_DIRECTION_INPUT, 0, &physical);
 	use_two_buffers(normalizer.node, SPA_DIRECTION_OUTPUT, 0, normalized);
 	use_two_buffers(sink.node, SPA_DIRECTION_INPUT, 0, normalized);
-	raw_buffers[0] = &raw.buffer;
-	raw_latest = spa_buffer_latest_new(SPA_DIRECTION_OUTPUT, NULL, NULL);
-	spa_assert_se(raw_latest != NULL);
-	spa_buffer_latest_set_buffers(raw_latest, raw_buffers,
-			SPA_N_ELEMENTS(raw_buffers));
-	spa_assert_se(spa_buffer_latest_set_io(raw_latest,
-			SPA_IO_BuffersLatestLink, &raw_latest_link,
-			sizeof(raw_latest_link)) == 0);
-	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &raw_latest_link,
-			sizeof(raw_latest_link)) == 0);
+	set_standard_io(pixel.node, SPA_DIRECTION_INPUT, 0, &raw_input);
 	set_standard_io(pixel.node, SPA_DIRECTION_OUTPUT, 0, &pixel_output);
 	set_standard_io(controller.node, SPA_DIRECTION_INPUT, 0,
 			&controller_input);
@@ -509,12 +488,8 @@ int main(int argc, char **argv)
 			&controller_output);
 	set_standard_io(normalizer.node, SPA_DIRECTION_INPUT, 0,
 			&normalizer_input);
-	spa_assert_se(spa_node_port_set_io(normalizer.node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link,
-			sizeof(latest_link)) == 0);
-	spa_assert_se(spa_node_port_set_io(sink.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link,
-			sizeof(latest_link)) == 0);
+	set_standard_io(normalizer.node, SPA_DIRECTION_OUTPUT, 0, &sink_input);
+	set_standard_io(sink.node, SPA_DIRECTION_INPUT, 0, &sink_input);
 
 	raw_values = (uint16_t *)raw.payload;
 	{
@@ -526,14 +501,8 @@ int main(int argc, char **argv)
 	spa_assert_se(spa_node_send_command(controller.node, &start) == 0);
 	spa_assert_se(spa_node_send_command(normalizer.node, &start) == 0);
 	spa_assert_se(spa_node_send_command(sink.node, &start) == 0);
-	spa_assert_se(spa_buffer_latest_worker_begin(raw_latest) == 0);
-	{
-		uint32_t raw_id = SPA_ID_INVALID;
-
-		spa_assert_se(spa_buffer_latest_dequeue(raw_latest, &raw_id, NULL) == 1);
-		spa_assert_se(raw_id == 0);
-		spa_assert_se(spa_buffer_latest_queue(raw_latest, raw_id) == 0);
-	}
+	raw_input.status = SPA_STATUS_HAVE_DATA;
+	raw_input.buffer_id = 0;
 	spa_assert_se(spa_node_process(pixel.node) == SPA_STATUS_HAVE_DATA);
 	controller_input.status = SPA_STATUS_HAVE_DATA;
 	controller_input.buffer_id = pixel_output.buffer_id;
@@ -554,7 +523,7 @@ int main(int argc, char **argv)
 		nonzero |= physical_values[index] != 0.0f;
 	}
 	spa_assert_se(nonzero);
-	spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_HAVE_DATA);
+	spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_NEED_DATA);
 
 	/* The device-boundary conversion rejects an unsafe physical command and
 	 * does not publish a normalized buffer. */
@@ -563,7 +532,7 @@ int main(int argc, char **argv)
 	normalizer_input.buffer_id = 0;
 	spa_assert_se(spa_node_process(normalizer.node) == -ERANGE);
 	spa_assert_se(normalizer_input.status == -ERANGE);
-	spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_OK);
+	spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_NEED_DATA);
 	physical_values[0] = 0.0f;
 
 	pixel_output.status = SPA_STATUS_NEED_DATA;
@@ -572,13 +541,9 @@ int main(int argc, char **argv)
 	controller_output.buffer_id = 0;
 	measured_allocations = 0;
 	measure_allocations = true;
-	{
-		uint32_t raw_id = SPA_ID_INVALID;
-
-		spa_assert_se(spa_buffer_latest_dequeue(raw_latest, &raw_id, NULL) == 1);
-		raw.header.seq++;
-		spa_assert_se(spa_buffer_latest_queue(raw_latest, raw_id) == 0);
-	}
+	raw.header.seq++;
+	raw_input.status = SPA_STATUS_HAVE_DATA;
+	raw_input.buffer_id = 0;
 	spa_assert_se(spa_node_process(pixel.node) == SPA_STATUS_HAVE_DATA);
 	controller_input.status = SPA_STATUS_HAVE_DATA;
 	controller_input.buffer_id = pixel_output.buffer_id;
@@ -588,7 +553,7 @@ int main(int argc, char **argv)
 	spa_assert_se(spa_node_process(normalizer.node) == SPA_STATUS_HAVE_DATA);
 	measure_allocations = false;
 	spa_assert_se(measured_allocations == 0);
-	spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_HAVE_DATA);
+	spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_NEED_DATA);
 
 	for (iteration = 0; iteration < benchmark_iterations; iteration++) {
 		uint64_t start_ns, algorithms_done_ns, done_ns;
@@ -598,14 +563,9 @@ int main(int argc, char **argv)
 		controller_output.status = SPA_STATUS_NEED_DATA;
 		controller_output.buffer_id = 0;
 		start_ns = monotonic_ns();
-		{
-			uint32_t raw_id = SPA_ID_INVALID;
-
-			spa_assert_se(spa_buffer_latest_dequeue(raw_latest,
-					&raw_id, NULL) == 1);
-			raw.header.seq++;
-			spa_assert_se(spa_buffer_latest_queue(raw_latest, raw_id) == 0);
-		}
+		raw.header.seq++;
+		raw_input.status = SPA_STATUS_HAVE_DATA;
+		raw_input.buffer_id = 0;
 		spa_assert_se(spa_node_process(pixel.node) == SPA_STATUS_HAVE_DATA);
 		controller_input.status = SPA_STATUS_HAVE_DATA;
 		controller_input.buffer_id = pixel_output.buffer_id;
@@ -616,7 +576,7 @@ int main(int argc, char **argv)
 		spa_assert_se(spa_node_process(normalizer.node) ==
 				SPA_STATUS_HAVE_DATA);
 		algorithms_done_ns = monotonic_ns();
-		spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_HAVE_DATA);
+		spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_NEED_DATA);
 		done_ns = monotonic_ns();
 		algorithm_latency[iteration] = algorithms_done_ns - start_ns;
 		sink_latency[iteration] = done_ns - algorithms_done_ns;
@@ -625,7 +585,7 @@ int main(int argc, char **argv)
 	if (benchmark_iterations != 0) {
 		report_latency("pixel+controller+normalizer SPA callbacks", algorithm_latency,
 				benchmark_iterations);
-		report_latency("latest submit+ALPAO sink+ASDK", sink_latency,
+		report_latency("scheduled submit+ALPAO sink+ASDK", sink_latency,
 				benchmark_iterations);
 		report_latency("raw detector frame to ALPAO completion", total_latency,
 				benchmark_iterations);
@@ -635,24 +595,12 @@ int main(int argc, char **argv)
 	spa_assert_se(spa_node_send_command(normalizer.node, &pause) == 0);
 	spa_assert_se(spa_node_send_command(controller.node, &pause) == 0);
 	spa_assert_se(spa_node_send_command(pixel.node, &pause) == 0);
-	spa_assert_se(spa_buffer_latest_worker_end(raw_latest) == 0);
-	raw_latest_link.flags = 0;
-	raw_latest_link.io = NULL;
 	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &raw_latest_link,
-			sizeof(raw_latest_link)) == 0);
-	spa_assert_se(spa_buffer_latest_set_io(raw_latest,
-			SPA_IO_BuffersLatestLink, &raw_latest_link,
-			sizeof(raw_latest_link)) == 0);
-	spa_buffer_latest_destroy(raw_latest);
-	latest_link.flags = 0;
-	latest_link.io = NULL;
+			SPA_IO_Buffers, NULL, 0) == 0);
 	spa_assert_se(spa_node_port_set_io(normalizer.node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link,
-			sizeof(latest_link)) == 0);
+			SPA_IO_Buffers, NULL, 0) == 0);
 	spa_assert_se(spa_node_port_set_io(sink.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &latest_link,
-			sizeof(latest_link)) == 0);
+			SPA_IO_Buffers, NULL, 0) == 0);
 	destroy_node(&sink);
 	destroy_node(&normalizer);
 	destroy_node(&controller);

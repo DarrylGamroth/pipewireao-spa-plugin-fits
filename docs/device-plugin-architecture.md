@@ -31,8 +31,8 @@ PipeWireAO core continues to own:
 
 - the `application/ndarray` structural format;
 - generic negotiated semantic-schema and profile properties;
-- fixed buffer-pool and latest-buffer ownership contracts;
-- RTC-owned `spa_node_process()` execution and wait policies;
+- fixed buffer-pool, ordinary graph, and progressive-lease ownership contracts;
+- regular graph scheduling, polling data loops, and activation wake policies;
 - metadata ABIs and generic SPA format utilities; and
 - the host-side discovery, loading, lifecycle, and graph integration needed by
   ordinary SPA factories.
@@ -191,48 +191,35 @@ The repository SHALL NOT commit or redistribute:
 Synthetic fixtures must define their own non-device identity and must not be
 presented as vendor calibration.
 
-## RTC and lifecycle contract
+## Scheduling and lifecycle contract
 
-A hardware node using PipeWireAO RTC ownership remains an ordinary SPA node. It
-uses standard discovery, parameters, format and metadata negotiation, buffer
-registration, port I/O, commands, and lifecycle events. Its repeated process
-function is bounded and nonblocking; PipeWireAO owns thread creation, affinity,
-wait policy, start, stop, join, and terminal-result propagation.
+The regular PipeWire scheduler owns dependency ordering for every production
+factory. Sources set `node.driver=true` and `SPA_NODE_FLAG_POLL_DRIVER`; their
+bounded, nonblocking `process()` methods are probed on configured busy-spin data
+loops. BGAPI2, Aravis, and FITS publish ordinary complete buffers. eGrabber
+retains the latest/progressive lease only where in-progress camera rows must
+remain zero-copy. ALPAO is an ordinary scheduled follower and accepts
+`SPA_IO_Buffers`.
 
-The implemented camera and mirror factories currently set
-`SPA_NODE_FLAG_RTC_PROCESS`. PipeWireAO therefore gives each factory an
-independent `pw_rtc_data_loop` and excludes it from the regular graph scheduler.
-This is the current device-boundary implementation, not the target execution
-model for a multi-stage controller.
+No production factory sets `SPA_NODE_FLAG_RTC_PROCESS` or creates
+`pw_rtc_data_loop`. Those core surfaces remain temporary ABI compatibility for
+unmigrated consumers, not part of this repository's execution model.
 
-The target model keeps the regular PipeWire scheduler as the default and lets
-the core place an explicitly selected latency-critical subgraph in one RTC
-island. Scheduler placement is a core policy; a vendor factory declares
-real-time safety and supported complete/latest/progressive I/O contracts but
-does not permanently choose regular or RTC-island ownership.
+A polled source does not bypass the graph. One successful source publication
+starts one normal graph cycle; the source is not probed again until the graph's
+completion dependency returns to the driver. Local poll drivers require a
+busy-spin loop. Exported nodes poll in the implementation process, while the
+daemon-side remote representation retains topology and the shared activation.
 
-Device migration follows these rules:
+Factory identity, discovery, formats, schemas, controls, metadata, and SDK
+ownership are independent of the selected loop. Startup occurs only after
+format, buffers, I/O, required ports, and device state are prepared. Pause,
+Suspend, final link removal, and destruction remove the poll source before SDK
+or buffer teardown, so lifecycle calls cannot overlap `process()`.
 
-- eGrabber and BGAPI2 add regular complete-frame source operation. Producers
-  with qualified in-progress readout may additionally provide a progressive
-  boundary to an RTC island.
-- ALPAO adds regular complete-command sink operation. A strict controller may
-  place the same sink at the terminal end of an RTC island.
-- Factory identity, discovery, formats, schemas, controls, metadata, and SDK
-  ownership do not change with scheduling mode.
-- `SPA_NODE_FLAG_RTC_PROCESS` is not removed until PipeWireAO can assign one
-  island process owner and quiesce it safely during every link and node
-  lifecycle transition.
-
-Consequently these integrations remain ordinary out-of-tree SPA plugins; they
-do not become PipeWire modules. "Regular" describes an execution mode and
-standard complete-buffer I/O, not a different packaging or factory ABI.
-
-An RTC-owned sink accepts the applicable latest-buffer input I/O contract. It
-does not invent an application queue or call back into the graph scheduler.
-Startup occurs only after its format, profile, buffers, required input, and
-device state are prepared. Shutdown prevents reactivation and stops repeated
-execution before releasing the SDK object or configuration.
+The exceptional eGrabber progressive lease terminates at pixel calibration.
+Calibrated row-block ndarrays and every later artifact use ordinary complete
+buffers. See [Scheduled nodes and progressive row blocks](scheduled-node-migration.md).
 
 Vendor calls that allocate, lock, wait, perform I/O, or have unbounded work must
 be identified and qualified. A functional SDK call is not by itself evidence
@@ -320,7 +307,7 @@ install paths did not change during migration.
 | --- | --- |
 | Vocabulary | Stable property IDs, schema strings, profile test vectors, C ABI and binding parity where applicable. |
 | Build | Clean SDK-disabled build; explicit SDK-root build; install and load against a supported installed PipeWireAO. |
-| SPA contract | Factory enumeration, parameters, exact format filtering, buffers, latest input I/O, commands, and lifecycle. |
+| SPA contract | Factory enumeration, parameters, exact format filtering, ordinary buffer I/O, commands, and lifecycle; progressive lease I/O only for an adapter that explicitly requires it. |
 | Failure | Missing SDK, missing configuration, mismatched profile, malformed payload, device rejection, timeout, and teardown with work active. |
 | Repeated path | Bounded work, allocation and lock evidence, wait behavior, latency distribution, and overload policy. |
 | Deployment | Package contains no proprietary artifact and resolves only declared runtime dependencies. |

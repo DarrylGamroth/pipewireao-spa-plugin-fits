@@ -569,12 +569,9 @@ int main(int argc, char **argv)
 		&storage[0].buffer,
 		&storage[1].buffer,
 	};
-	struct spa_io_buffers_latest io = { 0 };
-	struct spa_io_buffers_latest_link link = {
-		.id = 1,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &io,
-		.notify_fd = -1,
+	struct spa_io_buffers io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
 	};
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
@@ -684,9 +681,9 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 	setup_result = spa_node_port_set_io(node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link));
+			SPA_IO_Buffers, &io, sizeof(io));
 	if (setup_result != 0) {
-		fprintf(stderr, "ALPAO SPA latest-buffer setup failed: %d\n",
+		fprintf(stderr, "ALPAO SPA buffer I/O setup failed: %d\n",
 				setup_result);
 		goto cleanup;
 	}
@@ -734,7 +731,6 @@ int main(int argc, char **argv)
 	for (index = 0; index < attempts; index++) {
 		struct measurement *item = &measurements[index];
 		const uint32_t buffer_id = (uint32_t)(index % SPA_N_ELEMENTS(storage));
-		uint32_t completed = SPA_ID_INVALID;
 		int process_result;
 
 		fill_command(storage[buffer_id].command, &random_state);
@@ -748,19 +744,16 @@ int main(int argc, char **argv)
 					options.period_ns * options.burst_size;
 			sleep_until(item->scheduled_ns);
 		}
-		if (spa_io_buffers_latest_submit(&io, index + 1, buffer_id,
-				NULL, NULL) != 0) {
-			fprintf(stderr, "buffer submission failed at %zu\n", index);
-			goto cleanup;
-		}
+		io.buffer_id = buffer_id;
+		io.status = SPA_STATUS_HAVE_DATA;
 		item->process_start_ns = monotonic_ns();
 		if (options.period_ns == 0)
 			item->scheduled_ns = item->process_start_ns;
 		process_result = spa_node_process(node);
 		item->process_end_ns = monotonic_ns();
-		if (process_result != SPA_STATUS_HAVE_DATA ||
-				spa_io_buffers_latest_reclaim_completion(&io,
-						&completed) != 0 || completed != buffer_id) {
+		if (process_result != SPA_STATUS_NEED_DATA ||
+				io.status != SPA_STATUS_NEED_DATA ||
+				io.buffer_id != buffer_id) {
 			fprintf(stderr, "SPA processing failed at %zu: %d\n",
 					index, process_result);
 			goto cleanup;
@@ -781,9 +774,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "ALPAO SPA Pause failed\n");
 		goto cleanup;
 	}
-	link.flags = 0;
 	(void)spa_node_port_set_io(node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link));
+			SPA_IO_Buffers, NULL, 0);
 	(void)spa_node_port_use_buffers(node, SPA_DIRECTION_INPUT, 0, 0, NULL, 0);
 	(void)spa_node_port_set_param(node, SPA_DIRECTION_INPUT, 0,
 			SPA_PARAM_Format, 0, NULL);

@@ -419,6 +419,9 @@ int main(int argc, char **argv)
 	pixel_factory = factory;
 	spa_assert_se(enumerate(&factory, &index) == 1);
 	spa_assert_se(spa_streq(factory->name,
+			SPA_NAME_API_CALCULON_FRAME_ASSEMBLY));
+	spa_assert_se(enumerate(&factory, &index) == 1);
+	spa_assert_se(spa_streq(factory->name,
 			SPA_NAME_API_CALCULON_SHWFS_CONTROLLER));
 	spa_assert_se(enumerate(&factory, &index) == 1);
 	spa_assert_se(spa_streq(factory->name,

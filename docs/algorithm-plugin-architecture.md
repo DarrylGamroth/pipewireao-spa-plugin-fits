@@ -35,10 +35,10 @@ unresolved choice. It then applies the same exact format constraint, including
 schema and profile, as it does to a directly encoded fixed value.
 
 The buffer I/O contract is negotiated separately from the ndarray format.
-`SPA_IO_Buffers` and the PipeWireAO latest-buffer I/O types transport the same
-negotiated payload; choosing one never changes or relaxes its schema. Regular
-ports may retain their standard I/O endpoint while a latest-buffer link is
-active. The active latest link takes precedence until it is removed.
+Ordinary `SPA_IO_Buffers` is the default on every port. Only pixel
+calibration's raw input opts into the PipeWireAO latest-buffer types, and only
+to retain one progressively filled eGrabber lease. Choosing that transport does
+not change or relax the raw video format.
 
 ## Language boundary
 
@@ -76,13 +76,14 @@ Factory construction requires:
 | `api.calculon.detector-size` | Positive `WIDTHxHEIGHT` pair |
 | `api.calculon.detector-rate` | Positive `NUM/DEN` frame rate |
 | `api.calculon.detector-profile` | Exact lowercase detector-profile fingerprint |
+| `api.calculon.row-block-rows` | Optional positive row count dividing `HEIGHT`; omitted for complete-frame output |
 
 | Direction and ID | Role | Negotiated format |
 | --- | --- | --- |
 | input 0 | raw detector frame | `video/raw`, `GRAY16_LE`, exact size and rate |
 | input 1 | prepared flat calibration | F32 ndarray, `org.calculon.ao.flat-calibration/1`, no rate |
 | input 2 | prepared background calibration | F32 ndarray, `org.calculon.ao.background-calibration/1`, no rate |
-| output 0 | calibrated detector frame | F32 ndarray, `org.calculon.ao.calibrated-pixels/1`, raw-frame rate |
+| output 0 | calibrated detector frame or row block | F32 ndarray; complete calibrated-pixels schema at frame rate, or calibrated-pixel-row-block schema `[N,width]` at block rate |
 
 All ndarray ports require `[height, width]`, `ROW_MAJOR`, and the same exact
 detector profile. The profile is currently a trusted lowercase
@@ -96,13 +97,34 @@ flat and background sequence numbers together, so a complete calibration pair
 becomes active atomically between frame callbacks. Sequence `-1` selects the
 identity plane: one for flat and zero for background.
 
-Raw streaming inputs and algorithm outputs support standard `SPA_IO_Buffers`
-and PipeWireAO latest-buffer I/O. The standard contract preserves synchronous
-back pressure: one raw input is consumed only when one complete output can be
-published. Under latest-buffer I/O, the adapter claims and completes one
-lease per process call, so superseded frames do not create a private backlog.
-Prepared artifacts continue to use standard buffers and are inspected at most
-once per port per process call; there is no private queue.
+Complete-frame raw input and calibrated output use standard
+`SPA_IO_Buffers`, preserving synchronous back pressure. In row-block mode the
+raw input holds one latest/progressive lease until its terminal state. Each
+process call calibrates at most one newly committed row quantum and publishes
+one complete ordinary output block. Prepared artifacts always use ordinary
+buffers and are inspected at most once per port per process call; there is no
+private queue.
+
+The calibration plan is snapshotted when a progressive frame starts, so a flat
+or background selection cannot change midway through the frame. An aborted
+input discards the partial workspace, releases the lease, and marks the next
+output discontinuous.
+
+## Frame-assembly factory
+
+`api.calculon.frame-assembly` accepts the exact calibrated row-block schema and
+publishes the complete calibrated-pixels schema. Construction uses the same
+detector size, frame rate, profile, and required row-block height as pixel
+calibration. The public artifact contract is documented in
+[Calibrated pixel row-block schema](schemas/calibrated-pixel-row-block-1.md).
+
+`SPA_META_Header.seq` is the frame identity, `offset` is the first block row,
+and `MARKER` identifies the final block. The assembler accepts only contiguous
+offsets for one sequence, copies them into one preallocated frame workspace,
+and publishes only after the terminal block. A gap, overlap, unexpected
+sequence, or invalid marker abandons the partial frame. The next valid output
+is marked `DISCONT`; a discontinuity on any earlier block is retained through
+final publication.
 
 ## Fused Shack-Hartmann controller
 
@@ -129,20 +151,14 @@ deployed profiles require their calibrated conversion artifact.
 See `reference-shwfs-alpao-system.md` for the complete graph, construction
 keys, correctness gate, simulator invocation, and latency boundary.
 
-## Optional progressive RTC-island execution
+## Progressive execution and transactional algorithms
 
 Standard complete-buffer processing remains the default Calculon adapter mode.
-The proposed PipeWireAO RTC-island executor may place a connected set of
-progress-capable factories on one explicitly owned real-time duty-cycle loop.
-This changes process ownership and readiness dispatch, not factory identity,
-port visibility, negotiated schemas, or the authoritative Calculon plan.
-
-Inside an island, an adapter maps the acquire-loaded committed byte prefix from
-`SPA_META_Progressive` to Calculon semantic work units and calls
-`InputProgress::process_range(previous..committed)`. An `OutputProgress` plan
-may release-publish only the greatest prefix that it guarantees will remain
-immutable. Complete-buffer operation invokes the same plan for the full input
-extent and remains the compatibility and correctness oracle.
+The implemented progressive region uses regular scheduler dependencies rather
+than a private RTC-island executor. Pixel calibration maps the acquire-loaded
+camera prefix to Calculon semantic work units and calls the maintained
+range-processing plan. Its outputs are complete row-block micro-buffers, not
+progressively changing algorithm buffers.
 
 Progressive MVM input does not imply progressive MVM output. A cumulative MVM
 partial sum can modify every output element when another slope arrives and is
@@ -163,11 +179,14 @@ HO, LO, or WFS inputs, the prepared workspace contains a bounded per-frame
 completion ledger and commits only after all identities and configuration
 generations match and every required input terminates successfully.
 
-The first core scheduler proof of concept is intentionally test-only. The
-direct reference slice already uses a latest-buffer source boundary, standard
-complete-buffer calls between its three algorithms, and a latest-buffer sink
-boundary. A scheduler-composed island still requires graph membership,
-single-owner lifecycle, and fixed dispatch before it becomes a runtime claim.
+The current controller factory still consumes complete assembled frames.
+Moving additional Calculon stages before assembly is valid only where their
+public row-block artifacts are immutable. Stateful controller output remains a
+terminal transaction: incomplete or aborted input must not advance controller
+history or publish a mirror command.
+
+See [Scheduled nodes and progressive row blocks](scheduled-node-migration.md)
+for polling, row identity, assembly, and observer isolation.
 
 ## Build boundary
 

@@ -153,6 +153,9 @@ void read_options(Options &options, const struct spa_dict *info)
 				SPA_KEY_API_EGRABBER_CONTROL_TIMEOUT_MS);
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_PROGRESSIVE)))
 		options.progressive = parse_progressive_policy(value);
+	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_PROGRESSIVE_ROWS)))
+		options.progressive_rows = parse_unsigned<std::uint32_t>(value,
+				SPA_KEY_API_EGRABBER_PROGRESSIVE_ROWS);
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN)))
 		options.acquisition_domain = parse_acquisition_domain(value);
 	if ((value = spa_dict_lookup(info, SPA_KEY_API_EGRABBER_ACQUISITION_GENERATION)))
@@ -176,6 +179,8 @@ void read_options(Options &options, const struct spa_dict *info)
 
 	if (options.buffer_count < 2)
 		throw std::invalid_argument("eGrabber buffer count must be at least two");
+	if (options.progressive_rows == 0)
+		throw std::invalid_argument("eGrabber progressive rows must be positive");
 	if (options.control != "auto" && options.control != "remote" &&
 			options.control != "clprotocol" && options.control != "none")
 		throw std::invalid_argument("eGrabber control must be auto, remote, clprotocol, or none");

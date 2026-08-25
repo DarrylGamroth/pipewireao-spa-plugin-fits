@@ -33,6 +33,7 @@ int main()
 	const auto timed = parse({
 		{ SPA_KEY_API_EGRABBER_PRODUCER, "coaxlink" },
 		{ SPA_KEY_API_EGRABBER_PROGRESSIVE, "require" },
+		{ SPA_KEY_API_EGRABBER_PROGRESSIVE_ROWS, "8" },
 		{ SPA_KEY_API_EGRABBER_ACQUISITION_DOMAIN,
 				"00112233-4455-6677-8899-aabbccddeeff" },
 		{ SPA_KEY_API_EGRABBER_ACQUISITION_GENERATION, "42" },
@@ -41,6 +42,7 @@ int main()
 	});
 	assert(timed.producer == "coaxlink");
 	assert(timed.progressive == egrabber_pipewire::ProgressivePolicy::require);
+	assert(timed.progressive_rows == 8);
 	assert(timed.acquisition_domain);
 	assert((*timed.acquisition_domain)[0] == 0x00);
 	assert((*timed.acquisition_domain)[15] == 0xff);
@@ -75,6 +77,7 @@ int main()
 	assert(throws([] { parse({{ SPA_KEY_API_EGRABBER_BUFFER_COUNT, "1" }}); }));
 	assert(throws([] { parse({{ SPA_KEY_API_EGRABBER_BUFFER_COUNT, "8frames" }}); }));
 	assert(throws([] { parse({{ SPA_KEY_API_EGRABBER_PROGRESSIVE, "sometimes" }}); }));
+	assert(throws([] { parse({{ SPA_KEY_API_EGRABBER_PROGRESSIVE_ROWS, "0" }}); }));
 	assert(throws([] { parse({{
 		SPA_KEY_API_EGRABBER_CLPROTOCOL_LIBRARIES, "/one::/two" }}); }));
 	assert(throws([] { parse({{

@@ -148,16 +148,9 @@ static int exercise(const struct spa_handle_factory *factory,
 	struct spa_pod *format, *missing_profile, *wrong_schema, *wrong_profile;
 	struct test_buffer storage[2];
 	struct spa_buffer *buffers[2];
-	struct spa_io_buffers_latest io = { 0 };
-	struct spa_io_buffers_latest_link link = {
-		.id = 1,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &io,
-		.notify_fd = -1,
-	};
+	struct spa_io_buffers io = SPA_IO_BUFFERS_INIT;
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
-	uint32_t completed = SPA_ID_INVALID;
 	int initialized;
 
 	if (spa_streq(backend, "mock"))
@@ -219,31 +212,28 @@ static int exercise(const struct spa_handle_factory *factory,
 	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_INPUT, 0, 0,
 			buffers, SPA_N_ELEMENTS(buffers)) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link)) == 0);
+			SPA_IO_Buffers, &io, sizeof(io)) == 0);
 
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
-	spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
+	spa_assert_se(spa_node_process(node) == SPA_STATUS_NEED_DATA);
 	storage[0].chunk.size = sizeof(storage[0].command);
 	storage[0].chunk.stride = sizeof(double);
-	spa_assert_se(spa_io_buffers_latest_submit(&io, 1, 0, NULL, NULL) == 0);
-	spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
-	spa_assert_se(spa_io_buffers_latest_reclaim_completion(&io,
-			&completed) == 0);
-	spa_assert_se(completed == 0);
+	io.buffer_id = 0;
+	io.status = SPA_STATUS_HAVE_DATA;
+	spa_assert_se(spa_node_process(node) == SPA_STATUS_NEED_DATA);
+	spa_assert_se(io.status == SPA_STATUS_NEED_DATA);
 
 	storage[1].command[3] = 1.5;
 	storage[1].chunk.size = sizeof(storage[1].command);
 	storage[1].chunk.stride = sizeof(double);
-	spa_assert_se(spa_io_buffers_latest_submit(&io, 2, 1, NULL, NULL) == 0);
+	io.buffer_id = 1;
+	io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(node) == -ERANGE);
-	spa_assert_se(spa_io_buffers_latest_reclaim_completion(&io,
-			&completed) == 0);
-	spa_assert_se(completed == 1);
+	spa_assert_se(io.status == -ERANGE);
 
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
-	link.flags = 0;
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link)) == 0);
+			SPA_IO_Buffers, NULL, 0) == 0);
 	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_INPUT, 0, 0,
 			NULL, 0) == 0);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_INPUT, 0,

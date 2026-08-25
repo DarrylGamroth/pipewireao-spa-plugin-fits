@@ -5,14 +5,17 @@ use std::sync::Arc;
 use calculon_algorithms::schemas::{
     BACKGROUND_CALIBRATION_V1, CALIBRATED_PIXELS_V1, FLAT_CALIBRATION_V1,
 };
-use calculon_algorithms::{AlgorithmPlan, PixelCalibrationPlan, ProgressWorkspace};
+use calculon_algorithms::{AlgorithmPlan, InputProgress, PixelCalibrationPlan, ProgressWorkspace};
 use calculon_spa_node::{
-    Factory, Format, FormatConstraint, InputFrame, Node, OutputFrame, PodValue, Port, PortRef,
-    Property, object, parse_props, sys,
+    Factory, Format, FormatConstraint, Header, InputFrame, Node, OutputFrame, PodValue, Port,
+    PortRef, ProgressiveInputFrame, ProgressiveState, Property, object, parse_props, sys,
 };
 use libspa::utils::Id;
 
-use crate::config::{parse_rate, parse_size, required_info, valid_profile};
+use crate::CALIBRATED_PIXEL_ROW_BLOCK_V1;
+use crate::config::{
+    optional_info, parse_positive_usize, parse_rate, parse_size, required_info, valid_profile,
+};
 
 /// Factory name of the complete-frame detector-calibration node.
 pub const PIXEL_CALIBRATION_FACTORY_NAME: &str = "api.calculon.pixel-calibration";
@@ -20,6 +23,7 @@ pub const PIXEL_CALIBRATION_FACTORY_NAME: &str = "api.calculon.pixel-calibration
 const KEY_SIZE: &[u8] = b"api.calculon.detector-size\0";
 const KEY_RATE: &[u8] = b"api.calculon.detector-rate\0";
 const KEY_PROFILE: &[u8] = b"api.calculon.detector-profile\0";
+const KEY_BLOCK_ROWS: &[u8] = b"api.calculon.row-block-rows\0";
 const PROP_FLAT: u32 = sys::SPA_PROP_START_CUSTOM;
 const PROP_BACKGROUND: u32 = sys::SPA_PROP_START_CUSTOM + 1;
 const INPUT_RAW: usize = 0;
@@ -122,6 +126,7 @@ struct PixelCalibrationNode {
     ports: Vec<Port>,
     width: usize,
     height: usize,
+    block_rows: usize,
     flats: PlaneStore,
     backgrounds: PlaneStore,
     identity_flat: Arc<[f32]>,
@@ -131,9 +136,13 @@ struct PixelCalibrationNode {
     flat_seq: Option<u64>,
     background_seq: Option<u64>,
     plan: PixelCalibrationPlan<f32, u16>,
+    active_plan: Option<PixelCalibrationPlan<f32, u16>>,
     workspace: ProgressWorkspace,
     raw: Box<[u16]>,
     calibrated: Box<[f32]>,
+    next_row: usize,
+    active_seq: Option<u64>,
+    discontinuity: bool,
 }
 
 impl PixelCalibrationNode {
@@ -178,6 +187,161 @@ impl PixelCalibrationNode {
             _ => Err(-libc::EINVAL),
         }
     }
+
+    fn reset_progressive(&mut self) {
+        self.active_plan = None;
+        self.active_seq = None;
+        self.next_row = 0;
+    }
+
+    fn process_progressive(&mut self) -> Result<i32, i32> {
+        let (inputs, outputs) = self.ports.split_at_mut(OUTPUT);
+        let input = &mut inputs[INPUT_RAW];
+        let output = &mut outputs[0];
+        if output.output_pending()? {
+            return Ok(sys::SPA_STATUS_HAVE_DATA as i32);
+        }
+        let Some((_input_id, input_buffer)) = input.input_buffer()? else {
+            return Ok(sys::SPA_STATUS_NEED_DATA as i32);
+        };
+        let input_format = input.format().ok_or(-libc::EIO)?;
+        let progressive = unsafe { ProgressiveInputFrame::new(input_buffer, input_format)? };
+        let observation = progressive.observe()?;
+        let header = observation.header().ok_or(-libc::ENODATA)?;
+
+        if self.active_seq.is_none() {
+            if observation.state() == ProgressiveState::Aborted {
+                input.consume_input()?;
+                self.discontinuity = true;
+                return Ok(sys::SPA_STATUS_NEED_DATA as i32);
+            }
+            self.plan
+                .start(&mut self.workspace)
+                .map_err(|_| -libc::EINVAL)?;
+            self.active_plan = Some(self.plan.clone());
+            self.active_seq = Some(header.seq);
+        } else if self.active_seq != Some(header.seq) {
+            let _ = self
+                .active_plan
+                .as_ref()
+                .ok_or(-libc::EIO)?
+                .abort(&mut self.workspace);
+            self.active_plan = None;
+            self.active_seq = None;
+            self.next_row = 0;
+            input.reject_input(-libc::EPROTO)?;
+            self.discontinuity = true;
+            return Err(-libc::EPROTO);
+        }
+
+        if observation.state() == ProgressiveState::Aborted {
+            self.active_plan
+                .as_ref()
+                .ok_or(-libc::EIO)?
+                .abort(&mut self.workspace)
+                .map_err(|_| -libc::EINVAL)?;
+            self.active_plan = None;
+            self.active_seq = None;
+            self.next_row = 0;
+            input.consume_input()?;
+            self.discontinuity = true;
+            return Ok(sys::SPA_STATUS_NEED_DATA as i32);
+        }
+        if observation.state() == ProgressiveState::Prepared {
+            return Err(-libc::EPROTO);
+        }
+
+        let end_row = self
+            .next_row
+            .checked_add(self.block_rows)
+            .ok_or(-libc::EOVERFLOW)?;
+        if observation.complete_rows() < end_row
+            || (end_row == self.height && observation.state() != ProgressiveState::Complete)
+        {
+            return Ok(sys::SPA_STATUS_NEED_DATA as i32);
+        }
+        if end_row > self.height {
+            return Err(-libc::EPROTO);
+        }
+        let Some((output_id, output_buffer)) = output.reserve_output()? else {
+            return Ok(sys::SPA_STATUS_HAVE_DATA as i32);
+        };
+        let output_format = output.format().ok_or(-libc::EIO)?;
+        let start_row = self.next_row;
+        let result = (|| unsafe {
+            let (raw, source_stride) = observation.u16();
+            for row in start_row..end_row {
+                let source_start = row * source_stride;
+                let destination_start = row * self.width;
+                self.raw[destination_start..destination_start + self.width]
+                    .copy_from_slice(&raw[source_start..source_start + self.width]);
+            }
+            let mut destination = OutputFrame::new(output_buffer, output_format)?;
+            let (calibrated, destination_stride) = destination.f32_mut()?;
+            if destination_stride != self.width {
+                return Err(-libc::EINVAL);
+            }
+            let pixel_range = start_row * self.width..end_row * self.width;
+            let expected = pixel_range.end;
+            let progress = self
+                .active_plan
+                .as_ref()
+                .ok_or(-libc::EIO)?
+                .process_range_window(
+                    &mut calibrated[..self.block_rows * self.width],
+                    &mut self.workspace,
+                    &self.raw,
+                    pixel_range,
+                )
+                .map_err(|_| -libc::EINVAL)?;
+            if progress.len() != expected {
+                return Err(-libc::EIO);
+            }
+            let mut block_header = Header {
+                offset: u32::try_from(start_row).map_err(|_| -libc::EOVERFLOW)?,
+                ..header
+            };
+            if self.discontinuity {
+                block_header.flags |= sys::SPA_META_HEADER_FLAG_DISCONT;
+            }
+            if end_row == self.height {
+                block_header.flags |= sys::SPA_META_HEADER_FLAG_MARKER;
+            } else {
+                block_header.flags &= !sys::SPA_META_HEADER_FLAG_MARKER;
+            }
+            destination.set_header(Some(block_header));
+            destination.commit();
+            Ok::<(), i32>(())
+        })();
+        if let Err(error) = result {
+            output.cancel_output(output_id)?;
+            let _ = self
+                .active_plan
+                .as_ref()
+                .map(|plan| plan.abort(&mut self.workspace));
+            self.active_plan = None;
+            self.active_seq = None;
+            self.next_row = 0;
+            input.reject_input(error)?;
+            self.discontinuity = true;
+            return Err(error);
+        }
+        self.next_row = end_row;
+        self.discontinuity = false;
+        if end_row == self.height {
+            self.active_plan
+                .as_ref()
+                .ok_or(-libc::EIO)?
+                .finish(&mut [], &mut self.workspace)
+                .map_err(|_| -libc::EINVAL)?;
+            self.active_plan = None;
+            self.active_seq = None;
+            self.next_row = 0;
+            input.consume_input()?;
+        }
+        output.publish_output(output_id)?;
+        Ok(sys::SPA_STATUS_HAVE_DATA as i32)
+    }
 }
 
 impl Node for PixelCalibrationNode {
@@ -191,12 +355,40 @@ impl Node for PixelCalibrationNode {
             return Err(-libc::EINVAL);
         }
 
+        let block_rows = optional_info(info, KEY_BLOCK_ROWS)?
+            .map(parse_positive_usize)
+            .transpose()?
+            .unwrap_or(height as usize);
+        if block_rows > height as usize || !(height as usize).is_multiple_of(block_rows) {
+            return Err(-libc::EINVAL);
+        }
+        let blocks_per_frame = height as usize / block_rows;
+        let output_rate = if blocks_per_frame == 1 {
+            rate
+        } else {
+            calculon_spa_node::Rate::new(
+                rate.num
+                    .checked_mul(u32::try_from(blocks_per_frame).map_err(|_| -libc::EOVERFLOW)?)
+                    .ok_or(-libc::EOVERFLOW)?,
+                rate.denom,
+            )?
+        };
+
         let raw_format = Format::gray16(width, height, rate)?;
         let flat_format = Format::f32_image(FLAT_CALIBRATION_V1, profile, width, height, None)?;
         let background_format =
             Format::f32_image(BACKGROUND_CALIBRATION_V1, profile, width, height, None)?;
-        let calibrated_format =
-            Format::f32_image(CALIBRATED_PIXELS_V1, profile, width, height, Some(rate))?;
+        let calibrated_format = Format::f32_image(
+            if blocks_per_frame == 1 {
+                CALIBRATED_PIXELS_V1
+            } else {
+                CALIBRATED_PIXEL_ROW_BLOCK_V1
+            },
+            profile,
+            width,
+            u32::try_from(block_rows).map_err(|_| -libc::EOVERFLOW)?,
+            Some(output_rate),
+        )?;
         let length = (width as usize)
             .checked_mul(height as usize)
             .ok_or(-libc::EOVERFLOW)?;
@@ -216,7 +408,8 @@ impl Node for PixelCalibrationNode {
                     true,
                     false,
                     [FormatConstraint::exact(raw_format)],
-                ),
+                )
+                .with_latest_transport(),
                 Port::new(
                     PortRef {
                         direction: sys::SPA_DIRECTION_INPUT,
@@ -247,6 +440,7 @@ impl Node for PixelCalibrationNode {
             ],
             width: width as usize,
             height: height as usize,
+            block_rows,
             flats: PlaneStore::new(length),
             backgrounds: PlaneStore::new(length),
             identity_flat: Arc::clone(&identity_flat),
@@ -256,9 +450,13 @@ impl Node for PixelCalibrationNode {
             flat_seq: None,
             background_seq: None,
             plan,
+            active_plan: None,
             workspace: ProgressWorkspace::new(),
             raw: vec![0; length].into_boxed_slice(),
             calibrated: vec![0.0; length].into_boxed_slice(),
+            next_row: 0,
+            active_seq: None,
+            discontinuity: false,
         })
     }
 
@@ -393,12 +591,26 @@ impl Node for PixelCalibrationNode {
         {
             return Err(-libc::EIO);
         }
+        if self.block_rows != self.height && !self.ports[INPUT_RAW].uses_latest_transport() {
+            return Err(-libc::ENOTSUP);
+        }
         Ok(())
+    }
+
+    fn pause(&mut self) {
+        if let Some(plan) = self.active_plan.as_ref() {
+            let _ = plan.abort(&mut self.workspace);
+        }
+        self.reset_progressive();
+        self.discontinuity = true;
     }
 
     fn process(&mut self) -> Result<i32, i32> {
         self.ingest(INPUT_FLAT)?;
         self.ingest(INPUT_BACKGROUND)?;
+        if self.ports[INPUT_RAW].uses_latest_transport() {
+            return self.process_progressive();
+        }
 
         let (inputs, outputs) = self.ports.split_at_mut(OUTPUT);
         let input = &mut inputs[INPUT_RAW];

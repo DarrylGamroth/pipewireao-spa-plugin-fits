@@ -10,7 +10,6 @@
 #include <string.h>
 
 #include <spa/monitor/device.h>
-#include <spa/node/buffer-latest.h>
 #include <spa/node/command.h>
 #include <spa/node/io.h>
 #include <spa/node/keys.h>
@@ -33,7 +32,7 @@
 #error "the ALPAO normalized-command backend currently requires little endian"
 #endif
 
-#define MAX_BUFFERS SPA_BUFFER_LATEST_MAX_BUFFERS
+#define MAX_BUFFERS 64u
 #define PROFILE_DIGEST_CHARACTERS 64u
 #define BACKEND_NAME_SIZE 8u
 #define SERIAL_SIZE 128u
@@ -53,6 +52,7 @@ struct input_port {
 	struct spa_port_info info;
 	struct spa_param_info params[4];
 	struct spa_buffer *buffers[MAX_BUFFERS];
+	struct spa_io_buffers *io;
 	uint32_t n_buffers;
 	bool have_format;
 };
@@ -74,7 +74,6 @@ struct impl {
 	char daq_frequency_text[DAQ_FREQUENCY_TEXT_SIZE];
 	char node_name[NODE_NAME_SIZE];
 	struct alpao_backend *backend;
-	struct spa_buffer_latest *latest;
 	struct input_port input;
 	uint32_t actuator_count;
 	uint32_t daq_frequency;
@@ -303,9 +302,8 @@ static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 			return 0;
 		*param = spa_pod_builder_add_object(builder,
 				SPA_TYPE_OBJECT_ParamIO, id,
-				SPA_PARAM_IO_id, SPA_POD_Id(SPA_IO_BuffersLatestLink),
-				SPA_PARAM_IO_size,
-				SPA_POD_Int(sizeof(struct spa_io_buffers_latest_link)));
+				SPA_PARAM_IO_id, SPA_POD_Id(SPA_IO_Buffers),
+				SPA_PARAM_IO_size, SPA_POD_Int(sizeof(struct spa_io_buffers)));
 		return *param == NULL ? -ENOSPC : 1;
 	default:
 		return -ENOENT;
@@ -384,9 +382,6 @@ static int release_buffers(struct impl *self)
 {
 	if (self->started)
 		return -EBUSY;
-	if (spa_buffer_latest_has_links(self->latest))
-		return -EBUSY;
-	spa_buffer_latest_clear_buffers(self->latest);
 	memset(self->input.buffers, 0, sizeof(self->input.buffers));
 	self->input.n_buffers = 0;
 	return 0;
@@ -464,7 +459,6 @@ static int port_use_buffers(void *object, enum spa_direction direction,
 	for (i = 0; i < n_buffers; i++)
 		self->input.buffers[i] = buffers[i];
 	self->input.n_buffers = n_buffers;
-	spa_buffer_latest_set_buffers(self->latest, buffers, n_buffers);
 	return 0;
 }
 
@@ -476,12 +470,12 @@ static int port_set_io(void *object, enum spa_direction direction,
 	spa_return_val_if_fail(self != NULL, -EINVAL);
 	spa_return_val_if_fail(direction == SPA_DIRECTION_INPUT && port_id == 0,
 			-EINVAL);
-	if (id != SPA_IO_BuffersLatest && id != SPA_IO_BuffersLatestNotify &&
-			id != SPA_IO_BuffersLatestLink)
+	if (id != SPA_IO_Buffers)
 		return -ENOENT;
-	if (self->started)
-		return -EBUSY;
-	return spa_buffer_latest_set_io(self->latest, id, data, size);
+	if (data != NULL && size < sizeof(struct spa_io_buffers))
+		return -ENOSPC;
+	self->input.io = data;
+	return 0;
 }
 
 static int reuse_buffer(void *object, uint32_t port_id, uint32_t buffer_id)
@@ -501,30 +495,21 @@ static int send_command(void *object, const struct spa_command *command)
 	switch (SPA_NODE_COMMAND_ID(command)) {
 	case SPA_NODE_COMMAND_Start:
 		if (!self->input.have_format || self->input.n_buffers == 0 ||
-				!spa_buffer_latest_has_links(self->latest))
+				self->input.io == NULL)
 			return -EIO;
 		if (self->started)
 			return 0;
 		if ((res = alpao_backend_start(self->backend, self->serial,
 				self->actuator_count, self->daq_frequency)) < 0)
 			return res;
-		if ((res = spa_buffer_latest_worker_begin(self->latest)) < 0) {
-			(void)alpao_backend_stop(self->backend);
-			return res;
-		}
 		self->started = true;
 		return 0;
 	case SPA_NODE_COMMAND_Pause:
-	case SPA_NODE_COMMAND_Suspend: {
-		int worker, backend;
-
+	case SPA_NODE_COMMAND_Suspend:
 		if (!self->started)
 			return 0;
 		self->started = false;
-		worker = spa_buffer_latest_worker_end(self->latest);
-		backend = alpao_backend_stop(self->backend);
-		return worker < 0 ? worker : backend;
-	}
+		return alpao_backend_stop(self->backend);
 	default:
 		return -ENOTSUP;
 	}
@@ -564,25 +549,23 @@ static int process_command(struct impl *self, uint32_t buffer_id)
 static int process(void *object)
 {
 	struct impl *self = object;
-	uint32_t buffer_id = SPA_ID_INVALID;
-	uint64_t submission_sequence = 0;
-	int dequeued, sent, completed;
+	struct spa_io_buffers *io;
+	uint32_t buffer_id;
+	int sent;
 
 	spa_return_val_if_fail(self != NULL, -EINVAL);
 	if (!self->started)
 		return SPA_STATUS_OK;
-	dequeued = spa_buffer_latest_try_dequeue(self->latest, &buffer_id,
-			&submission_sequence);
-	(void)submission_sequence;
-	if (dequeued <= 0)
-		return dequeued;
+	if ((io = self->input.io) == NULL)
+		return -EIO;
+	if (io->status != SPA_STATUS_HAVE_DATA)
+		return SPA_STATUS_NEED_DATA;
+	buffer_id = io->buffer_id;
 	sent = process_command(self, buffer_id);
-	completed = spa_buffer_latest_queue(self->latest, buffer_id);
-	if (completed < 0)
-		return completed;
+	io->status = sent < 0 ? sent : SPA_STATUS_NEED_DATA;
 	if (sent < 0)
 		return sent;
-	return SPA_STATUS_HAVE_DATA;
+	return SPA_STATUS_NEED_DATA;
 }
 
 static const struct spa_node_methods node_methods = {
@@ -622,16 +605,9 @@ static int clear(struct spa_handle *handle)
 
 	spa_return_val_if_fail(self != NULL, -EINVAL);
 	if (self->started) {
-		int stopped;
-
 		self->started = false;
-		result = spa_buffer_latest_worker_end(self->latest);
-		stopped = alpao_backend_stop(self->backend);
-		if (result == 0)
-			result = stopped;
+		result = alpao_backend_stop(self->backend);
 	}
-	spa_buffer_latest_destroy(self->latest);
-	self->latest = NULL;
 	alpao_backend_destroy(self->backend);
 	self->backend = NULL;
 	return result;
@@ -697,7 +673,7 @@ static int init(const struct spa_handle_factory *factory,
 	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS;
 	self->info = SPA_NODE_INFO_INIT();
 	self->info.max_input_ports = 1;
-	self->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_RTC_PROCESS;
+	self->info.flags = SPA_NODE_FLAG_RT;
 	configure_node_props(self);
 	self->info.props = &self->node_props;
 
@@ -723,13 +699,6 @@ static int init(const struct spa_handle_factory *factory,
 	self->input.info.params = self->input.params;
 	self->input.info.n_params = SPA_N_ELEMENTS(self->input.params);
 
-	self->latest = spa_buffer_latest_new(SPA_DIRECTION_INPUT, self, self->log);
-	if (self->latest == NULL) {
-		res = -errno;
-		alpao_backend_destroy(self->backend);
-		self->backend = NULL;
-		return res;
-	}
 	return 0;
 }
 

@@ -44,6 +44,13 @@ if get_option('tests').allowed()
     include_directories: plugin_include,
     c_args: ['-Wno-pedantic'],
   )
+  calculon_progressive_test = executable(
+    'spa-calculon-progressive-test',
+    'test-progressive.c',
+    dependencies: [spa_dep, dl_dep],
+    include_directories: plugin_include,
+    c_args: ['-Wno-pedantic'],
+  )
   test(
     'spa-calculon-factory',
     calculon_test,
@@ -65,6 +72,12 @@ if get_option('tests').allowed()
     calculon_full_system_test,
     args: [calculon_lib.full_path(), alpao_mock_lib.full_path()],
     depends: [calculon_lib, alpao_mock_lib],
+  )
+  test(
+    'spa-calculon-progressive',
+    calculon_progressive_test,
+    args: [calculon_lib.full_path()],
+    depends: calculon_lib,
   )
   benchmark(
     'spa-calculon-full-system-latency',

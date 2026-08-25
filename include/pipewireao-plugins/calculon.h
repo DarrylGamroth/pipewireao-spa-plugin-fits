@@ -8,6 +8,8 @@
 
 #define SPA_NAME_API_CALCULON_PIXEL_CALIBRATION \
 	"api.calculon.pixel-calibration"
+#define SPA_NAME_API_CALCULON_FRAME_ASSEMBLY \
+	"api.calculon.frame-assembly"
 #define SPA_NAME_API_CALCULON_SHWFS_CONTROLLER \
 	"api.calculon.shwfs-controller"
 #define SPA_NAME_API_ALPAO_COMMAND_NORMALIZATION \
@@ -16,6 +18,7 @@
 #define SPA_KEY_API_CALCULON_DETECTOR_SIZE "api.calculon.detector-size"
 #define SPA_KEY_API_CALCULON_DETECTOR_RATE "api.calculon.detector-rate"
 #define SPA_KEY_API_CALCULON_DETECTOR_PROFILE "api.calculon.detector-profile"
+#define SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS "api.calculon.row-block-rows"
 #define SPA_KEY_API_CALCULON_REGION_SIZE "api.calculon.region-size"
 #define SPA_KEY_API_CALCULON_REGION_ORIGINS "api.calculon.region-origins"
 #define SPA_KEY_API_CALCULON_ACTUATOR_COUNT "api.calculon.actuator-count"
@@ -31,6 +34,8 @@
 
 #define SPA_CALCULON_SCHEMA_DEMANDED_PDM_COMMAND \
 	"org.calculon.ao.demanded-pdm-command/1"
+#define SPA_CALCULON_SCHEMA_CALIBRATED_PIXEL_ROW_BLOCK \
+	"org.calculon.ao.calibrated-pixel-row-block/1"
 
 #define SPA_PROP_CALCULON_PIXEL_CALIBRATION_FLAT_SEQ \
 	(SPA_PROP_START_CUSTOM + 0)

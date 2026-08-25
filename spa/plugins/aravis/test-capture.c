@@ -197,12 +197,9 @@ static int capture(const struct spa_handle_factory *factory,
 	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
 	struct test_buffer storage[REQUESTED_BUFFERS] = { 0 };
 	struct spa_buffer *buffers[REQUESTED_BUFFERS];
-	struct spa_io_buffers_latest io = { 0 };
-	struct spa_io_buffers_latest_link link = {
-		.id = 1,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &io,
-		.notify_fd = -1,
+	struct spa_io_buffers io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
 	};
 	struct param_result params = { .expected = SPA_ID_INVALID };
 	struct spa_hook listener;
@@ -269,7 +266,7 @@ static int capture(const struct spa_handle_factory *factory,
 		buffers[i] = &storage[i].buffer;
 	}
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link)) == 0);
+			SPA_IO_Buffers, &io, sizeof(io)) == 0);
 	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 			buffers, REQUESTED_BUFFERS) == 0);
 	props = enum_node_one(node, &params, SPA_PARAM_Props);
@@ -284,18 +281,17 @@ static int capture(const struct spa_handle_factory *factory,
 			scalar_write) == -EBUSY);
 	deadline = monotonic_nsec() + 5 * SPA_NSEC_PER_SEC;
 	while (frames < REQUESTED_FRAMES) {
-		uint64_t submission;
 		uint32_t id;
 		int res;
 
 		res = spa_node_process(node);
 		spa_assert_se(res >= SPA_STATUS_OK);
-		res = spa_io_buffers_latest_receive(&io, &submission, &id);
-		if (res == -EPIPE) {
+		if (io.status != SPA_STATUS_HAVE_DATA) {
 			spa_assert_se(monotonic_nsec() < deadline);
 			continue;
 		}
-		spa_assert_se(res == 0 && id < REQUESTED_BUFFERS);
+		id = io.buffer_id;
+		spa_assert_se(id < REQUESTED_BUFFERS);
 		spa_assert_se(storage[id].chunk.size > 0 &&
 				storage[id].chunk.size <= (uint32_t)payload_size);
 		spa_assert_se(storage[id].header.seq > 0);
@@ -304,13 +300,12 @@ static int capture(const struct spa_handle_factory *factory,
 			spa_assert_se(storage[id].header.pts > last_pts);
 		last_pts = storage[id].header.pts;
 		spa_assert_se(spa_meta_acquisition_is_valid(&storage[id].metas[1]));
-		spa_assert_se(spa_io_buffers_latest_complete(&io, id) == 0);
+		io.status = SPA_STATUS_NEED_DATA;
 		frames++;
 	}
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
-	link.flags = 0;
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link)) == 0);
+			SPA_IO_Buffers, NULL, 0) == 0);
 	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 			NULL, 0) == 0);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,

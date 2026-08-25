@@ -58,10 +58,12 @@ or eight bytes. A sink SHALL reject a malformed, non-finite, or out-of-range
 command without passing it to ASDK and SHALL still return the claimed buffer
 lease.
 
-The sink uses PipeWireAO latest-buffer input. If several commands arrive before
-the sink claims one, the transport retains the newest command and accounts for
-the replaced submission. This is the overload policy; the plugin does not add
-another queue.
+The sink uses ordinary PipeWire `SPA_IO_Buffers` input and consumes one complete
+command when its graph dependency is released. Buffer-pool exhaustion therefore
+applies normal graph backpressure; the sink does not silently replace commands
+or add another queue. A deployment that needs an explicit discard policy MUST
+place a bounded queue at the chosen topology boundary and make that policy
+visible there.
 
 The ASDK backend SHALL verify the actuator count and establish the zero command
 before accepting buffers. Pause, suspend, and normal teardown SHALL reset and

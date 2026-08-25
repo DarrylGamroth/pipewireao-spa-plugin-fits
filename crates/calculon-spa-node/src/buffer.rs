@@ -2,6 +2,7 @@
 
 use std::mem::{align_of, size_of};
 
+use libspa::buffer::meta::{MetaProgressive, ProgressiveFlags, ProgressiveState};
 use libspa::sys;
 
 use crate::Format;
@@ -51,6 +52,153 @@ pub struct InputFrame<'a> {
     stride: usize,
     rows: usize,
     header: Option<Header>,
+}
+
+/// One acquire-consistent observation of a progressively filled input frame.
+pub struct ProgressiveInputObservation<'a> {
+    values: &'a [u16],
+    stride: usize,
+    complete_rows: usize,
+    state: ProgressiveState,
+    terminal_flags: Option<ProgressiveFlags>,
+    header: Option<Header>,
+}
+
+impl ProgressiveInputObservation<'_> {
+    /// Borrows only the acquire-published U16 prefix.
+    pub const fn u16(&self) -> (&[u16], usize) {
+        (self.values, self.stride)
+    }
+
+    /// Returns the number of fully committed logical rows.
+    pub const fn complete_rows(&self) -> usize {
+        self.complete_rows
+    }
+
+    /// Returns the producer lifecycle state in the same acquire snapshot.
+    pub const fn state(&self) -> ProgressiveState {
+        self.state
+    }
+
+    /// Returns terminal flags after an aborted observation.
+    pub const fn terminal_flags(&self) -> Option<ProgressiveFlags> {
+        self.terminal_flags
+    }
+
+    /// Returns the current copy of standard header metadata.
+    pub const fn header(&self) -> Option<Header> {
+        self.header
+    }
+}
+
+/// Validated access to a progressively filled `GRAY16_LE` input buffer.
+pub struct ProgressiveInputFrame<'a> {
+    buffer: *const sys::spa_buffer,
+    data: *const u8,
+    payload_offset: usize,
+    payload_size: usize,
+    row_bytes: usize,
+    stride: usize,
+    rows: usize,
+    meta: &'a MetaProgressive,
+}
+
+impl<'a> ProgressiveInputFrame<'a> {
+    /// Validates immutable progressive metadata and the negotiated layout.
+    ///
+    /// # Safety
+    ///
+    /// `buffer` and its metadata must remain registered until the associated
+    /// input lease is consumed.
+    pub unsafe fn new(buffer: *const sys::spa_buffer, format: &Format) -> Result<Self, i32> {
+        let buffer_ref = unsafe { buffer.as_ref() }.ok_or(-libc::EINVAL)?;
+        if buffer_ref.n_datas != 1 || buffer_ref.datas.is_null() {
+            return Err(-libc::EINVAL);
+        }
+        let data = unsafe { &*buffer_ref.datas };
+        if data.type_ != sys::SPA_DATA_MemPtr || data.data.is_null() {
+            return Err(-libc::EINVAL);
+        }
+        let meta = unsafe {
+            sys::spa_buffer_find_meta_data(
+                buffer,
+                sys::SPA_META_Progressive,
+                size_of::<sys::spa_meta_progressive>(),
+            )
+            .cast::<MetaProgressive>()
+            .as_ref()
+        }
+        .ok_or(-libc::ENODATA)?;
+        meta.validate().map_err(|_| -libc::EPROTO)?;
+        let raw = meta.as_raw();
+        if raw.data_index != 0 {
+            return Err(-libc::EINVAL);
+        }
+        let row_bytes = format.packed_stride()?;
+        let rows = format.stride_count()?;
+        let chunk = unsafe { data.chunk.as_ref() }.ok_or(-libc::EINVAL)?;
+        let stride = read_stride(chunk.stride, row_bytes)?;
+        let required = frame_span(row_bytes, stride, rows)?;
+        let payload_offset = raw.payload_offset as usize;
+        let payload_size = raw.payload_size as usize;
+        if payload_size < required
+            || payload_offset
+                .checked_add(payload_size)
+                .is_none_or(|end| end > data.maxsize as usize)
+            || !(raw.commit_granularity as usize).is_multiple_of(stride)
+        {
+            return Err(-libc::EINVAL);
+        }
+        Ok(Self {
+            buffer,
+            data: data.data.cast::<u8>(),
+            payload_offset,
+            payload_size,
+            row_bytes,
+            stride,
+            rows,
+            meta,
+        })
+    }
+
+    /// Acquire-loads publication state before exposing the immutable prefix.
+    pub fn observe(&self) -> Result<ProgressiveInputObservation<'_>, i32> {
+        let observation = self.meta.observe_acquire().map_err(|_| -libc::EPROTO)?;
+        let snapshot = observation.snapshot();
+        let committed = snapshot.committed_bytes() as usize;
+        if committed > self.payload_size {
+            return Err(-libc::EPROTO);
+        }
+        let complete_rows = if committed < self.row_bytes {
+            0
+        } else {
+            (1 + (committed - self.row_bytes) / self.stride).min(self.rows)
+        };
+        let visible_bytes = if complete_rows == 0 {
+            0
+        } else {
+            frame_span(self.row_bytes, self.stride, complete_rows)?
+        };
+        let byte_ptr = unsafe { self.data.add(self.payload_offset) };
+        if !(byte_ptr as usize).is_multiple_of(align_of::<u16>())
+            || !self.stride.is_multiple_of(size_of::<u16>())
+            || !visible_bytes.is_multiple_of(size_of::<u16>())
+        {
+            return Err(-libc::EINVAL);
+        }
+        let values = unsafe {
+            std::slice::from_raw_parts(byte_ptr.cast::<u16>(), visible_bytes / size_of::<u16>())
+        };
+        let header = unsafe { header(self.buffer).copied().map(Header::from) };
+        Ok(ProgressiveInputObservation {
+            values,
+            stride: self.stride / size_of::<u16>(),
+            complete_rows,
+            state: snapshot.state(),
+            terminal_flags: observation.terminal_flags(),
+            header,
+        })
+    }
 }
 
 impl<'a> InputFrame<'a> {

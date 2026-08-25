@@ -30,12 +30,15 @@ mapped-host progressive publication:
   `SPA_PARAM_Props`;
 - optional Grablink Camera Link control through a standard CLProtocol provider
   and GenApi C node map, including a distinct attached-camera serial check;
-- immutable `SPA_NODE_FLAG_RTC_PROCESS` ownership;
-- `SPA_IO_BuffersLatestLink` fan-out without graph-ready callbacks;
+- `node.driver=true` with immutable `SPA_NODE_FLAG_POLL_DRIVER` execution on a
+  configured busy-spin data loop;
+- retained `SPA_IO_BuffersLatestLink` leases at the exceptional progressive
+  camera boundary, with one regular graph cycle for each publication quantum;
 - mapped `MemPtr` or `MemFd` buffers announced directly to eGrabber;
 - optional StartOfCameraReadout progressive publication on Grablink and
-  Coaxlink, with whole-row release publication from `BUFFER_INFO_SIZE_FILLED`,
-  immutable active metadata, and explicit complete or aborted terminal state;
+  Coaxlink, with configurable fixed-row release publication from
+  `BUFFER_INFO_SIZE_FILLED`, immutable active metadata, and explicit complete
+  or aborted terminal state;
 - optional complete-frame DMA-BUF announcement when both eGrabber and a local
   DRM render node support it, using negotiated `SPA_META_SyncTimeline` acquire
   and release points rather than implicit synchronization;
@@ -55,9 +58,15 @@ mapped-host progressive publication:
 
 The plugin uses `spa_image_source`, `spa_image_source_latest`, and
 `spa_buffer_latest` directly. It has no `pw_stream`, libpipewire client,
-private mailbox, payload copy, private capture thread, or graph scheduling
-path. The optional manager completes and releases its discovery objects before
-any source begins acquisition.
+private mailbox, payload copy, private capture thread, or private RTC
+scheduler. The regular PipeWire scheduler orders its consumers. The optional
+manager completes and releases its discovery objects before any source begins
+acquisition.
+
+`api.egrabber.progressive-rows` defaults to one. It must be positive and divide
+the camera height. One source process call exposes at most one such row quantum,
+even when DMA has filled farther. The normal frame stride remains one camera
+row; only the progressive commit granularity is multiplied by this property.
 
 The camera, control-backend, frame-layout, frame-sequence, pixel-format, and
 optional CLProtocol code was migrated from the sibling `egrabber-pipewire`
@@ -129,15 +138,13 @@ payload remain unchanged, the source disappears, and the daemon remains
 healthy. The harness removes its isolated runtime directory on success or
 failure.
 
-The migration qualification on 2026-08-23 proved that the isolated daemon
+The 2026-08-23 migration qualification proved that the isolated daemon
 loads this out-of-tree DSO and completes normal capture, retained-lease fan-out,
-live join/leave, and final subscriber teardown. PipeWireAO commit `5dd08ebd1`
-corrects the RTC lifecycle ordering that this harness exposed: an RTC node now
-stops and joins before its final runnable link and announced buffers are
-dismantled, while a non-final fan-out removal leaves the loop running. The core
-regression, all 17 baseline eGrabber/BGAPI2 tests, and four consecutive connected
-Gigelink host qualifications pass. CAMERA-005 is verified without weakening
-the daemon-health or teardown checks.
+live join/leave, and final subscriber teardown. That run qualified the former
+private RTC owner. The source now uses regular graph scheduling and a polling
+data loop; the retained result remains device and transport evidence, while the
+new scheduler lifecycle is covered by the core polled-driver tests and the
+current plugin suite.
 
 Gigelink is complete-only: `progressive=offer` falls back to complete frames and
 `progressive=require` is rejected. Grablink/Coaxlink progressive behavior is
@@ -154,20 +161,19 @@ because no Grablink board is connected.
 Explicit-sync DMA-BUF is currently restricted to one active subscriber. The
 standard SyncTimeline allocation has one release timeline, so it cannot safely
 represent several independent asynchronous consumers of a shared fan-out
-buffer. Mapped host buffers retain normal PipeWireAO fan-out. A second live
+buffer. Mapped host buffers retain the progressive lease fan-out. A second live
 subscriber is rejected before capture starts and cannot join a running
-DMA-BUF source. Release readiness is queried without waiting on the RTC path.
+DMA-BUF source. Release readiness is queried without waiting on the polling path.
 A slot whose release point has not been signalled remains locally held while
 the bounded scan examines the rest of the pool; a late or failed subscriber
 therefore produces pool starvation rather than blocking acquisition.
 
 The complete and progressive process paths do not take application-owned
 locks. Buffer completion, progress queries, and recycling are exclusively
-owned by the node's `SPA_NODE_FLAG_RTC_PROCESS` data loop. PipeWireAO routes
-public Start, Pause, and Suspend commands through the implementation-node state
-machine; Pause and Suspend stop and join that loop before they reach the SPA
-node. Configuration and teardown remain on the stopped control path and retain
-their camera-facade mutex.
+owned by the source's polling data loop. Public Start, Pause, and Suspend pass
+through the implementation-node state machine; Pause and Suspend remove the
+poll source before they reach the SPA node. Configuration and teardown remain
+on the stopped control path and retain their camera-facade mutex.
 
 An eight-second `heaptrack` capture on 2026-08-23 used the connected 640x480
 Mono8 Gigelink camera, eight mapped host buffers, and ten completed frames. The
@@ -187,7 +193,7 @@ heaptrack_print /tmp/pwao-egrabber-profile.zst \
   --flamegraph-cost-type allocations
 ```
 
-PipeWireAO `64301ed9c` removes that empty-poll obstacle. The RTC owner now calls
+PipeWireAO `64301ed9c` removed that empty-poll obstacle. The source now calls
 the SDK's no-timeout `processEventFilter` overload, which returns normally when
 no event is queued and invokes the enabled callbacks synchronously when work is
 present. Callback exceptions are retained and rethrown after the vendor C
@@ -230,10 +236,10 @@ bypassing its camera-owner dispatch to call `DSQueueBuffer` directly would rely
 on an unsupported vendor representation.
 
 The eGrabber CallbackOnDemand API exposes no readiness file descriptor. The
-plugin therefore has no honest EventFd or Hybrid readiness source and does not
-add a helper thread or private handoff merely to synthesize one. PipeWireAO's
-RTC data loop implements EventFd and Hybrid for SDKs that provide pollable
-readiness; this plugin currently uses its functional BusySpin profile only.
+plugin therefore has no honest eventfd readiness source and does not add a
+helper thread or private handoff merely to synthesize one. It uses a configured
+PipeWire busy-spin data loop and `SPA_NODE_FLAG_POLL_DRIVER`; the uncontended
+source probe and graph activation path performs no kernel polling syscall.
 
 ## Remaining qualification
 

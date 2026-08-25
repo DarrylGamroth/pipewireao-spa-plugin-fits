@@ -30,6 +30,33 @@ pub(crate) fn required_info<'a>(
     Err(-libc::EINVAL)
 }
 
+pub(crate) fn optional_info<'a>(
+    info: Option<&'a sys::spa_dict>,
+    key: &[u8],
+) -> Result<Option<&'a str>, i32> {
+    let key = CStr::from_bytes_with_nul(key).map_err(|_| -libc::EINVAL)?;
+    let Some(info) = info else {
+        return Ok(None);
+    };
+    if info.n_items != 0 && info.items.is_null() {
+        return Err(-libc::EINVAL);
+    }
+    let items = unsafe { std::slice::from_raw_parts(info.items, info.n_items as usize) };
+    for item in items {
+        if item.key.is_null() || item.value.is_null() {
+            continue;
+        }
+        let item_key = unsafe { CStr::from_ptr(item.key.cast::<c_char>()) };
+        if item_key == key {
+            return unsafe { CStr::from_ptr(item.value.cast::<c_char>()) }
+                .to_str()
+                .map(Some)
+                .map_err(|_| -libc::EINVAL);
+        }
+    }
+    Ok(None)
+}
+
 pub(crate) fn parse_size(value: &str) -> Result<(u32, u32), i32> {
     let (width, height) = value.split_once('x').ok_or(-libc::EINVAL)?;
     let width = width.parse::<u32>().map_err(|_| -libc::EINVAL)?;

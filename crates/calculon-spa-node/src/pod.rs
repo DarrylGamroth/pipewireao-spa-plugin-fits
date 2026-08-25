@@ -47,6 +47,7 @@ pub(crate) fn port_param(
     direction: sys::spa_direction,
     constraints: &[FormatConstraint],
     format: Option<&Format>,
+    latest_allowed: bool,
 ) -> Result<Option<Value>, i32> {
     let value = match id_ {
         sys::SPA_PARAM_EnumFormat => {
@@ -70,6 +71,17 @@ pub(crate) fn port_param(
                 ),
             ],
         ),
+        sys::SPA_PARAM_Meta if index == 1 && latest_allowed => object(
+            sys::SPA_TYPE_OBJECT_ParamMeta,
+            id_,
+            vec![
+                property(sys::SPA_PARAM_META_type, id(sys::SPA_META_Progressive)),
+                property(
+                    sys::SPA_PARAM_META_size,
+                    Value::Int(size_of::<sys::spa_meta_progressive>() as i32),
+                ),
+            ],
+        ),
         sys::SPA_PARAM_IO => match (direction, index) {
             (_, 0) => object(
                 sys::SPA_TYPE_OBJECT_ParamIO,
@@ -82,7 +94,7 @@ pub(crate) fn port_param(
                     ),
                 ],
             ),
-            (_, 1) => object(
+            (_, 1) if latest_allowed => object(
                 sys::SPA_TYPE_OBJECT_ParamIO,
                 id_,
                 vec![
@@ -93,7 +105,7 @@ pub(crate) fn port_param(
                     ),
                 ],
             ),
-            (_, 2) => object(
+            (_, 2) if latest_allowed => object(
                 sys::SPA_TYPE_OBJECT_ParamIO,
                 id_,
                 vec![

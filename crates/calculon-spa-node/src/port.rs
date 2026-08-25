@@ -48,6 +48,7 @@ pub struct Port {
     pub(crate) io: *mut sys::spa_io_buffers,
     pub(crate) latest: LatestBuffers,
     latest_input_id: u32,
+    latest_allowed: bool,
     pub(crate) required: bool,
     pub(crate) configuration: bool,
 }
@@ -86,6 +87,7 @@ impl Port {
             io: ptr::null_mut(),
             latest: LatestBuffers::empty(),
             latest_input_id: sys::SPA_ID_INVALID,
+            latest_allowed: false,
             required,
             configuration,
         };
@@ -96,6 +98,15 @@ impl Port {
         port.info.params = port.params.as_mut_ptr();
         port.info.n_params = port.params.len() as u32;
         port
+    }
+
+    /// Allows the exceptional latest-buffer transport on this port.
+    ///
+    /// Ordinary scheduled buffers remain available. This opt-in is reserved
+    /// for ports that must retain a progressively filled producer lease.
+    pub fn with_latest_transport(mut self) -> Self {
+        self.latest_allowed = true;
+        self
     }
 
     /// Returns the stable port reference.
@@ -299,6 +310,9 @@ impl Port {
             sys::SPA_IO_BuffersLatest
             | sys::SPA_IO_BuffersLatestNotify
             | sys::SPA_IO_BuffersLatestLink => {
+                if !self.latest_allowed {
+                    return Err(-libc::ENOENT);
+                }
                 let owner = std::ptr::from_mut(self).cast();
                 let mut buffers: Vec<_> = self.buffers[..self.n_buffers]
                     .iter()
@@ -312,12 +326,22 @@ impl Port {
     }
 
     pub(crate) fn is_latest_io(&self, id: u32) -> bool {
-        matches!(
-            id,
-            sys::SPA_IO_BuffersLatest
-                | sys::SPA_IO_BuffersLatestNotify
-                | sys::SPA_IO_BuffersLatestLink
-        )
+        self.latest_allowed
+            && matches!(
+                id,
+                sys::SPA_IO_BuffersLatest
+                    | sys::SPA_IO_BuffersLatestNotify
+                    | sys::SPA_IO_BuffersLatestLink
+            )
+    }
+
+    pub(crate) const fn latest_allowed(&self) -> bool {
+        self.latest_allowed
+    }
+
+    /// Returns whether this port is currently bound to a latest-buffer link.
+    pub fn uses_latest_transport(&self) -> bool {
+        self.latest.has_links()
     }
 
     pub(crate) fn worker_begin(&mut self) -> Result<(), i32> {

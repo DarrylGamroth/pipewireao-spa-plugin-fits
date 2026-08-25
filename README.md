@@ -7,7 +7,8 @@ SPA factories and uses PipeWireAO's installed public SPA interfaces.
 The supported device integrations are `api.alpao.sink`,
 `api.egrabber.source`, and `api.bgapi2.source`. `api.fits.source` provides
 fixed-cadence vector and image-sequence playback from FITS arrays. The sources
-use PipeWireAO-owned image buffers and RTC node execution directly;
+use PipeWireAO-owned image buffers and regular graph scheduling. Their
+nonblocking source probes run on configured polling data loops;
 proprietary SDKs and CFITSIO remain optional build dependencies.
 Proprietary SDKs, drivers, device configuration files, calibration files, and
 redistributable binaries do not belong in this repository.
@@ -18,6 +19,8 @@ The separate scientific-algorithm boundary is recorded in
 [Algorithm plugin architecture](docs/algorithm-plugin-architecture.md).
 The generic bounded handoff for isolating telemetry, GUI, and recorder graphs
 is specified in [Bounded queue module](docs/queue.md).
+The complete-frame and progressive row-block topology is described in
+[Scheduled node and row-block migration](docs/scheduled-node-migration.md).
 
 ## Build
 
@@ -73,8 +76,7 @@ manual test commands.
 Enable or require the FITS source with `-Dfits=enabled`. Its default `file`
 profile reads each scheduled plane through CFITSIO directly into a PipeWireAO
 pool buffer. See [FITS sequence source](spa/plugins/fits/README.md) for axis,
-schema, cadence, progressive downstream-test output, `GRAY16_LE`, and optional
-mmap behavior.
+schema, cadence, `GRAY16_LE`, and optional mmap behavior.
 
 Optional Camera Link control through Grablink, CLProtocol, and the GenICam
 Reference Implementation is enabled with `-Dgenicam-root=PATH`. See
@@ -128,8 +130,8 @@ Factory construction accepts these properties:
 The single input port accepts only the exact format documented in
 [normalized actuator command schema](docs/schemas/alpao-normalized-actuator-command-1.md).
 The node opens ASDK on `Start`, verifies `NbOfActuator`, applies a configured
-`daqFreq` override, resets the mirror, and then consumes the latest submitted
-command. Startup fails if ASDK rejects the requested frequency. `Pause` and
+`daqFreq` override, resets the mirror, and then consumes ordinary scheduled
+command buffers. Startup fails if ASDK rejects the requested frequency. `Pause` and
 `Suspend` reset and release the mirror.
 
 `api.alpao.daq-frequency` controls the supported ALPAO interface's digital to
@@ -147,8 +149,8 @@ discard actuator commands when ASDK is absent or unavailable.
 ## Ownership boundary
 
 - PipeWireAO owns generic transport and execution contracts, including native
-  ndarray formats, semantic-schema and profile negotiation, standard and
-  latest-buffer I/O, and graph or RTC-owned SPA-node execution.
+  ndarray formats, semantic-schema and profile negotiation, ordinary graph
+  I/O, polling data loops, and the narrow progressive-lease interfaces.
 - This repository owns the optional `libpipewire-module-queue` topology adapter
   that applies an explicit finite capacity, overflow policy, and copy or lease
   storage boundary between producer and observer graphs.
@@ -166,8 +168,12 @@ The `api.calculon.pixel-calibration` factory converts exact `GRAY16_LE` raw
 detector frames into `F32_LE` calibrated-pixel ndarrays. Optional flat and
 background artifact ports use Calculon-owned schemas and standard Header
 sequence numbers; a node `Props` update activates a complete pair atomically.
-The factory uses standard `SPA_IO_Buffers` back pressure and performs no
-steady-state heap allocation in `process`.
+Complete-frame operation uses standard `SPA_IO_Buffers`. With
+`api.calculon.row-block-rows=N`, its raw port retains the exceptional eGrabber
+progressive lease and publishes complete `[N,width]` micro-buffers through
+ordinary I/O. `api.calculon.frame-assembly` reconstructs complete frames for
+the remaining algorithms and observers. Both factories perform no steady-state
+heap allocation in `process`.
 
 The adapter and algorithm are Rust. The exported shared object is nevertheless
 an ordinary C SPA plugin. See the architecture document for port formats,

@@ -38,9 +38,8 @@ struct test_buffer {
 	struct spa_buffer buffer;
 	struct spa_data data;
 	struct spa_chunk chunk;
-	struct spa_meta metas[2];
+	struct spa_meta metas[1];
 	struct spa_meta_header header;
-	struct spa_meta_progressive progressive;
 	void *payload;
 };
 
@@ -51,11 +50,6 @@ struct source_case {
 	enum spa_element_type expected_element;
 	uint32_t expected_size;
 	const char *progressive_policy;
-	bool progressive_metadata;
-	bool expect_progressive;
-	bool cancel_progressive;
-	uint32_t expected_granularity;
-	int expected_use_result;
 };
 
 static void on_result(void *data, int seq SPA_UNUSED, int res,
@@ -97,8 +91,7 @@ static struct spa_pod *enum_one(struct spa_node *node,
 	return capture->param;
 }
 
-static void init_buffer(struct test_buffer *storage, uint32_t size,
-		bool progressive)
+static void init_buffer(struct test_buffer *storage, uint32_t size)
 {
 	storage->payload = calloc(1, size);
 	spa_assert_se(storage->payload != NULL);
@@ -110,10 +103,7 @@ static void init_buffer(struct test_buffer *storage, uint32_t size,
 	storage->metas[0].type = SPA_META_Header;
 	storage->metas[0].size = sizeof(storage->header);
 	storage->metas[0].data = &storage->header;
-	storage->metas[1].type = SPA_META_Progressive;
-	storage->metas[1].size = sizeof(storage->progressive);
-	storage->metas[1].data = &storage->progressive;
-	storage->buffer.n_metas = progressive ? 2 : 1;
+	storage->buffer.n_metas = 1;
 	storage->buffer.metas = storage->metas;
 	storage->buffer.n_datas = 1;
 	storage->buffer.datas = &storage->data;
@@ -220,12 +210,9 @@ static void run_source(const struct spa_handle_factory *factory,
 {
 	struct test_buffer storage[N_BUFFERS] = { 0 };
 	struct spa_buffer *buffers[N_BUFFERS];
-	struct spa_io_buffers_latest io = { 0 };
-	struct spa_io_buffers_latest_link link = {
-		.id = 1,
-		.flags = SPA_IO_BUFFERS_LATEST_LINK_FLAG_ACTIVE,
-		.io = &io,
-		.notify_fd = -1,
+	struct spa_io_buffers io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
 	};
 	struct param_result capture = { .expected = SPA_ID_INVALID };
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
@@ -236,13 +223,9 @@ static void run_source(const struct spa_handle_factory *factory,
 	struct spa_handle *handle;
 	struct spa_node *node = make_node(factory, test->path, test->sample_rank,
 			test->progressive_policy, &handle);
-	struct spa_pod *format, *buffers_param, *meta_param;
-	int32_t meta_size = 0, payload_size = 0;
-	uint32_t meta_type = SPA_ID_INVALID;
-	uint64_t submission;
-	uint32_t committed = 0, id, i, iterations = 0;
-	enum spa_meta_progressive_state state;
-	bool paused = false;
+	struct spa_pod *format, *buffers_param;
+	int32_t payload_size = 0;
+	uint32_t id, i;
 	int res;
 
 	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
@@ -269,100 +252,44 @@ static void run_source(const struct spa_handle_factory *factory,
 			SPA_TYPE_OBJECT_ParamBuffers, NULL,
 			SPA_PARAM_BUFFERS_size, SPA_POD_Int(&payload_size)) >= 0);
 	spa_assert_se(payload_size == (int32_t)test->expected_size);
-	if (!spa_streq(test->progressive_policy, "disabled")) {
-		meta_param = enum_one(node, &capture, SPA_PARAM_Meta, 1);
-		spa_assert_se(spa_pod_parse_object(meta_param,
-				SPA_TYPE_OBJECT_ParamMeta, NULL,
-				SPA_PARAM_META_type, SPA_POD_Id(&meta_type),
-				SPA_PARAM_META_size, SPA_POD_Int(&meta_size)) >= 0);
-		spa_assert_se(meta_type == SPA_META_Progressive);
-		spa_assert_se(meta_size ==
-				(int32_t)sizeof(struct spa_meta_progressive));
-	}
 	for (i = 0; i < N_BUFFERS; i++) {
-		init_buffer(&storage[i], (uint32_t)payload_size,
-				test->progressive_metadata);
+		init_buffer(&storage[i], (uint32_t)payload_size);
 		buffers[i] = &storage[i].buffer;
 	}
 	res = spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 			buffers, N_BUFFERS);
-	spa_assert_se(res == test->expected_use_result);
-	if (res < 0)
-		goto cleanup;
+	spa_assert_se(res == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link)) == 0);
+			SPA_IO_Buffers, &io, sizeof(io)) == 0);
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
-	for (;;) {
+	while (io.status != SPA_STATUS_HAVE_DATA) {
 		res = spa_node_process(node);
 		spa_assert_se(res >= SPA_STATUS_OK);
-		res = spa_io_buffers_latest_receive(&io, &submission, &id);
-		if (res == 0)
-			break;
-		spa_assert_se(res == -EPIPE);
 	}
+	id = io.buffer_id;
 	spa_assert_se(id < N_BUFFERS);
 	spa_assert_se(storage[id].chunk.size == test->expected_size);
 	spa_assert_se(storage[id].header.pts != SPA_TIME_INVALID);
-	if (test->expect_progressive) {
-		spa_assert_se(spa_meta_progressive_snapshot_decode(
-				spa_meta_progressive_load_acquire(&storage[id].progressive),
-				&committed, &state));
-		spa_assert_se(state == SPA_META_PROGRESSIVE_STATE_ACTIVE);
-		spa_assert_se(committed == test->expected_granularity);
-		spa_assert_se(storage[id].progressive.payload_size == test->expected_size);
-		spa_assert_se(storage[id].progressive.commit_granularity ==
-				test->expected_granularity);
-		if (test->cancel_progressive) {
-			spa_assert_se(spa_node_send_command(node, &pause) == 0);
-			paused = true;
-			spa_assert_se(spa_meta_progressive_snapshot_decode(
-					spa_meta_progressive_load_acquire(
-							&storage[id].progressive), &committed, &state));
-			spa_assert_se(state == SPA_META_PROGRESSIVE_STATE_ABORTED);
-			spa_assert_se(storage[id].progressive.terminal_flags ==
-					SPA_META_PROGRESSIVE_FLAG_CANCELLED);
-		}
-		while (state == SPA_META_PROGRESSIVE_STATE_ACTIVE) {
-			uint32_t previous = committed;
-
-			spa_assert_se(++iterations <= test->expected_size /
-					test->expected_granularity + 1u);
-			res = spa_node_process(node);
-			spa_assert_se(res == SPA_STATUS_HAVE_DATA);
-			spa_assert_se(spa_meta_progressive_snapshot_decode(
-					spa_meta_progressive_load_acquire(
-							&storage[id].progressive), &committed, &state));
-			spa_assert_se(committed > previous &&
-					committed <= test->expected_size);
-		}
-		if (!test->cancel_progressive) {
-			spa_assert_se(state == SPA_META_PROGRESSIVE_STATE_COMPLETE);
-			spa_assert_se(committed == test->expected_size);
-		}
-	}
-	if (!test->cancel_progressive && test->sample_rank == 1) {
+	if (test->sample_rank == 1) {
 		const double *values = storage[id].payload;
 		uint64_t frame = storage[id].header.seq % 3u;
 
 		for (i = 0; i < 4; i++)
 			spa_assert_se(values[i] == frame * 10.0 + i);
-	} else if (!test->cancel_progressive) {
+	} else {
 		const uint16_t *values = storage[id].payload;
 		uint64_t frame = storage[id].header.seq % 2u;
 
 		for (i = 0; i < 12; i++)
 			spa_assert_se(values[i] == frame * 100u + (i / 4u) * 10u + i % 4u);
 	}
-	spa_assert_se(spa_io_buffers_latest_complete(&io, id) == 0);
-	if (!paused)
-		spa_assert_se(spa_node_send_command(node, &pause) == 0);
-	link.flags = 0;
+	io.status = SPA_STATUS_NEED_DATA;
+	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_BuffersLatestLink, &link, sizeof(link)) == 0);
+			SPA_IO_Buffers, NULL, 0) == 0);
 	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 			NULL, 0) == 0);
 
-cleanup:
 	spa_hook_remove(&listener);
 	spa_assert_se(handle->clear(handle) == 0);
 	free(handle);
@@ -404,56 +331,6 @@ int main(int argc, char *argv[])
 		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
 		.expected_size = 4u * 3u * sizeof(uint16_t),
 		.progressive_policy = "disabled",
-	});
-	run_source(factory, &(const struct source_case) {
-		.path = vector_path,
-		.sample_rank = 1,
-		.expected_element = SPA_ELEMENT_TYPE_F64_LE,
-		.expected_size = 4u * sizeof(double),
-		.progressive_policy = "offer",
-		.progressive_metadata = true,
-		.expect_progressive = true,
-		.expected_granularity = sizeof(double),
-	});
-	run_source(factory, &(const struct source_case) {
-		.path = image_path,
-		.sample_rank = 2,
-		.format_index = 1,
-		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
-		.expected_size = 4u * 3u * sizeof(uint16_t),
-		.progressive_policy = "require",
-		.progressive_metadata = true,
-		.expect_progressive = true,
-		.expected_granularity = 4u * sizeof(uint16_t),
-	});
-	run_source(factory, &(const struct source_case) {
-		.path = image_path,
-		.sample_rank = 2,
-		.format_index = 1,
-		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
-		.expected_size = 4u * 3u * sizeof(uint16_t),
-		.progressive_policy = "offer",
-	});
-	run_source(factory, &(const struct source_case) {
-		.path = image_path,
-		.sample_rank = 2,
-		.format_index = 1,
-		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
-		.expected_size = 4u * 3u * sizeof(uint16_t),
-		.progressive_policy = "require",
-		.expected_use_result = -ENOTSUP,
-	});
-	run_source(factory, &(const struct source_case) {
-		.path = image_path,
-		.sample_rank = 2,
-		.format_index = 1,
-		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
-		.expected_size = 4u * 3u * sizeof(uint16_t),
-		.progressive_policy = "require",
-		.progressive_metadata = true,
-		.expect_progressive = true,
-		.cancel_progressive = true,
-		.expected_granularity = 4u * sizeof(uint16_t),
 	});
 	spa_assert_se(dlclose(library) == 0);
 	spa_assert_se(unlink(vector_path) == 0);

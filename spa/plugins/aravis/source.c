@@ -6,7 +6,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <spa/buffer/image-source-latest.h>
+#include <spa/buffer/image-source-buffers.h>
 #include <spa/buffer/meta.h>
 #include <spa/monitor/device.h>
 #include <spa/node/keys.h>
@@ -55,13 +55,12 @@ struct impl {
 	struct spa_node_info info;
 	struct spa_param_info params[2];
 	struct spa_dict props;
-	struct spa_dict_item prop_items[8];
+	struct spa_dict_item prop_items[9];
 	char node_name[192];
 	char node_description[256];
 	char device_id[256];
 	struct port port;
-	struct spa_buffer_latest *latest;
-	struct spa_image_source_latest transport;
+	struct spa_image_source_buffers transport;
 	struct spa_image_source source;
 	struct aravis_camera *camera;
 	struct aravis_camera_info camera_info;
@@ -69,6 +68,7 @@ struct impl {
 	uint32_t video_format;
 	uint32_t bytes_per_pixel;
 	bool started;
+	bool discontinuity;
 	bool have_sequence;
 	uint64_t last_sequence;
 };
@@ -376,9 +376,6 @@ static int stop_source(struct impl *this)
 	for (i = 0; i < this->port.n_buffers; i++)
 		this->slots[i].camera_queued = false;
 	this->started = false;
-	if ((res = spa_buffer_latest_worker_end(this->latest)) < 0 &&
-			first_error == 0)
-		first_error = res;
 	return first_error;
 }
 
@@ -393,18 +390,14 @@ static int impl_node_send_command(void *object,
 	switch (SPA_NODE_COMMAND_ID(command)) {
 	case SPA_NODE_COMMAND_Start:
 		if (!this->port.have_format || this->port.n_buffers == 0 ||
-				!spa_buffer_latest_has_links(this->latest))
+				this->transport.io == NULL)
 			return -EIO;
 		if (this->started)
 			return 0;
 		if ((res = queue_producer_buffers(this)) < 0)
 			return res;
-		if ((res = spa_buffer_latest_worker_begin(this->latest)) < 0)
+		if ((res = aravis_camera_start(this->camera)) < 0)
 			return res;
-		if ((res = aravis_camera_start(this->camera)) < 0) {
-			(void)spa_buffer_latest_worker_end(this->latest);
-			return res;
-		}
 		this->started = true;
 		this->have_sequence = false;
 		return 0;
@@ -492,25 +485,13 @@ static int build_port_param(struct impl *this, uint32_t id, uint32_t index,
 			return 0;
 		}
 	case SPA_PARAM_IO:
-		switch (index) {
-		case 0:
-			*param = spa_pod_builder_add_object(builder,
-					SPA_TYPE_OBJECT_ParamIO, id,
-					SPA_PARAM_IO_id, SPA_POD_Id(SPA_IO_BuffersLatest),
-					SPA_PARAM_IO_size,
-					SPA_POD_Int(sizeof(struct spa_io_buffers_latest)));
-			return 1;
-		case 1:
-			*param = spa_pod_builder_add_object(builder,
-					SPA_TYPE_OBJECT_ParamIO, id,
-					SPA_PARAM_IO_id,
-					SPA_POD_Id(SPA_IO_BuffersLatestLink),
-					SPA_PARAM_IO_size,
-					SPA_POD_Int(sizeof(struct spa_io_buffers_latest_link)));
-			return 1;
-		default:
+		if (index > 0)
 			return 0;
-		}
+		*param = spa_pod_builder_add_object(builder,
+				SPA_TYPE_OBJECT_ParamIO, id,
+				SPA_PARAM_IO_id, SPA_POD_Id(SPA_IO_Buffers),
+				SPA_PARAM_IO_size, SPA_POD_Int(sizeof(struct spa_io_buffers)));
+		return 1;
 	default:
 		return -ENOENT;
 	}
@@ -583,12 +564,10 @@ static int release_buffers(struct impl *this)
 	uint32_t i;
 	int first_error = 0, res;
 
-	if (spa_buffer_latest_has_links(this->latest))
-		return -EBUSY;
 	for (i = 0; i < this->port.n_buffers; i++)
 		if (this->slots[i].image != NULL)
 			spa_image_source_buffer_set_user_data(this->slots[i].image, NULL);
-	res = spa_image_source_latest_teardown(&this->transport, &this->source);
+	res = spa_image_source_buffers_teardown(&this->transport, &this->source);
 	if (res < 0)
 		first_error = res;
 	for (i = 0; i < this->port.n_buffers; i++) {
@@ -649,7 +628,7 @@ static int impl_node_port_use_buffers(void *object,
 			goto error;
 		announced++;
 	}
-	res = spa_image_source_latest_prepare(&this->transport, &this->source,
+	res = spa_image_source_buffers_prepare(&this->transport, &this->source,
 			buffers, n_buffers);
 	if (res < 0)
 		goto error;
@@ -679,7 +658,7 @@ error:
 		memset(&this->slots[i], 0, sizeof(this->slots[i]));
 	}
 	if (prepared)
-		(void)spa_image_source_latest_teardown(&this->transport, &this->source);
+		(void)spa_image_source_buffers_teardown(&this->transport, &this->source);
 	this->port.n_buffers = 0;
 	return res;
 }
@@ -692,10 +671,9 @@ static int impl_node_port_set_io(void *object, enum spa_direction direction,
 	spa_return_val_if_fail(this != NULL, -EINVAL);
 	spa_return_val_if_fail(direction == SPA_DIRECTION_OUTPUT && port_id == 0,
 			-EINVAL);
-	if (id != SPA_IO_BuffersLatest && id != SPA_IO_BuffersLatestNotify &&
-			id != SPA_IO_BuffersLatestLink)
+	if (id != SPA_IO_Buffers)
 		return -ENOENT;
-	return spa_buffer_latest_set_io(this->latest, id, data, size);
+	return spa_image_source_buffers_set_io(&this->transport, data, size);
 }
 
 static int impl_node_port_reuse_buffer(void *object SPA_UNUSED,
@@ -738,7 +716,8 @@ static int publish_buffer(struct impl *this,
 	struct spa_buffer *buffer;
 	struct spa_data *data;
 	uint64_t stride, expected, available, size;
-	uint32_t header_flags = 0, chunk_flags = 0;
+	uint32_t header_flags = this->discontinuity ?
+		SPA_META_HEADER_FLAG_DISCONT : 0, chunk_flags = 0;
 	int res;
 
 	if (completion->user_data == NULL) {
@@ -789,8 +768,14 @@ static int publish_buffer(struct impl *this,
 		.acquisition = &acquisition,
 	};
 	res = spa_image_source_publish_complete(&this->source, slot->image, &frame);
-	if (res >= 0)
+	if (res >= 0) {
+		this->discontinuity = false;
 		return 1;
+	}
+	if (res == -EBUSY) {
+		this->discontinuity = true;
+		res = 0;
+	}
 
 recycle:
 	(void)queue_slot(this, slot);
@@ -801,7 +786,7 @@ static int impl_node_process(void *object)
 {
 	struct impl *this = object;
 	struct aravis_camera_completion completion;
-	bool changed;
+	bool published = false;
 	int res;
 
 	spa_return_val_if_fail(this != NULL, -EINVAL);
@@ -810,7 +795,6 @@ static int impl_node_process(void *object)
 	res = recycle_buffers(this);
 	if (res < 0)
 		return res;
-	changed = res > 0;
 	res = aravis_camera_try_get_completion(this->camera, &completion);
 	if (res < 0)
 		return res;
@@ -818,9 +802,9 @@ static int impl_node_process(void *object)
 		res = publish_buffer(this, &completion);
 		if (res < 0)
 			return res;
-		changed = true;
+		published = res > 0;
 	}
-	return changed ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
+	return published ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
 }
 
 static const struct spa_node_methods impl_node = {
@@ -865,8 +849,6 @@ static int impl_clear(struct spa_handle *handle)
 	if (this->port.n_buffers != 0 &&
 			(res = release_buffers(this)) < 0 && first_error == 0)
 		first_error = res;
-	spa_buffer_latest_destroy(this->latest);
-	this->latest = NULL;
 	aravis_camera_close(this->camera);
 	this->camera = NULL;
 	return first_error;
@@ -895,6 +877,7 @@ static void configure_props(struct impl *this,
 	ADD_ITEM(SPA_KEY_MEDIA_ROLE, "Camera");
 	ADD_ITEM(SPA_KEY_NODE_NAME, this->node_name);
 	ADD_ITEM(SPA_KEY_NODE_DESCRIPTION, this->node_description);
+	ADD_ITEM(SPA_KEY_NODE_DRIVER, "true");
 	ADD_ITEM(SPA_KEY_DEVICE_PRODUCT_NAME, this->camera_info.model);
 	ADD_ITEM(SPA_KEY_DEVICE_SERIAL, this->camera_info.serial);
 	ADD_ITEM(SPA_KEY_API_ARAVIS_DEVICE, this->device_id);
@@ -945,7 +928,7 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 			SPA_NODE_CHANGE_MASK_PARAMS;
 	this->info = SPA_NODE_INFO_INIT();
 	this->info.max_output_ports = 1;
-	this->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_RTC_PROCESS;
+	this->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_POLL_DRIVER;
 	this->params[0] = SPA_PARAM_INFO(SPA_PARAM_PropInfo,
 			SPA_PARAM_INFO_READ);
 	this->params[1] = SPA_PARAM_INFO(SPA_PARAM_Props,
@@ -970,18 +953,10 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 			SPA_PARAM_INFO_READ);
 	this->port.info.params = this->port.params;
 	this->port.info.n_params = SPA_N_ELEMENTS(this->port.params);
-	this->latest = spa_buffer_latest_new(SPA_DIRECTION_OUTPUT, this, this->log);
-	if (this->latest == NULL) {
-		res = -errno;
+	res = spa_image_source_buffers_init(&this->transport, &this->source,
+			&config);
+	if (res < 0)
 		goto error;
-	}
-	res = spa_image_source_latest_init(&this->transport, &this->source,
-			this->latest, &config);
-	if (res < 0) {
-		spa_buffer_latest_destroy(this->latest);
-		this->latest = NULL;
-		goto error;
-	}
 	return 0;
 
 error:

@@ -1,91 +1,64 @@
 # FITS sequence SPA source
 
-`api.fits.source` publishes one plane of a FITS array at a configured fixed
-rate. It is a native SPA source: it uses PipeWireAO's image-source pool,
-latest-buffer fan-out, live link lifecycle, and RTC-owned node execution. It
-does not create an application queue or a private thread.
+`api.fits.source` publishes one complete plane of a FITS array at a configured
+fixed rate. It is a regular PipeWire graph driver with
+`SPA_NODE_FLAG_POLL_DRIVER`: its configured busy-spin data loop checks the
+monotonic deadline without a timer fd, sleep, eventfd, private thread, or
+private `pw_rtc_data_loop`.
 
-CFITSIO reads each due plane directly into an acquired PipeWireAO buffer.
-Ordinary buffered file access is the default. This is preferable for
-sequential playback because FITS values still require byte-order, scaling, or
-type conversion before publication; mapping a FITS file does not make those
-planes zero-copy. `mmap` remains available for measurement and for deployments
-that prefer a stable virtual mapping. Its optional prefault pass touches every
-file page during source construction.
+CFITSIO reads each due plane directly into an ordinary PipeWire output buffer.
+Buffered file access is the default. FITS values may require byte-order,
+scaling, or type conversion, so mapping the file does not make playback
+zero-copy. `mmap` remains available for measurement and for deployments that
+prefer a stable virtual mapping; optional prefaulting touches every file page
+during construction.
 
 ## Factory properties
 
 | Property | Requirement | Meaning |
 | --- | --- | --- |
-| `api.fits.path` | required | FITS file path. Extended-filename parsing is not used. |
-| `api.fits.hdu` | default `1` | One-based image HDU. |
-| `api.fits.sample-rank` | default `2` | Number of FITS axes in one published sample: `1` for vectors or `2` for images. |
-| `api.fits.rate` | required | Positive `numerator/denominator` samples per second; an integer means `/1`. The period must be at least one nanosecond. |
-| `api.fits.schema` | required | Exact ndarray semantic schema. |
-| `api.fits.profile` | optional | Exact ndarray interpretation or calibration profile. |
-| `api.fits.io-mode` | default `file` | `file` for normal CFITSIO access or `mmap` for a CFITSIO memory file backed by a private read-only mapping. |
-| `api.fits.prefault` | default `false` | Touch every mapped page before startup; valid only with `io-mode=mmap`. |
-| `api.fits.loop` | default `true` | Wrap to the first plane after the final plane. |
-| `api.fits.progressive` | default `disabled` | `disabled` publishes complete samples. `offer` uses progressive publication when every pool buffer has `SPA_META_Progressive` and otherwise falls back to complete publication. `require` rejects a pool without that metadata. |
+| `api.fits.path` | required | FITS file path; extended-filename parsing is not used |
+| `api.fits.hdu` | default `1` | one-based image HDU |
+| `api.fits.sample-rank` | default `2` | FITS axes in one sample: `1` for vectors or `2` for images |
+| `api.fits.rate` | required | positive `numerator/denominator` samples per second |
+| `api.fits.schema` | required | exact ndarray semantic schema |
+| `api.fits.profile` | optional | exact ndarray interpretation profile |
+| `api.fits.io-mode` | default `file` | `file` or private read-only `mmap` backing |
+| `api.fits.prefault` | default `false` | touch mapped pages before startup; valid only with `mmap` |
+| `api.fits.loop` | default `true` | wrap after the final plane |
+| `api.fits.progressive` | compatibility only | omitted or `disabled`; other values return `-ENOTSUP` |
 
-The file axes define the repeated values without a separate shape property:
+The file axes define repeated values without a separate shape property:
 
-- `sample-rank=1` accepts `(elements)` or `(elements, samples)`. It publishes a
-  canonical row-major vector. A `Float64` file with the ALPAO command schema,
-  matching actuator count, and matching profile can therefore negotiate
+- `sample-rank=1` accepts `(elements)` or `(elements, samples)` and publishes a
+  canonical row-major vector. A matching F64 ALPAO command file can negotiate
   directly with `api.alpao.sink`.
-- `sample-rank=2` accepts `(width, height)` or `(width, height, frames)`. It
-  publishes the native FITS element type with shape `(width, height)` and
-  column-major layout, preserving FITS axis order. It also offers raw video
-  `GRAY16_LE`; CFITSIO performs the conversion directly into the selected
-  output buffer.
+- `sample-rank=2` accepts `(width, height)` or `(width, height, frames)` and
+  publishes the native FITS element type as a column-major ndarray. It also
+  offers raw `GRAY16_LE`; CFITSIO converts directly into the selected output
+  buffer.
 
-The ndarray format always contains the configured rate and schema. It contains
-the profile when configured. Element type, shape, layout, rate, schema, and
-profile are exact negotiated constraints, so a downstream plugin rejects a
-mismatched file before playback starts.
-
-## Progressive test output
-
-Progressive output is a deterministic downstream-test profile, not a claim
-that FITS storage is acquired progressively. CFITSIO first reads the complete
-sample into the producer-owned pool buffer. The source then release-publishes
-only a prefix through `SPA_META_Progressive`; consumers must not access bytes
-beyond that committed prefix even though the test source has already filled
-them.
-
-Each process call advances at most one natural contiguous unit. A vector
-advances by one element. An ndarray image or `GRAY16_LE` frame advances by one
-FITS scanline. There is no private thread, timer, sleep, or synthetic delay.
-The same RTC data-loop duty cycle therefore interleaves source progress with
-downstream work. Completion makes the full sample immutable and releases the
-ordinary buffer lease.
-
-Only mapped `MemPtr` and `MemFd` buffers are supported. Progressive DMA-BUF is
-not offered. Stopping during an active sample terminates it as ABORTED with
-`SPA_META_PROGRESSIVE_FLAG_CANCELLED`.
+Element type, shape, layout, rate, schema, and profile are exact constraints.
+A mismatched consumer is rejected during negotiation rather than at playback.
 
 ## Cadence and overload
 
 Start establishes a `CLOCK_MONOTONIC` epoch. `SPA_META_Header.seq` is the
-scheduled plane sequence and `pts` is its absolute scheduled release time. The
-first plane is due immediately. If processing, storage, or a consumer lease is
-late, the source advances directly to the newest due plane; it never emits a
-catch-up burst and never backpressures the cadence. The first plane and a plane
-following skipped deadlines carry `SPA_META_HEADER_FLAG_DISCONT`.
+scheduled plane sequence and `pts` is its absolute release time. The first
+plane is due immediately. If processing, storage, or a consumer lease is late,
+the source advances to the newest due plane; it never emits a catch-up burst.
+The first plane and the first plane after skipped deadlines carry `DISCONT`.
 
-An active progressive sample is never overwritten or abandoned to meet the
-next deadline. It reaches COMPLETE first; the next process call then advances
-the cadence directly to the newest due sample. Progressive overload therefore
-drops whole intervening samples without backpressure or a catch-up burst.
+Each polling probe performs one monotonic clock read. A due probe performs one
+bounded pool acquisition and one CFITSIO plane read, then returns
+`SPA_STATUS_HAVE_DATA` to start a regular graph cycle. The source is not probed
+again until that cycle completes. If the ordinary output is still held, the
+sample is dropped and the next publication is discontinuous.
 
-The repeated path performs one monotonic clock read and, when a plane is due,
-one bounded pool acquisition and one CFITSIO plane read. CFITSIO and filesystem
-latency are source I/O, analogous to a camera SDK call, and are isolated on the
-node's `SPA_NODE_FLAG_RTC_PROCESS` data loop. Neither ordinary file I/O nor a
-memory mapping is claimed to be strict real-time: cache misses, page faults,
-filesystem faults, and CFITSIO internals must be qualified for the selected
-storage and rate.
+CFITSIO and filesystem service time remain part of the deployment contract.
+Cache misses, page faults, storage faults, and library internals prevent a
+generic strict-real-time claim even though scheduler activation is syscall-free.
 
 The source supports mapped `MemPtr` and `MemFd` pool buffers. It does not offer
-DMA-BUF.
+DMA-BUF or synthetic progressive output. Progressive behavior is tested at the
+real eGrabber boundary and the Calculon row-block integration instead.

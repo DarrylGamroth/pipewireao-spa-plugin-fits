@@ -26,6 +26,7 @@ struct Options {
     std::optional<std::string> genapi_runtime;
     std::uint32_t control_timeout_ms = 1000;
     ProgressivePolicy progressive = ProgressivePolicy::disabled;
+    std::uint32_t progressive_rows = 1;
     std::optional<std::array<std::uint8_t, 16>> acquisition_domain;
     std::uint64_t acquisition_generation = 0;
     std::uint32_t acquisition_sequence_context = 0;

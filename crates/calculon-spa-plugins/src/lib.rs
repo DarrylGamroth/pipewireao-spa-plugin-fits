@@ -7,6 +7,7 @@ compile_error!("the current Calculon SPA payload adapters require a little-endia
 
 mod alpao_command_normalization;
 mod config;
+mod frame_assembly;
 mod pixel_calibration;
 mod shwfs_controller;
 
@@ -17,11 +18,16 @@ use calculon_spa_node::{Factory, sys};
 pub use alpao_command_normalization::{
     ALPAO_COMMAND_NORMALIZATION_FACTORY_NAME, ALPAO_NORMALIZED_ACTUATOR_COMMAND_V1,
 };
+pub use frame_assembly::FRAME_ASSEMBLY_FACTORY_NAME;
 pub use pixel_calibration::PIXEL_CALIBRATION_FACTORY_NAME;
 pub use shwfs_controller::SHWFS_CONTROLLER_FACTORY_NAME;
 
-static FACTORIES: [&Factory; 3] = [
+/// Schema for one complete immutable block of calibrated detector rows.
+pub const CALIBRATED_PIXEL_ROW_BLOCK_V1: &str = "org.calculon.ao.calibrated-pixel-row-block/1";
+
+static FACTORIES: [&Factory; 4] = [
     &pixel_calibration::FACTORY,
+    &frame_assembly::FACTORY,
     &shwfs_controller::FACTORY,
     &alpao_command_normalization::FACTORY,
 ];
