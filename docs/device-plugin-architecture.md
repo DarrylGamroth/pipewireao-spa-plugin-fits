@@ -32,7 +32,7 @@ PipeWireAO core continues to own:
 - the `application/ndarray` structural format;
 - generic negotiated semantic-schema and profile properties;
 - fixed buffer-pool and ordinary graph ownership contracts;
-- regular graph scheduling, polling data loops, and activation wake policies;
+- regular graph scheduling, data-loop idle policies, and activation wake policies;
 - metadata ABIs and generic SPA format utilities; and
 - the host-side discovery, loading, lifecycle, and graph integration needed by
   ordinary SPA factories.
@@ -194,11 +194,13 @@ presented as vendor calibration.
 ## Scheduling and lifecycle contract
 
 The regular PipeWire scheduler owns dependency ordering for every production
-factory. Sources set `node.driver=true` and `SPA_NODE_FLAG_POLL_DRIVER`; their
-bounded, nonblocking `process()` methods are probed on configured busy-spin data
-loops. BGAPI2, Aravis, and FITS publish ordinary complete buffers. eGrabber
-publishes either complete video frames or copied, complete row-block ndarrays.
-ALPAO is an ordinary scheduled follower and accepts `SPA_IO_Buffers`.
+factory. Sources set `node.driver=true`. A source reports
+`SPA_NODE_FLAG_POLL_DRIVER` only when its configured execution profile requires
+a bounded, nonblocking `process()` probe on a busy-spin data loop. BGAPI2 and
+FITS also provide ordinary eventfd and timerfd readiness profiles. Aravis and
+eGrabber remain polling sources; eGrabber publishes either complete video
+frames or copied, complete row-block ndarrays. ALPAO is an ordinary scheduled
+follower and accepts `SPA_IO_Buffers`.
 
 A polled source does not bypass the graph. One successful source publication
 starts one normal graph cycle; the source is not probed again until the graph's
@@ -207,10 +209,11 @@ busy-spin loop. Exported nodes poll in the implementation process, while the
 daemon-side remote representation retains topology and the shared activation.
 
 Factory identity, discovery, formats, schemas, controls, metadata, and SDK
-ownership are independent of the selected loop. Startup occurs only after
-format, buffers, I/O, required ports, and device state are prepared. Pause,
-Suspend, final link removal, and destruction remove the poll source before SDK
-or buffer teardown, so lifecycle calls cannot overlap `process()`.
+ownership are independent of the selected loop and readiness profile. Startup
+occurs only after format, buffers, I/O, required ports, and device state are
+prepared. Pause, Suspend, final link removal, and destruction synchronously
+quiesce polling or fd readiness before SDK or buffer teardown, so lifecycle
+calls cannot overlap `process()`.
 
 The changing eGrabber camera allocation remains private in row-block mode.
 Only complete copied row-block ndarrays cross its output port. See

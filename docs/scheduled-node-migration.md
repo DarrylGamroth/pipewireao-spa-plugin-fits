@@ -23,8 +23,8 @@ the activation flag that permits polling across processes.
 
 | Factory | Scheduling role | Wake/readiness | Buffer contract |
 | --- | --- | --- | --- |
-| `api.fits.source` | graph driver | nonblocking source probe | complete ordinary output |
-| `api.bgapi2.source` | graph driver | nonblocking camera probe | complete ordinary output |
+| `api.fits.source` | graph driver | configured `poll` or `timerfd` | complete ordinary output |
+| `api.bgapi2.source` | graph driver | configured `poll` or `eventfd` | complete ordinary output |
 | `api.aravis.source` | comparison graph driver | nonblocking camera probe | complete ordinary output |
 | `api.egrabber.source` | graph driver | nonblocking camera or row-readout probe | complete video frames or complete raw row blocks |
 | `api.calculon.pixel-calibration` | follower | graph dependency | complete frame or row-block input and output |
@@ -111,6 +111,24 @@ Assign the source:
 ```ini
 node.loop.name = rtc-input
 ```
+
+Select source readiness independently of its data-loop assignment:
+
+```ini
+api.bgapi2.readiness = poll       # poll or eventfd
+api.fits.readiness = timerfd      # poll or timerfd
+```
+
+`poll` is the compatibility default for both factories. It reports
+`SPA_NODE_FLAG_POLL_DRIVER`, requires a `busy-spin` loop, and permits a new
+publication only after the preceding synchronous graph cycle finishes.
+`eventfd` and `timerfd` use ordinary SPA readiness and can run on an eventfd
+data loop. They avoid a dedicated spinning CPU but put kernel wakeup and normal
+asynchronous xrun behavior back into the latency and overload contract.
+
+eGrabber always reports `POLL_DRIVER` in both complete-frame and row-block
+modes because CallbackOnDemand does not expose a readiness fd. Output mode and
+wake mechanism are separate contracts.
 
 Configure eGrabber row blocks and the matching Calculon artifact size:
 

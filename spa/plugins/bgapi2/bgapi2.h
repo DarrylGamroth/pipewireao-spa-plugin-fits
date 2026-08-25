@@ -15,6 +15,7 @@
 #define SPA_KEY_API_BGAPI2_DEVICE_INDEX "api.bgapi2.device-index"
 #define SPA_KEY_API_BGAPI2_STREAM_INDEX "api.bgapi2.stream-index"
 #define SPA_KEY_API_BGAPI2_TRANSPORT "api.bgapi2.transport"
+#define SPA_KEY_API_BGAPI2_READINESS "api.bgapi2.readiness"
 
 extern const struct spa_handle_factory spa_bgapi2_manager_factory;
 extern const struct spa_handle_factory spa_bgapi2_device_factory;

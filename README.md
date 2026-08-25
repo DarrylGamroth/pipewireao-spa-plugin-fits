@@ -7,8 +7,9 @@ SPA factories and uses PipeWireAO's installed public SPA interfaces.
 The supported device integrations are `api.alpao.sink`,
 `api.egrabber.source`, and `api.bgapi2.source`. `api.fits.source` provides
 fixed-cadence vector and image-sequence playback from FITS arrays. The sources
-use PipeWireAO-owned image buffers and regular graph scheduling. Their
-nonblocking source probes run on configured polling data loops;
+use PipeWireAO-owned image buffers and regular graph scheduling. eGrabber uses
+a configured polling data loop; BGAPI2 and FITS can instead select ordinary
+eventfd or timerfd readiness;
 proprietary SDKs and CFITSIO remain optional build dependencies.
 Proprietary SDKs, drivers, device configuration files, calibration files, and
 redistributable binaries do not belong in this repository.
@@ -150,7 +151,7 @@ discard actuator commands when ASDK is absent or unavailable.
 
 - PipeWireAO owns generic transport and execution contracts, including native
   ndarray formats, acquisition metadata, semantic-schema and profile
-  negotiation, ordinary graph I/O, and polling data loops.
+  negotiation, ordinary graph I/O, and selectable data-loop idle policies.
 - This repository owns the optional `libpipewire-module-queue` topology adapter
   that applies an explicit finite capacity, overflow policy, and copy or lease
   storage boundary between producer and observer graphs.

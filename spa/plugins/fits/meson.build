@@ -34,15 +34,21 @@ if get_option('tests').allowed()
   fits_source_test = executable(
     'spa-fits-source-test',
     'test-source.c',
-    dependencies: [spa_dep, cfitsio_dep, dl_dep],
+    dependencies: [spa_dep, pipewire_dep, cfitsio_dep, dl_dep],
     include_directories: plugin_include,
     c_args: ['-Wno-pedantic'],
+  )
+  fits_source_test_env = environment()
+  fits_source_test_env.set(
+    'PIPEWIREAO_SPA_PLUGIN_DIR',
+    spa_pkg_dep.get_variable(pkgconfig: 'plugindir'),
   )
   test(
     'spa-fits-source',
     fits_source_test,
     args: [fits_lib.full_path()],
     depends: fits_lib,
+    env: fits_source_test_env,
   )
 
   fits_calculon_test = executable(

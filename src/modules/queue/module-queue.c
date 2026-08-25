@@ -423,7 +423,8 @@ static void playback_process(void *data)
 		mark_protocol_error(impl);
 }
 
-static void release_all_quiescent(struct impl *impl)
+static void reset_ownership_quiescent(struct impl *impl,
+		bool return_capture)
 {
 	uint32_t i;
 
@@ -432,7 +433,7 @@ static void release_all_quiescent(struct impl *impl)
 		uint32_t state = atomic_exchange_explicit(&slot->state,
 				SLOT_FREE, memory_order_acq_rel);
 
-		if (state != SLOT_FREE && slot->capture != NULL)
+		if (return_capture && state != SLOT_FREE && slot->capture != NULL)
 			(void)pw_stream_queue_buffer(impl->capture, slot->capture);
 	}
 	pwao_queue_ring_reset(&impl->pending);
@@ -445,6 +446,11 @@ static void release_all_quiescent(struct impl *impl)
 		impl->slots[i].output_in_flight = false;
 		impl->slots[i].delivered_input = UINT32_MAX;
 	}
+}
+
+static void release_all_quiescent(struct impl *impl)
+{
+	reset_ownership_quiescent(impl, true);
 }
 
 static int validate_capture_pool(struct impl *impl)
@@ -511,7 +517,8 @@ static void capture_add_buffer(void *data, struct pw_buffer *buffer)
 	int result;
 
 	for (index = 0; index < MAX_POOL_BUFFERS; index++)
-		if (impl->slots[index].capture == NULL)
+		if (impl->slots[index].capture == NULL &&
+				impl->slots[index].playback == NULL)
 			break;
 	if (index == MAX_POOL_BUFFERS) {
 		mark_protocol_error(impl);
@@ -541,10 +548,13 @@ static void capture_remove_buffer(void *data, struct pw_buffer *buffer)
 
 	if (slot == NULL)
 		return;
-	if (atomic_load_explicit(&slot->state, memory_order_acquire) != SLOT_FREE)
-		mark_protocol_error(impl);
-	if (slot->playback != NULL)
-		mark_protocol_error(impl);
+	/* PipeWire can withdraw the capture pool before it emits Format=NULL.
+	 * At this point the stream is already quiescent and the buffers are being
+	 * revoked, so invalidate all queued ownership without trying to queue a
+	 * buffer back into the pool that is currently being removed. The following
+	 * format callback destroys playback and its aliases before a new pool is
+	 * accepted. */
+	reset_ownership_quiescent(impl, false);
 	slot->capture = NULL;
 	buffer->user_data = NULL;
 	if (impl->n_capture_present == 0) {
@@ -739,8 +749,7 @@ static int setup_playback(struct impl *impl)
 	}
 
 	impl->playback = pw_stream_new(impl->core, "queue output",
-			impl->playback_props);
-	impl->playback_props = NULL;
+			pw_properties_copy(impl->playback_props));
 	if (impl->playback == NULL) {
 		result = -errno;
 		goto done;

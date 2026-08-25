@@ -63,7 +63,12 @@ if get_option('tests').allowed()
   bgapi2_capture_test = executable(
     'spa-bgapi2-capture-test',
     'test-capture.c',
-    dependencies: [spa_dep, dl_dep],
+    dependencies: [spa_dep, pipewire_dep, dl_dep],
+  )
+  bgapi2_capture_test_env = environment()
+  bgapi2_capture_test_env.set(
+    'PIPEWIREAO_SPA_PLUGIN_DIR',
+    spa_pkg_dep.get_variable(pkgconfig: 'plugindir'),
   )
   test(
     'spa-bgapi2-capture-euresys',
@@ -73,6 +78,7 @@ if get_option('tests').allowed()
     depends: bgapi2_lib,
     is_parallel: false,
     timeout: 10,
+    env: bgapi2_capture_test_env,
   )
   test(
     'spa-bgapi2-capture-baumer',
@@ -82,6 +88,17 @@ if get_option('tests').allowed()
     depends: bgapi2_lib,
     is_parallel: false,
     timeout: 10,
+    env: bgapi2_capture_test_env,
+  )
+  test(
+    'spa-bgapi2-capture-eventfd-euresys',
+    bgapi2_capture_test,
+    args: [bgapi2_lib.full_path(),
+      '/opt/euresys/egrabber/lib/x86_64/gigelink.cti', 'eventfd'],
+    depends: bgapi2_lib,
+    is_parallel: false,
+    timeout: 10,
+    env: bgapi2_capture_test_env,
   )
   bgapi2_camera_test = executable(
     'spa-bgapi2-camera-test',

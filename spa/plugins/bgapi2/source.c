@@ -20,8 +20,11 @@
 #include <spa/pod/dynamic.h>
 #include <spa/pod/filter.h>
 #include <spa/pod/parser.h>
+#include <spa/support/loop.h>
 #include <spa/support/plugin.h>
+#include <spa/support/system.h>
 #include <spa/utils/keys.h>
+#include <spa/utils/result.h>
 #include <spa/utils/string.h>
 
 #include "bgapi2.h"
@@ -54,6 +57,9 @@ struct impl {
 	struct spa_handle handle;
 	struct spa_node node;
 	struct spa_log *log;
+	struct spa_loop *data_loop;
+	struct spa_system *data_system;
+	struct spa_source completion_source;
 	struct spa_hook_list hooks;
 	struct spa_callbacks callbacks;
 	uint64_t info_all;
@@ -77,7 +83,62 @@ struct impl {
 	bool discontinuity;
 	bool have_sequence;
 	uint64_t last_sequence;
+	bool eventfd_readiness;
 };
+
+static int impl_node_process(void *object);
+
+static void notify_completion(void *data)
+{
+	struct impl *this = data;
+	int res;
+
+	res = spa_system_eventfd_write(this->data_system,
+			this->completion_source.fd, 1);
+	if (SPA_UNLIKELY(res < 0 && res != -EAGAIN))
+		spa_log_error(this->log, "completion eventfd write failed: %s",
+				spa_strerror(res));
+}
+
+static void completion_ready(struct spa_source *source)
+{
+	struct impl *this = source->data;
+	uint64_t count;
+	int res;
+
+	if (SPA_UNLIKELY(source->rmask & (SPA_IO_ERR | SPA_IO_HUP))) {
+		spa_log_error(this->log, "completion eventfd error: 0x%08x",
+				source->rmask);
+		return;
+	}
+	if (!(source->rmask & SPA_IO_IN))
+		return;
+	if ((res = spa_system_eventfd_read(this->data_system, source->fd,
+			&count)) < 0) {
+		if (res != -EAGAIN)
+			spa_log_error(this->log, "completion eventfd read failed: %s",
+					spa_strerror(res));
+		return;
+	}
+	res = impl_node_process(this);
+	if (res < 0)
+		spa_log_error(this->log, "completion processing failed: %s",
+				spa_strerror(res));
+	else if (res != SPA_STATUS_OK)
+		spa_node_call_ready(&this->callbacks, res);
+}
+
+static int remove_completion_source(struct spa_loop *loop SPA_UNUSED,
+		bool async SPA_UNUSED, uint32_t seq SPA_UNUSED,
+		const void *data SPA_UNUSED, size_t size SPA_UNUSED, void *user_data)
+{
+	struct impl *this = user_data;
+
+	if (this->completion_source.loop != NULL)
+		return spa_loop_remove_source(this->data_loop,
+				&this->completion_source);
+	return 0;
+}
 
 static int64_t monotonic_nsec(void)
 {
@@ -416,6 +477,13 @@ static int impl_node_send_command(void *object,
 			return -EIO;
 		if (this->started)
 			return 0;
+		if (this->eventfd_readiness) {
+			uint64_t count;
+
+			while (spa_system_eventfd_read(this->data_system,
+					this->completion_source.fd, &count) == 0)
+				;
+		}
 		if ((res = queue_producer_buffers(this)) < 0)
 			return res;
 		if ((res = bgapi2_camera_start(this->camera)) < 0) {
@@ -874,6 +942,21 @@ static int impl_clear(struct spa_handle *handle)
 	if (this->port.n_buffers != 0 &&
 			(res = release_buffers(this)) < 0 && first_error == 0)
 		first_error = res;
+	if (this->camera != NULL)
+		bgapi2_camera_set_completion_notify(this->camera, NULL, NULL);
+	if (this->completion_source.loop != NULL) {
+		res = spa_loop_locked(this->data_loop, remove_completion_source, 0,
+				NULL, 0, this);
+		if (res < 0 && first_error == 0)
+			first_error = res;
+	}
+	if (this->completion_source.fd >= 0) {
+		res = spa_system_close(this->data_system,
+				this->completion_source.fd);
+		if (res < 0 && first_error == 0)
+			first_error = res;
+		this->completion_source.fd = -1;
+	}
 	bgapi2_camera_close(this->camera);
 	this->camera = NULL;
 	return first_error;
@@ -919,6 +1002,8 @@ static void configure_props(struct impl *this,
 	ADD_ITEM(SPA_KEY_API_BGAPI2_DEVICE_INDEX, this->device_index);
 	ADD_ITEM(SPA_KEY_API_BGAPI2_STREAM_INDEX, this->stream_index);
 	ADD_ITEM(SPA_KEY_API_BGAPI2_TRANSPORT, this->camera_info.transport);
+	ADD_ITEM(SPA_KEY_API_BGAPI2_READINESS,
+			this->eventfd_readiness ? "eventfd" : "poll");
 #undef ADD_ITEM
 	this->props = SPA_DICT_INIT(this->prop_items, n_items);
 }
@@ -934,15 +1019,25 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 		.device_timeout_ms = 200,
 	};
 	const struct bgapi2_camera_info *camera_info;
+	const char *readiness;
 	int res;
 
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
 	memset(this, 0, sizeof(*this));
+	this->completion_source.fd = -1;
 	options.producer_path = info == NULL ? NULL :
 			spa_dict_lookup(info, SPA_KEY_API_BGAPI2_PRODUCER);
 	options.serial = info == NULL ? NULL :
 			spa_dict_lookup(info, SPA_KEY_API_BGAPI2_SERIAL);
 	options.completion_mode = BGAPI2_CAMERA_COMPLETION_CALLBACK;
+	readiness = info == NULL ? NULL :
+			spa_dict_lookup(info, SPA_KEY_API_BGAPI2_READINESS);
+	if (readiness == NULL || spa_streq(readiness, "poll"))
+		this->eventfd_readiness = false;
+	else if (spa_streq(readiness, "eventfd"))
+		this->eventfd_readiness = true;
+	else
+		return -EINVAL;
 	if (options.producer_path == NULL ||
 			parse_index(info, SPA_KEY_API_BGAPI2_INTERFACE_INDEX,
 				BGAPI2_CAMERA_ANY_INTERFACE, &options.interface_index) < 0 ||
@@ -954,6 +1049,13 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 	this->handle.get_interface = impl_get_interface;
 	this->handle.clear = impl_clear;
 	this->log = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
+	this->data_loop = spa_support_find(support, n_support,
+			SPA_TYPE_INTERFACE_DataLoop);
+	this->data_system = spa_support_find(support, n_support,
+			SPA_TYPE_INTERFACE_DataSystem);
+	if (this->eventfd_readiness &&
+			(this->data_loop == NULL || this->data_system == NULL))
+		return -ENOTSUP;
 	spa_hook_list_init(&this->hooks);
 	if ((res = bgapi2_camera_open(&this->camera, &options)) < 0)
 		return res;
@@ -970,13 +1072,36 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 		return -ENOTSUP;
 	}
 	this->camera_info = *camera_info;
+	if (this->eventfd_readiness) {
+		this->completion_source.func = completion_ready;
+		this->completion_source.data = this;
+		this->completion_source.mask = SPA_IO_IN | SPA_IO_ERR | SPA_IO_HUP;
+		this->completion_source.fd = spa_system_eventfd_create(
+				this->data_system, SPA_FD_CLOEXEC | SPA_FD_NONBLOCK |
+				SPA_FD_EVENT_SEMAPHORE);
+		if (this->completion_source.fd < 0) {
+			res = this->completion_source.fd;
+			goto error_camera;
+		}
+		if ((res = spa_loop_add_source(this->data_loop,
+				&this->completion_source)) < 0) {
+			(void) spa_system_close(this->data_system,
+					this->completion_source.fd);
+			this->completion_source.fd = -1;
+			goto error_camera;
+		}
+		bgapi2_camera_set_completion_notify(this->camera,
+				notify_completion, this);
+	}
 	this->node.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Node,
 			SPA_VERSION_NODE, &impl_node, this);
 	this->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |
 			SPA_NODE_CHANGE_MASK_PARAMS;
 	this->info = SPA_NODE_INFO_INIT();
 	this->info.max_output_ports = 1;
-	this->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_POLL_DRIVER;
+	this->info.flags = SPA_NODE_FLAG_RT;
+	if (!this->eventfd_readiness)
+		this->info.flags |= SPA_NODE_FLAG_POLL_DRIVER;
 	this->params[0] = SPA_PARAM_INFO(SPA_PARAM_PropInfo,
 			SPA_PARAM_INFO_READ);
 	this->params[1] = SPA_PARAM_INFO(SPA_PARAM_Props,
@@ -1002,6 +1127,11 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 	this->port.info.params = this->port.params;
 	this->port.info.n_params = SPA_N_ELEMENTS(this->port.params);
 	return 0;
+
+error_camera:
+	bgapi2_camera_close(this->camera);
+	this->camera = NULL;
+	return res;
 }
 
 static const struct spa_interface_info impl_interfaces[] = {

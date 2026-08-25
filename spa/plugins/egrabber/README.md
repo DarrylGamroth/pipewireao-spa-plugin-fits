@@ -22,6 +22,12 @@ The eGrabber CallbackOnDemand API exposes no readiness file descriptor, so
 `process()` calls the SDK's no-timeout event dispatch and returns
 `SPA_STATUS_OK` when no work is present.
 
+Unlike the complete-frame BGAPI2 and timed FITS sources, eGrabber does not
+offer a readiness property. Both `frame` and `row-block` output use polling in
+the current CallbackOnDemand implementation. A future ordinary-readiness
+profile would require a qualified SDK notification mechanism; output artifact
+granularity alone does not make one available.
+
 There is no private capture thread, private RTC data loop, latest-value
 transport, or changing public buffer. Downstream nodes use ordinary
 `SPA_IO_Buffers` and normal scheduler dependencies.

@@ -168,6 +168,22 @@ static struct pw_impl_node *wait_for_node(struct fixture *fixture,
 	abort();
 }
 
+static void wait_for_node_removal(struct fixture *fixture, const char *name)
+{
+	struct node_search search = { .name = name };
+	uint64_t deadline = monotonic_nsec() + TIMEOUT_NSEC;
+
+	while (monotonic_nsec() < deadline) {
+		search.node = NULL;
+		(void)pw_context_for_each_global(fixture->context, find_node, &search);
+		if (search.node == NULL)
+			return;
+		iterate_main_loop(fixture);
+	}
+	fprintf(stderr, "timed out waiting for node removal %s\n", name);
+	abort();
+}
+
 static void wait_for_streaming(struct fixture *fixture,
 		struct endpoint *endpoint)
 {
@@ -779,6 +795,132 @@ static void test_backpressure(const char *storage)
 	fixture_clear(&fixture);
 }
 
+static void test_module_destruction(const char *storage,
+		const char *occupancy)
+{
+	struct fixture fixture;
+	bool held = false;
+
+	fixture_init(&fixture,
+			strcmp(occupancy, "backpressure") == 0 ?
+					"backpressure" : "drop-oldest",
+			storage);
+	if (strcmp(occupancy, "queued") == 0) {
+		trigger_producer(&fixture, 1);
+	} else if (strcmp(occupancy, "in-flight") == 0 ||
+			strcmp(occupancy, "backpressure") == 0) {
+		trigger_producer(&fixture, 1);
+		trigger_observer(&fixture, 1);
+		held = true;
+		if (strcmp(occupancy, "backpressure") == 0) {
+			trigger_producer(&fixture, 2);
+			trigger_producer(&fixture, 3);
+		}
+	} else {
+		CHECK(strcmp(occupancy, "empty") == 0);
+	}
+	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
+	pw_impl_module_destroy(fixture.module);
+	fixture.module = NULL;
+	/* Destroying the module also destroys both internal stream ports and their
+	 * links. An application-held observer buffer is revoked with that link and
+	 * must not be returned through the now-disconnected stream. */
+	fixture.capture_link = NULL;
+	fixture.playback_link = NULL;
+	if (held) {
+		CHECK(fixture.observer.held != NULL);
+		fixture.observer.held = NULL;
+		fixture.observer.held_sequence = 0;
+	}
+	for (uint32_t i = 0; i < 4; i++)
+		iterate_main_loop(&fixture);
+	CHECK(atomic_load_explicit(&fixture.producer.endpoint.errors,
+			memory_order_relaxed) == 0);
+	CHECK(atomic_load_explicit(&fixture.observer.endpoint.errors,
+			memory_order_relaxed) == 0);
+	fixture_clear(&fixture);
+}
+
+static void test_format_recreation(const char *storage)
+{
+	struct fixture fixture;
+	struct pw_impl_node *producer_node, *capture_node, *playback_node,
+			*observer_node;
+
+	fixture_init(&fixture, "drop-oldest", storage);
+	trigger_producer(&fixture, 1);
+	CHECK(atomic_load_explicit(&fixture.observer.deliveries,
+			memory_order_relaxed) == 0);
+	/* Removing the input link withdraws the negotiated format. The queue must
+	 * release the queued input, destroy its output stream, and retain enough
+	 * configuration to create a fresh output after renegotiation. */
+	pw_impl_link_destroy(fixture.capture_link);
+	fixture.capture_link = NULL;
+	fixture.playback_link = NULL;
+	wait_for_node_removal(&fixture, "test.queue-output");
+	CHECK(atomic_load_explicit(&fixture.producer.endpoint.errors,
+			memory_order_relaxed) == 0);
+	CHECK(atomic_load_explicit(&fixture.observer.endpoint.errors,
+			memory_order_relaxed) == 0);
+
+	producer_node = wait_for_node(&fixture, "test.queue-producer");
+	capture_node = wait_for_node(&fixture, "test.queue-input");
+	fixture.capture_link = link_nodes(&fixture, producer_node, capture_node);
+	wait_for_link(&fixture, fixture.capture_link);
+	playback_node = wait_for_node(&fixture, "test.queue-output");
+	observer_node = wait_for_node(&fixture, "test.queue-observer");
+	fixture.playback_link = link_nodes(&fixture, playback_node, observer_node);
+	wait_for_link(&fixture, fixture.playback_link);
+	wait_for_streaming(&fixture, &fixture.producer.endpoint);
+	wait_for_streaming(&fixture, &fixture.observer.endpoint);
+	trigger_producer(&fixture, 2);
+	trigger_observer(&fixture, 1);
+	CHECK(fixture.observer.sequence[0] == 2);
+	atomic_store_explicit(&fixture.observer.hold, 0, memory_order_release);
+	release_observer(&fixture);
+	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
+	fixture_clear(&fixture);
+}
+
+static void test_observer_reconnect(const char *storage)
+{
+	struct fixture fixture;
+	struct pw_impl_node *playback_node, *observer_node;
+
+	fixture_init(&fixture, "drop-oldest", storage);
+	trigger_producer(&fixture, 1);
+	trigger_observer(&fixture, 1);
+	CHECK(fixture.observer.held != NULL);
+	/* Destroy the slow subscriber without returning its retained buffer. Link
+	 * teardown must complete the module output lease and permit a new observer
+	 * to attach without disturbing the producer-side queue. */
+	fixture.playback_link = NULL;
+	pw_stream_destroy(fixture.observer.endpoint.stream);
+	fixture.observer.endpoint.stream = NULL;
+	fixture.observer.held = NULL;
+	fixture.observer.held_sequence = 0;
+	atomic_store_explicit(&fixture.observer.deliveries, 0,
+			memory_order_relaxed);
+	atomic_store_explicit(&fixture.observer.hold, 1, memory_order_relaxed);
+	for (uint32_t i = 0; i < 4; i++)
+		iterate_main_loop(&fixture);
+	playback_node = wait_for_node(&fixture, "test.queue-output");
+	create_endpoint_stream(&fixture, "test.queue-observer-reattached",
+			PW_DIRECTION_INPUT, &observer_events,
+			&fixture.observer.endpoint);
+	observer_node = wait_for_node(&fixture, "test.queue-observer-reattached");
+	fixture.playback_link = link_nodes(&fixture, playback_node, observer_node);
+	wait_for_link(&fixture, fixture.playback_link);
+	wait_for_streaming(&fixture, &fixture.observer.endpoint);
+	trigger_producer(&fixture, 2);
+	trigger_observer(&fixture, 1);
+	CHECK(fixture.observer.sequence[0] == 2);
+	atomic_store_explicit(&fixture.observer.hold, 0, memory_order_release);
+	release_observer(&fixture);
+	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
+	fixture_clear(&fixture);
+}
+
 static int compare_u64(const void *left, const void *right)
 {
 	const uint64_t a = *(const uint64_t *)left;
@@ -1001,6 +1143,22 @@ int main(int argc, char **argv)
 	test_drop_policy("drop-oldest", "lease", 9, 7, 0);
 	test_drop_policy("drop-newest", "lease", 2, 0, 7);
 	test_backpressure("lease");
+	for (uint32_t storage = 0; storage < 2; storage++) {
+		const char *name = storage == 0 ? "copy" : "lease";
+
+		fprintf(stderr, "queue lifecycle storage=%s case=destruction-empty\n", name);
+		test_module_destruction(name, "empty");
+		fprintf(stderr, "queue lifecycle storage=%s case=destruction-queued\n", name);
+		test_module_destruction(name, "queued");
+		fprintf(stderr, "queue lifecycle storage=%s case=destruction-in-flight\n", name);
+		test_module_destruction(name, "in-flight");
+		fprintf(stderr, "queue lifecycle storage=%s case=destruction-backpressure\n", name);
+		test_module_destruction(name, "backpressure");
+		fprintf(stderr, "queue lifecycle storage=%s case=observer-reconnect\n", name);
+		test_observer_reconnect(name);
+		fprintf(stderr, "queue lifecycle storage=%s case=format-recreation\n", name);
+		test_format_recreation(name);
+	}
 	pw_deinit();
 	return 0;
 }

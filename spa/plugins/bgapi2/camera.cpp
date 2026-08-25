@@ -56,6 +56,8 @@ struct bgapi2_camera {
 	uint32_t announced_count;
 	uint32_t completion_error;
 	enum bgapi2_camera_completion_mode completion_mode;
+	bgapi2_completion_notify completion_notify;
+	void *completion_notify_data;
 	bool system_open;
 	bool interface_open;
 	bool device_open;
@@ -104,12 +106,16 @@ static void BGAPI2CALL buffer_complete(void *owner, BGAPI2_Buffer *buffer)
 	if (buffer == NULL || filled < 0 ||
 			filled >= (int32_t)BGAPI2_CAMERA_MAX_BUFFERS) {
 		__atomic_store_n(&camera->completion_error, 1u, __ATOMIC_RELEASE);
+		if (camera->completion_notify != nullptr)
+			camera->completion_notify(camera->completion_notify_data);
 		return;
 	}
 	completion.buffer = buffer;
 	completion.result = read_completion(camera, buffer, &completion);
 	camera->completions[index % BGAPI2_CAMERA_MAX_BUFFERS] = completion;
 	spa_ringbuffer_shared_write_update(&camera->completion_ring, index + 1u);
+	if (camera->completion_notify != nullptr)
+		camera->completion_notify(camera->completion_notify_data);
 }
 
 static int fail(BGAPI2_RESULT result)
@@ -914,6 +920,15 @@ int bgapi2_camera_refresh_info(struct bgapi2_camera *camera)
 	if (camera->acquiring || camera->announced_count != 0)
 		return -EBUSY;
 	return query_info(camera);
+}
+
+void bgapi2_camera_set_completion_notify(struct bgapi2_camera *camera,
+		bgapi2_completion_notify notify, void *data)
+{
+	if (camera == nullptr)
+		return;
+	camera->completion_notify = notify;
+	camera->completion_notify_data = data;
 }
 
 int bgapi2_camera_announce(struct bgapi2_camera *camera, void *memory,

@@ -29,6 +29,38 @@ int main(int argc, char *argv[])
 	spa_assert_se(handle != NULL);
 	spa_assert_se(factory->init(factory, handle, NULL, NULL, 0) == -EINVAL);
 	free(handle);
+	{
+		const struct spa_dict_item items[] = {
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PATH, "/invalid.fits"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_SCHEMA, "test"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_RATE, "1/1"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_READINESS, "invalid"),
+		};
+		const struct spa_dict info = SPA_DICT_INIT(items,
+				SPA_N_ELEMENTS(items));
+
+		handle = calloc(1, factory->get_size(factory, &info));
+		spa_assert_se(handle != NULL);
+		spa_assert_se(factory->init(factory, handle, &info,
+				NULL, 0) == -EINVAL);
+		free(handle);
+	}
+	{
+		const struct spa_dict_item items[] = {
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PATH, "/invalid.fits"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_SCHEMA, "test"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_RATE, "1/1"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_READINESS, "timerfd"),
+		};
+		const struct spa_dict info = SPA_DICT_INIT(items,
+				SPA_N_ELEMENTS(items));
+
+		handle = calloc(1, factory->get_size(factory, &info));
+		spa_assert_se(handle != NULL);
+		spa_assert_se(factory->init(factory, handle, &info,
+				NULL, 0) == -ENOTSUP);
+		free(handle);
+	}
 	spa_assert_se(dlclose(library) == 0);
 	return 0;
 }

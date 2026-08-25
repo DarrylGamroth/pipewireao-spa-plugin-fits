@@ -1,9 +1,8 @@
 # FITS sequence SPA source
 
 `api.fits.source` publishes one complete plane of a FITS array at a configured
-fixed rate. It is a regular PipeWire graph driver with
-`SPA_NODE_FLAG_POLL_DRIVER`: its configured busy-spin data loop checks the
-monotonic deadline without a timer fd, sleep, eventfd, or private thread.
+fixed rate. It is a regular PipeWire graph driver with selectable polling or
+timerfd readiness. Neither profile creates a private thread.
 
 CFITSIO reads each due plane directly into an ordinary PipeWire output buffer.
 Buffered file access is the default. FITS values may require byte-order,
@@ -25,6 +24,7 @@ during construction.
 | `api.fits.io-mode` | default `file` | `file` or private read-only `mmap` backing |
 | `api.fits.prefault` | default `false` | touch mapped pages before startup; valid only with `mmap` |
 | `api.fits.loop` | default `true` | wrap after the final plane |
+| `api.fits.readiness` | default `poll` | `poll` for a busy-spin deadline probe or `timerfd` for ordinary data-loop readiness |
 
 The file axes define repeated values without a separate shape property:
 
@@ -47,11 +47,20 @@ plane is due immediately. If processing, storage, or a consumer lease is late,
 the source advances to the newest due plane; it never emits a catch-up burst.
 The first plane and the first plane after skipped deadlines carry `DISCONT`.
 
-Each polling probe performs one monotonic clock read. A due probe performs one
+In `poll` readiness, the node reports `SPA_NODE_FLAG_POLL_DRIVER`. Each probe
+performs one monotonic clock read. A due probe performs one
 bounded pool acquisition and one CFITSIO plane read, then returns
 `SPA_STATUS_HAVE_DATA` to start a regular graph cycle. The source is not probed
 again until that cycle completes. If the ordinary output is still held, the
 sample is dropped and the next publication is discontinuous.
+
+In `timerfd` readiness, the node does not report `POLL_DRIVER`. An absolute
+monotonic timerfd invokes the same publication path and calls the ordinary SPA
+ready callback. If a previous buffer is still pending at a deadline, the source
+does not spin on an already-expired timer: it marks a discontinuity, arms the
+next future release, and lets cadence selection skip to the newest due plane.
+This profile needs `DataLoop` and `DataSystem` SPA support and fails with
+`ENOTSUP` when they are absent.
 
 CFITSIO and filesystem service time remain part of the deployment contract.
 Cache misses, page faults, storage faults, and library internals prevent a

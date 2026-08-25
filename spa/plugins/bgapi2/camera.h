@@ -114,6 +114,7 @@ struct bgapi2_feature_value {
 };
 
 struct bgapi2_camera;
+typedef void (*bgapi2_completion_notify)(void *data);
 
 /* Discovery, feature lookup, and teardown are control-path operations. */
 int bgapi2_camera_discover(const char *producer_path,
@@ -143,6 +144,8 @@ int bgapi2_camera_find_feature(const struct bgapi2_camera *camera,
 int bgapi2_camera_set_feature_value(struct bgapi2_camera *camera,
 		uint32_t index, const struct bgapi2_feature_value *value);
 int bgapi2_camera_refresh_info(struct bgapi2_camera *camera);
+void bgapi2_camera_set_completion_notify(struct bgapi2_camera *camera,
+		bgapi2_completion_notify notify, void *data);
 
 /* Buffer creation and revocation are pool-lifecycle operations. */
 int bgapi2_camera_announce(struct bgapi2_camera *camera, void *memory,

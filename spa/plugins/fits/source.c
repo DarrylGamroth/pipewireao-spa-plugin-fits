@@ -22,8 +22,11 @@
 #include <spa/param/video/raw-utils.h>
 #include <spa/pod/filter.h>
 #include <spa/pod/parser.h>
+#include <spa/support/loop.h>
 #include <spa/support/plugin.h>
+#include <spa/support/system.h>
 #include <spa/utils/keys.h>
+#include <spa/utils/result.h>
 #include <spa/utils/string.h>
 
 #include "cube.h"
@@ -76,6 +79,9 @@ struct impl {
 	struct spa_handle handle;
 	struct spa_node node;
 	struct spa_log *log;
+	struct spa_loop *data_loop;
+	struct spa_system *data_system;
+	struct spa_source timer_source;
 	struct spa_hook_list hooks;
 	struct spa_callbacks callbacks;
 	uint64_t info_all;
@@ -93,6 +99,7 @@ struct impl {
 	char io_mode_text[16];
 	char prefault_text[8];
 	char loop_text[8];
+	char readiness_text[8];
 	struct port port;
 	struct fits_cube *cube;
 	struct fits_cube_info cube_info;
@@ -101,7 +108,10 @@ struct impl {
 	bool loop;
 	bool discontinuity;
 	bool started;
+	bool timerfd_readiness;
 };
+
+static int node_process(void *object);
 
 static int copy_text(char *destination, size_t size, const char *source)
 {
@@ -290,18 +300,106 @@ static int node_set_io(void *object SPA_UNUSED, uint32_t id SPA_UNUSED,
 	return -ENOENT;
 }
 
+static int set_release_timer(struct impl *self, uint64_t release)
+{
+	struct itimerspec timer = { 0 };
+
+	if (release != UINT64_MAX) {
+		timer.it_value.tv_sec = (time_t)(release / SPA_NSEC_PER_SEC);
+		timer.it_value.tv_nsec = (long)(release % SPA_NSEC_PER_SEC);
+	}
+	return spa_system_timerfd_settime(self->data_system,
+			self->timer_source.fd, SPA_FD_TIMER_ABSTIME, &timer, NULL);
+}
+
+static uint64_t release_after(const struct cadence *cadence, uint64_t now)
+{
+	uint64_t sequence;
+	__uint128_t elapsed;
+
+	if (cadence->ended)
+		return UINT64_MAX;
+	if (cadence->next_pts > now)
+		return cadence->next_pts;
+	elapsed = (__uint128_t)(now - cadence->epoch) * cadence->rate.num;
+	sequence = (uint64_t)(elapsed /
+			((__uint128_t)SPA_NSEC_PER_SEC * cadence->rate.denom)) + 1u;
+	if (sequence < cadence->next_sequence)
+		sequence = cadence->next_sequence;
+	return sequence_pts(cadence, sequence);
+}
+
+static void timer_ready(struct spa_source *source)
+{
+	struct impl *self = source->data;
+	uint64_t expirations, now = 0;
+	int res;
+
+	if (SPA_UNLIKELY(source->rmask & (SPA_IO_ERR | SPA_IO_HUP))) {
+		spa_log_error(self->log, "release timer error: 0x%08x",
+				source->rmask);
+		return;
+	}
+	if (!(source->rmask & SPA_IO_IN))
+		return;
+	if ((res = spa_system_timerfd_read(self->data_system, source->fd,
+			&expirations)) < 0) {
+		if (res != -EAGAIN)
+			spa_log_error(self->log, "release timer read failed: %s",
+					spa_strerror(res));
+		return;
+	}
+	if (!self->started)
+		return;
+	if (self->port.io != NULL &&
+			self->port.io->status == SPA_STATUS_HAVE_DATA) {
+		self->discontinuity = true;
+		if (monotonic_nsec(&now) == 0)
+			(void) set_release_timer(self,
+					release_after(&self->cadence, now));
+		return;
+	}
+	res = node_process(self);
+	if (res < 0) {
+		spa_log_error(self->log, "timed FITS publication failed: %s",
+				spa_strerror(res));
+		(void) set_release_timer(self, UINT64_MAX);
+		return;
+	}
+	if (res != SPA_STATUS_OK)
+		spa_node_call_ready(&self->callbacks, res);
+	if (monotonic_nsec(&now) == 0)
+		(void) set_release_timer(self,
+				release_after(&self->cadence, now));
+}
+
+static int remove_timer_source(struct spa_loop *loop SPA_UNUSED,
+		bool async SPA_UNUSED, uint32_t seq SPA_UNUSED,
+		const void *data SPA_UNUSED, size_t size SPA_UNUSED, void *user_data)
+{
+	struct impl *self = user_data;
+
+	if (self->timer_source.loop != NULL)
+		return spa_loop_remove_source(self->data_loop, &self->timer_source);
+	return 0;
+}
+
 static int stop_source(struct impl *self)
 {
+	int res = 0;
+
 	if (!self->started)
 		return 0;
 	self->started = false;
-	return 0;
+	if (self->timerfd_readiness)
+		res = set_release_timer(self, UINT64_MAX);
+	return res;
 }
 
 static int node_send_command(void *object, const struct spa_command *command)
 {
 	struct impl *self = object;
-	uint64_t now;
+	uint64_t now = 0;
 	int res;
 
 	switch (SPA_NODE_COMMAND_ID(command)) {
@@ -315,6 +413,12 @@ static int node_send_command(void *object, const struct spa_command *command)
 			return res;
 		cadence_start(&self->cadence, &self->rate, now);
 		self->started = true;
+		if (self->timerfd_readiness &&
+				(res = set_release_timer(self,
+					self->cadence.next_pts)) < 0) {
+			self->started = false;
+			return res;
+		}
 		return 0;
 	case SPA_NODE_COMMAND_Pause:
 	case SPA_NODE_COMMAND_Suspend:
@@ -710,7 +814,7 @@ static int node_process(void *object)
 	struct pwao_image_frame publication;
 	struct buffer *output;
 	struct spa_data *data;
-	uint64_t now, sequence, sample, pts;
+	uint64_t now = 0, sequence, sample, pts;
 	uint32_t size;
 	bool discontinuity;
 	int res;
@@ -811,6 +915,18 @@ static int clear(struct spa_handle *handle)
 	if (self->port.n_buffers != 0 &&
 			(res = release_buffers(self)) < 0 && first_error == 0)
 		first_error = res;
+	if (self->timer_source.loop != NULL) {
+		res = spa_loop_locked(self->data_loop, remove_timer_source, 0,
+				NULL, 0, self);
+		if (res < 0 && first_error == 0)
+			first_error = res;
+	}
+	if (self->timer_source.fd >= 0) {
+		res = spa_system_close(self->data_system, self->timer_source.fd);
+		if (res < 0 && first_error == 0)
+			first_error = res;
+		self->timer_source.fd = -1;
+	}
 	fits_cube_close(self->cube);
 	self->cube = NULL;
 	return first_error;
@@ -854,6 +970,7 @@ static void configure_props(struct impl *self)
 	ADD_ITEM(SPA_KEY_API_FITS_IO_MODE, self->io_mode_text);
 	ADD_ITEM(SPA_KEY_API_FITS_PREFAULT, self->prefault_text);
 	ADD_ITEM(SPA_KEY_API_FITS_LOOP, self->loop_text);
+	ADD_ITEM(SPA_KEY_API_FITS_READINESS, self->readiness_text);
 #undef ADD_ITEM
 	self->props = SPA_DICT_INIT(self->prop_items, n);
 }
@@ -875,9 +992,14 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 
 	spa_return_val_if_fail(handle != NULL, -EINVAL);
 	memset(self, 0, sizeof(*self));
+	self->timer_source.fd = -1;
 	self->handle.get_interface = get_interface;
 	self->handle.clear = clear;
 	self->log = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
+	self->data_loop = spa_support_find(support, n_support,
+			SPA_TYPE_INTERFACE_DataLoop);
+	self->data_system = spa_support_find(support, n_support,
+			SPA_TYPE_INTERFACE_DataSystem);
 	value = info == NULL ? NULL : spa_dict_lookup(info, SPA_KEY_API_FITS_PATH);
 	if (copy_text(self->path, sizeof(self->path), value) < 0)
 		return -EINVAL;
@@ -914,6 +1036,16 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	value = spa_dict_lookup(info, SPA_KEY_API_FITS_LOOP);
 	if (parse_bool(value, true, &self->loop) < 0)
 		return -EINVAL;
+	value = spa_dict_lookup(info, SPA_KEY_API_FITS_READINESS);
+	if (value == NULL || spa_streq(value, "poll"))
+		self->timerfd_readiness = false;
+	else if (spa_streq(value, "timerfd"))
+		self->timerfd_readiness = true;
+	else
+		return -EINVAL;
+	if (self->timerfd_readiness &&
+			(self->data_loop == NULL || self->data_system == NULL))
+		return -ENOTSUP;
 	options.path = self->path;
 	if ((res = fits_cube_open(&self->cube, &options, message,
 			sizeof(message))) < 0) {
@@ -940,13 +1072,35 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 			options.prefault ? "true" : "false");
 	snprintf(self->loop_text, sizeof(self->loop_text), "%s",
 			self->loop ? "true" : "false");
+	snprintf(self->readiness_text, sizeof(self->readiness_text), "%s",
+			self->timerfd_readiness ? "timerfd" : "poll");
+	if (self->timerfd_readiness) {
+		self->timer_source.func = timer_ready;
+		self->timer_source.data = self;
+		self->timer_source.mask = SPA_IO_IN | SPA_IO_ERR | SPA_IO_HUP;
+		self->timer_source.fd = spa_system_timerfd_create(self->data_system,
+				CLOCK_MONOTONIC, SPA_FD_CLOEXEC | SPA_FD_NONBLOCK);
+		if (self->timer_source.fd < 0) {
+			res = self->timer_source.fd;
+			goto error;
+		}
+		if ((res = spa_loop_add_source(self->data_loop,
+				&self->timer_source)) < 0) {
+			(void) spa_system_close(self->data_system,
+					self->timer_source.fd);
+			self->timer_source.fd = -1;
+			goto error;
+		}
+	}
 	spa_hook_list_init(&self->hooks);
 	self->node.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Node,
 			SPA_VERSION_NODE, &node_methods, self);
 	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS;
 	self->info = SPA_NODE_INFO_INIT();
 	self->info.max_output_ports = 1;
-	self->info.flags = SPA_NODE_FLAG_RT | SPA_NODE_FLAG_POLL_DRIVER;
+	self->info.flags = SPA_NODE_FLAG_RT;
+	if (!self->timerfd_readiness)
+		self->info.flags |= SPA_NODE_FLAG_POLL_DRIVER;
 	configure_props(self);
 	self->info.props = &self->props;
 	self->port.info_all = SPA_PORT_CHANGE_MASK_FLAGS |

@@ -6,6 +6,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <pipewire/loop.h>
+#include <pipewire/pipewire.h>
 #include <spa/buffer/meta.h>
 #include <spa/node/io.h>
 #include <spa/node/node.h>
@@ -26,6 +28,26 @@ struct param_result {
 	uint8_t *storage;
 	size_t capacity;
 	struct spa_pod *param;
+	uint64_t node_flags;
+	const char *readiness;
+};
+
+struct readiness_state {
+	uint32_t ready_calls;
+};
+
+static int on_ready(void *data, int status)
+{
+	struct readiness_state *state = data;
+
+	spa_assert_se(status == SPA_STATUS_HAVE_DATA);
+	state->ready_calls++;
+	return 0;
+}
+
+static const struct spa_node_callbacks node_callbacks = {
+	.version = SPA_VERSION_NODE_CALLBACKS,
+	.ready = on_ready,
 };
 
 struct test_buffer {
@@ -59,6 +81,17 @@ static void on_result(void *data, int seq SPA_UNUSED, int res,
 	}
 	memcpy(capture->storage, params->param, size);
 	capture->param = (struct spa_pod *)capture->storage;
+}
+
+static void on_info(void *data, const struct spa_node_info *info)
+{
+	struct param_result *capture = data;
+
+	if (info->change_mask & SPA_NODE_CHANGE_MASK_FLAGS)
+		capture->node_flags = info->flags;
+	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS)
+		capture->readiness = spa_dict_lookup(info->props,
+				SPA_KEY_API_BGAPI2_READINESS);
 }
 
 static bool props_have_values(struct spa_pod *props)
@@ -130,6 +163,7 @@ static struct spa_pod *build_control_write(uint8_t *storage, size_t size,
 
 static const struct spa_node_events node_events = {
 	.version = SPA_VERSION_NODE_EVENTS,
+	.info = on_info,
 	.result = on_result,
 };
 
@@ -188,10 +222,11 @@ static uint64_t monotonic_nsec(void)
 }
 
 static int capture(const struct spa_handle_factory *factory,
-		const char *producer)
+		const char *producer, const char *readiness)
 {
 	const struct spa_dict_item items[] = {
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_BGAPI2_PRODUCER, producer),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_BGAPI2_READINESS, readiness),
 	};
 	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
 	struct test_buffer storage[REQUESTED_BUFFERS] = { 0 };
@@ -201,7 +236,11 @@ static int capture(const struct spa_handle_factory *factory,
 		.buffer_id = SPA_ID_INVALID,
 	};
 	struct param_result params = { .expected = SPA_ID_INVALID };
+	struct readiness_state readiness_state = { 0 };
 	struct spa_hook listener;
+	struct pw_loop *loop = NULL;
+	struct spa_support support[2];
+	uint32_t n_support = 0;
 	struct spa_handle *handle;
 	struct spa_node *node = NULL;
 	struct spa_video_info_raw video = { 0 };
@@ -218,17 +257,42 @@ static int capture(const struct spa_handle_factory *factory,
 	uint32_t frames = 0, i;
 	int res;
 
+	if (spa_streq(readiness, "eventfd")) {
+		loop = pw_loop_new(NULL);
+		spa_assert_se(loop != NULL);
+		pw_loop_enter(loop);
+		support[n_support++] = (struct spa_support) {
+			.type = SPA_TYPE_INTERFACE_DataLoop,
+			.data = loop->loop,
+		};
+		support[n_support++] = (struct spa_support) {
+			.type = SPA_TYPE_INTERFACE_DataSystem,
+			.data = loop->system,
+		};
+	}
+
 	handle = calloc(1, factory->get_size(factory, &info));
 	spa_assert_se(handle != NULL);
-	res = factory->init(factory, handle, &info, NULL, 0);
+	res = factory->init(factory, handle, &info, support, n_support);
 	if (res < 0) {
 		free(handle);
+		if (loop != NULL) {
+			pw_loop_leave(loop);
+			pw_loop_destroy(loop);
+		}
 		return 77;
 	}
 	spa_assert_se(spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Node,
 			(void **)&node) == 0);
 	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
 			&params) == 0);
+	spa_assert_se(params.readiness != NULL &&
+			spa_streq(params.readiness, readiness));
+	spa_assert_se((params.node_flags & SPA_NODE_FLAG_POLL_DRIVER) ==
+			(spa_streq(readiness, "poll") ?
+					SPA_NODE_FLAG_POLL_DRIVER : 0));
+	spa_assert_se(spa_node_set_callbacks(node, &node_callbacks,
+			&readiness_state) == 0);
 	prop_info = enum_node_one(node, &params, SPA_PARAM_PropInfo);
 	spa_assert_se(spa_pod_parse_object(prop_info, SPA_TYPE_OBJECT_PropInfo, NULL,
 			SPA_PROP_INFO_name, SPA_POD_String(&property_name)) >= 0);
@@ -283,8 +347,12 @@ static int capture(const struct spa_handle_factory *factory,
 	while (frames < REQUESTED_FRAMES) {
 		uint32_t id;
 
-		res = spa_node_process(node);
-		spa_assert_se(res >= SPA_STATUS_OK);
+		if (loop != NULL)
+			spa_assert_se(pw_loop_iterate(loop, 1000) >= 0);
+		else {
+			res = spa_node_process(node);
+			spa_assert_se(res >= SPA_STATUS_OK);
+		}
 		if (io.status != SPA_STATUS_HAVE_DATA) {
 			spa_assert_se(monotonic_nsec() < deadline);
 			continue;
@@ -327,6 +395,11 @@ static int capture(const struct spa_handle_factory *factory,
 	spa_hook_remove(&listener);
 	spa_assert_se(handle->clear(handle) == 0);
 	free(handle);
+	if (loop != NULL) {
+		spa_assert_se(readiness_state.ready_calls >= REQUESTED_FRAMES);
+		pw_loop_leave(loop);
+		pw_loop_destroy(loop);
+	}
 	free(params.storage);
 	for (i = 0; i < REQUESTED_BUFFERS; i++)
 		free(storage[i].payload);
@@ -341,7 +414,8 @@ int main(int argc, char *argv[])
 	void *library;
 	int res;
 
-	spa_assert_se(argc == 3);
+	spa_assert_se(argc == 3 || argc == 4);
+	pw_init(&argc, &argv);
 	library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
 	spa_assert_se(library != NULL);
 	enumerate = (spa_handle_factory_enum_func_t)dlsym(library,
@@ -352,7 +426,8 @@ int main(int argc, char *argv[])
 			break;
 	spa_assert_se(factory != NULL &&
 			spa_streq(factory->name, SPA_NAME_API_BGAPI2_SOURCE));
-	res = capture(factory, argv[2]);
+	res = capture(factory, argv[2], argc == 4 ? argv[3] : "poll");
 	spa_assert_se(dlclose(library) == 0);
+	pw_deinit();
 	return res;
 }

@@ -49,8 +49,7 @@ The `api.bgapi2.source` factory provides complete-frame capture with:
 - an explicit GenTL producer path and optional interface, device, and stream
   indices;
 - standard SPA node, port, format, buffer, metadata, I/O, and command methods;
-- `node.driver=true` with immutable `SPA_NODE_FLAG_POLL_DRIVER` execution on a
-  configured busy-spin data loop;
+- `node.driver=true` with selectable `poll` or `eventfd` readiness;
 - ordinary `SPA_IO_Buffers` output and normal graph-ready dependency scheduling;
 - mapped `MemPtr` or `MemFd` buffers announced directly to BGAPI2, with no
   image copy;
@@ -88,9 +87,23 @@ model.
 BGAPI2's new-buffer event handler runs on a vendor-owned thread. It reads the
 completed buffer's owner and dynamic frame metadata, then publishes one
 fixed-size completion descriptor through SPA's cache-line-isolated SPSC ring.
-The source's polling data loop is the sole consumer and remains responsible for
-validating and publishing the frame. A successful publication starts one
-regular PipeWire graph cycle.
+The source data loop is the sole consumer and remains responsible for validating
+and publishing the frame. A successful publication starts one regular PipeWire
+graph cycle.
+
+`api.bgapi2.readiness` selects how that consumer runs:
+
+| Value | Behavior |
+| --- | --- |
+| `poll` (default) | Report `SPA_NODE_FLAG_POLL_DRIVER`; a busy-spin data loop probes the SPSC only after the previous graph cycle completes. |
+| `eventfd` | Do not report `POLL_DRIVER`; the vendor callback writes an eventfd after publishing the SPSC entry and the ordinary data loop publishes the completed frame. |
+
+Both profiles retain the callback/SPSC boundary and are zero-copy for image
+payloads. `eventfd` needs `DataLoop` and `DataSystem` SPA support and fails with
+`ENOTSUP` when they are absent. Under overload, normal asynchronous PipeWire
+ready semantics can report an xrun or drop a completion while a previous cycle
+is active. `poll` serializes source publication with graph completion and is the
+profile for the lowest wake latency; `eventfd` avoids dedicating a spinning CPU.
 
 The source intentionally has no row-block profile. The
 camera-adapter benchmark retains timeout-zero `GetFilledBuffer` only as a
@@ -101,12 +114,13 @@ The ring contains at most the 64 buffers accepted by the camera adapter;
 overflow is a fatal acquisition error, not a lossy overwrite. An overflow would
 mean the vendor delivered more unique completions than the announced pool can
 contain.
-The event handler is installed at Start and synchronously removed after
+The vendor event handler is installed at Start and synchronously removed after
 acquisition stops on Pause or Suspend. Restart creates an empty completion
-queue before the handler is enabled again.
+queue and drains stale readiness notifications before the handler is enabled
+again.
 
 Returning a downstream lease still calls `BGAPI2_DataStream_QueueBuffer` from
-the polling owner. This preserves direct buffer ownership and avoids another bridge
+the data-loop owner. This preserves direct buffer ownership and avoids another bridge
 thread, but the GenTL producer's queue implementation is part of the real-time
 contract. Each process duty publishes one ready completion before returning
 released leases. Queue latency therefore consumes future pool headroom instead
@@ -175,8 +189,8 @@ strategies:
 Euresys still allocated while the callback queried metadata for each actual
 frame. Those calls now run on the vendor event thread. Both producers made an
 allocation-bearing `DSQueueBuffer` call for each of the nine returned leases.
-The source is therefore qualified for allocation-free empty user-space polling, but it
-is not qualified for a strict zero-allocation BusySpin process path.
+The source is therefore qualified for allocation-free empty user-space polling,
+but it is not qualified for a strict zero-allocation busy-spin process path.
 
 The experiment used a debug-optimized build without LTO. Whole-process totals
 include SDK loading, camera discovery, XML parsing, and test setup, so they are

@@ -57,6 +57,34 @@ int main(int argc, char *argv[])
 				&info, NULL, 0) == -EINVAL);
 		free(handle);
 	}
+	{
+		const struct spa_dict_item items[] = {
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_BGAPI2_PRODUCER, "/invalid.cti"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_BGAPI2_READINESS, "invalid"),
+		};
+		const struct spa_dict info = SPA_DICT_INIT(items,
+				SPA_N_ELEMENTS(items));
+		struct spa_handle *handle = calloc(1,
+				source_factory->get_size(source_factory, &info));
+		spa_assert_se(handle != NULL);
+		spa_assert_se(source_factory->init(source_factory, handle,
+				&info, NULL, 0) == -EINVAL);
+		free(handle);
+	}
+	{
+		const struct spa_dict_item items[] = {
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_BGAPI2_PRODUCER, "/invalid.cti"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_BGAPI2_READINESS, "eventfd"),
+		};
+		const struct spa_dict info = SPA_DICT_INIT(items,
+				SPA_N_ELEMENTS(items));
+		struct spa_handle *handle = calloc(1,
+				source_factory->get_size(source_factory, &info));
+		spa_assert_se(handle != NULL);
+		spa_assert_se(source_factory->init(source_factory, handle,
+				&info, NULL, 0) == -ENOTSUP);
+		free(handle);
+	}
 	spa_assert_se(dlclose(library) == 0);
 	return 0;
 }

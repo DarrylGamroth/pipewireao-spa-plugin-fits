@@ -416,7 +416,9 @@ wakeup path, not to eventfd alone. The result is not a general
 copy-versus-lease performance comparison.
 
 This in-process test verifies graph semantics, not physical data-loop or CPU
-isolation. Format renegotiation and destruction with outstanding leases,
-fixed-arrival latency distributions, controlled-host placement, automated
-producer-path syscall enforcement, and representative ndarray sizes remain
-open.
+isolation. The live suite now separately covers copy and lease teardown while
+empty, queued, in-flight/completing, and backpressured; retained-observer
+destruction and reattachment; and input-format/link removal followed by output
+recreation and resumed delivery. Fixed-arrival latency distributions,
+controlled-host placement, automated producer-path syscall enforcement, and
+representative ndarray sizes remain open.
