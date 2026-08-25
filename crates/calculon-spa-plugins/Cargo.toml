@@ -10,7 +10,7 @@ description = "Loadable PipeWire SPA nodes for Calculon adaptive-optics processi
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-calculon-algorithms = { path = "../../../calculon-algorithms/crates/calculon-algorithms", default-features = false }
+calculon-algorithms = { path = "../../../calculon-algorithms/crates/calculon-algorithms", default-features = false, features = ["oxiblas"] }
 calculon-spa-node = { path = "../calculon-spa-node" }
 libc.workspace = true
 libspa.workspace = true

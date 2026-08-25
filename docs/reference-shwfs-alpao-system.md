@@ -127,6 +127,26 @@ For the 468-actuator capture interface, use the existing
 science matrix and detector/subaperture profile are required before claiming a
 full 468-actuator scientific-system latency result.
 
+## Dimension-representative CPU and memory profile
+
+On 2026-08-25, the reference harness was expanded to run a synthetic 512x512
+detector, 4096 tiled 8x8 regions, 8192 slopes, 468 actuators, and a dense
+15,335,424-byte reconstruction allocation. A 270-cell PMU campaign compared
+the scalar and OxiBLAS GEMV paths across default, prefaulted, and locked memory
+and base, transparent, and explicit-huge-page allocator policies.
+
+The scalar dot product consumed 83.03% of sampled cycles. Enabling Calculon's
+existing OxiBLAS feature reduced median raw-frame-to-mock-sink service time
+from 3.176 ms to 1.096 ms, a 2.90x speedup. Prefaulting and locking did not
+materially change warmed service time. Explicit HugeTLB pages reduced L2 DTLB
+misses by 99.5% but did not improve latency; the host's base policy already
+gave the large allocation 38 MiB of transparent huge pages.
+
+See [Calculon full-system CPU and memory profiling](calculon-system-profiling.md)
+for the method, raw evidence, callgraphs, page-fault caveat, and deployment
+recommendations. This remains a direct-call synthetic service-time result, not
+a scheduler, device, scientific-validity, or deadline qualification.
+
 ## Local plumbing snapshot
 
 On 2026-08-24, a release build on an AMD Ryzen 7 6800H running Linux
