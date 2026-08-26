@@ -202,6 +202,20 @@ eGrabber remain polling sources; eGrabber publishes either complete video
 frames or copied, complete row-block ndarrays. ALPAO is an ordinary scheduled
 follower and accepts `SPA_IO_Buffers`.
 
+The EDT PDV source is also a polling source. It probes EDT's cumulative DMA
+completion count without blocking and copies the latest completed raw EDT ring
+buffer into a graph-owned SPA buffer. This copy is the ownership boundary
+between EDT's continuously reused DMA ring and the graph. Sequence gaps,
+timeouts, and overruns are surfaced through standard frame metadata.
+
+The FliSdk source is a polling source with an asynchronous vendor callback at
+its device boundary. It disables FliSdk's internal ring buffer and requests the
+callback before FliSdk's ring copy. The callback copies directly from the
+frame-grabber image into an available graph-owned SPA buffer under a bounded
+buffer-state handoff. The polling graph thread publishes completed buffers;
+callbacks never call graph hooks. A missing free SPA buffer drops that frame,
+and the callback sequence makes the gap visible as a Header discontinuity.
+
 A polled source does not bypass the graph. One successful source publication
 starts one normal graph cycle; the source is not probed again until the graph's
 completion dependency returns to the driver. Local poll drivers require a
@@ -237,7 +251,9 @@ pipewireao-spa-plugins/
 ├── spa/
 │   └── plugins/
 │       ├── alpao/
+│       ├── andor3/
 │       ├── bgapi2/
+│       ├── edtpdv/
 │       └── egrabber/
 └── tests/
 ```
@@ -298,6 +314,11 @@ The eGrabber and BGAPI2 sources satisfied this gate on 2026-08-23. Both build
 only against the public `libspa-ao-0.2` package, and their complete connected
 camera matrix passes from this repository. Their factory identities and SPA
 install paths did not change during migration.
+
+The Andor SDK3 source follows the same public SPA boundary but uses SDK3's
+typed feature API directly. It preserves SDK3 feature identifiers and units
+under `andor3.*`; the GenICam-like shape of the vendor GUI does not make SDK3 a
+GenApi node map.
 
 ## Validation matrix
 

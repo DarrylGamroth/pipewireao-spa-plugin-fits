@@ -181,6 +181,24 @@ int main(int argc, char **argv) {
     backend->set_string(sensibility, "High");
     assert(serial.last_command == "set sensibility high");
 
+    backend->set_integer(feature(*backend, "SoftwareSynchro"), 1);
+    assert(serial.last_command == "set swsynchro on");
+    backend->set_integer(feature(*backend, "NbFramesPerSwTrig"), 4);
+    assert(serial.last_command == "set nbframesperswtrig 4");
+    backend->set_string(feature(*backend, "TriggerSource"), "Software");
+    assert(serial.last_command == "set swsynchro source swtrig");
+    backend->execute(feature(*backend, "TriggerSoftware"));
+    assert(serial.last_command == "swtrig");
+
+    backend->set_integer(feature(*backend, "UnsignedPixels"), 1);
+    assert(serial.last_command == "set unsigned on");
+    backend->set_string(feature(*backend, "HdrCalibration"), "C2");
+    assert(serial.last_command == "set hdr calibration c2");
+    backend->set_string(feature(*backend, "Tuning"), "ShortExposure");
+    assert(serial.last_command == "set tuning short_exposure");
+    backend->set_integer(feature(*backend, "TargetTemperature"), -45);
+    assert(serial.last_command == "set temperatures snake -45");
+
     backend->execute(feature(*backend, "ContinueAfterError"));
     assert(serial.last_command == "continue");
 

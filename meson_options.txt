@@ -76,6 +76,62 @@ option(
 )
 
 option(
+  'edtpdv',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the EDT PDV SPA source',
+)
+
+option(
+  'edtpdv-prefix',
+  type: 'string',
+  value: '/opt/EDTpdv',
+  description: 'Installed EDT PDV SDK prefix',
+)
+
+option(
+  'edtpdv-deb',
+  type: 'string',
+  value: '',
+  description: 'EDT PDV Debian package to extract as the build SDK',
+)
+
+option(
+  'flisdk',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the First Light Imaging FliSdk SPA source',
+)
+
+option(
+  'flisdk-prefix',
+  type: 'string',
+  value: '/opt/FirstLightImaging/FliSdk',
+  description: 'Installed FliSdk prefix',
+)
+
+option(
+  'flisdk-run',
+  type: 'string',
+  value: '',
+  description: 'FliSdk .run bundle to extract as the development SDK',
+)
+
+option(
+  'andor3',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the Andor SDK3 SPA source',
+)
+
+option(
+  'andor3-prefix',
+  type: 'string',
+  value: '/usr/local',
+  description: 'Andor SDK3 installation or unpacked SDK prefix',
+)
+
+option(
   'aravis',
   type: 'feature',
   value: 'disabled',

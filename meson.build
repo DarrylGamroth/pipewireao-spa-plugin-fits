@@ -91,6 +91,135 @@ if bgapi2_found
   subdir('spa/plugins/bgapi2')
 endif
 
+edtpdv_found = false
+if get_option('edtpdv').allowed()
+  edtpdv_deb = get_option('edtpdv-deb')
+  if edtpdv_deb != ''
+    dpkg_deb = find_program('dpkg-deb', required: get_option('edtpdv'))
+    sha256sum = find_program('sha256sum', required: get_option('edtpdv'))
+    edtpdv_deb_hash = run_command(
+      sha256sum,
+      edtpdv_deb,
+      check: true,
+    ).stdout().strip().split()[0]
+    edtpdv_extract = meson.current_build_dir() / (
+      'edtpdv-sdk-' + edtpdv_deb_hash
+    )
+    run_command(
+      dpkg_deb,
+      '--extract',
+      edtpdv_deb,
+      edtpdv_extract,
+      check: true,
+    )
+    edtpdv_prefix = edtpdv_extract / 'opt/EDTpdv'
+    edtpdv_install_rpath = '/opt/EDTpdv'
+  else
+    edtpdv_prefix = get_option('edtpdv-prefix')
+    edtpdv_install_rpath = edtpdv_prefix
+  endif
+  edtpdv_library = cc.find_library(
+    'pdv',
+    dirs: [edtpdv_prefix],
+    required: get_option('edtpdv'),
+  )
+  edtpdv_dep = declare_dependency(
+    compile_args: ['-I' + edtpdv_prefix],
+    dependencies: [edtpdv_library, m_dep, threads_dep],
+  )
+  edtpdv_found = edtpdv_library.found() and cc.has_header(
+    'libpdv.h',
+    dependencies: edtpdv_dep,
+    required: get_option('edtpdv'),
+  )
+endif
+subdir('spa/plugins/edtpdv')
+
+flisdk_found = false
+if get_option('flisdk').allowed()
+  flisdk_run = get_option('flisdk-run')
+  flisdk_runtime_prefix = get_option('flisdk-prefix')
+  if flisdk_run != ''
+    flisdk_python = import('python').find_installation('python3')
+    sha256sum = find_program('sha256sum', required: get_option('flisdk'))
+    flisdk_run_hash = run_command(
+      sha256sum,
+      flisdk_run,
+      check: true,
+    ).stdout().strip().split()[0]
+    flisdk_prefix = meson.current_build_dir() / (
+      'flisdk-sdk-' + flisdk_run_hash
+    )
+    run_command(
+      flisdk_python,
+      files('scripts/extract-flisdk.py'),
+      flisdk_run,
+      flisdk_prefix,
+      check: true,
+    )
+  else
+    flisdk_prefix = flisdk_runtime_prefix
+  endif
+  flisdk_library = cc.find_library(
+    'FliSdk',
+    dirs: [flisdk_prefix / 'lib/release'],
+    required: get_option('flisdk'),
+  )
+  flisdk_dep = declare_dependency(
+    compile_args: ['-isystem' + (flisdk_prefix / 'include')],
+    dependencies: flisdk_library,
+  )
+  flisdk_found = flisdk_library.found()
+  foreach flisdk_header : ['FliSdk_C_V2.h', 'FliSerialCamera_C.h']
+    flisdk_found = flisdk_found and cc.has_header(
+      flisdk_header,
+      dependencies: flisdk_dep,
+      required: get_option('flisdk'),
+    )
+  endforeach
+  flisdk_install_rpath = ':'.join([
+    flisdk_runtime_prefix / 'lib/release',
+    flisdk_runtime_prefix / '3rdParty',
+  ])
+endif
+subdir('spa/plugins/flisdk')
+
+andor3_found = false
+if get_option('andor3').allowed()
+  andor3_prefix = get_option('andor3-prefix')
+  if fs.exists(andor3_prefix / 'inc/atcore.h')
+    andor3_include_dir = andor3_prefix / 'inc'
+  else
+    andor3_include_dir = andor3_prefix / 'include'
+  endif
+  if fs.is_dir(andor3_prefix / 'x86_64')
+    andor3_library_dir = andor3_prefix / 'x86_64'
+  else
+    andor3_library_dir = andor3_prefix / 'lib'
+  endif
+  andor3_python = import('python').find_installation('python3')
+  andor3_runtime_dir = meson.current_build_dir() / 'andor3-runtime'
+  andor3_core = run_command(
+    andor3_python,
+    files('scripts/prepare-andor3.py'),
+    andor3_library_dir,
+    andor3_runtime_dir,
+    check: get_option('andor3').enabled(),
+  )
+  if andor3_core.returncode() == 0
+    andor3_dep = declare_dependency(
+      compile_args: ['-isystem' + andor3_include_dir],
+      link_args: [andor3_core.stdout().strip()],
+    )
+    andor3_found = cc.has_header(
+      'atcore.h',
+      dependencies: andor3_dep,
+      required: get_option('andor3'),
+    )
+  endif
+endif
+subdir('spa/plugins/andor3')
+
 aravis_dep = dependency('aravis-0.10', required: get_option('aravis'))
 aravis_found = aravis_dep.found()
 if aravis_found
@@ -105,5 +234,8 @@ endif
 
 summary('eGrabber plugin', egrabber_found, section: 'SPA plugins')
 summary('BGAPI2 plugin', bgapi2_found, section: 'SPA plugins')
+summary('EDT PDV plugin', edtpdv_found, section: 'SPA plugins')
+summary('FliSdk plugin', flisdk_found, section: 'SPA plugins')
+summary('Andor SDK3 plugin', andor3_found, section: 'SPA plugins')
 summary('Aravis experimental plugin', aravis_found, section: 'SPA plugins')
 summary('FITS cube source', fits_found, section: 'SPA plugins')

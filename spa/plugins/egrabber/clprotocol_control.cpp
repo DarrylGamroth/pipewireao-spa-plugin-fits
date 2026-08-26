@@ -358,8 +358,7 @@ public:
                 const auto actual = get_string(**feature);
                 if (actual != *options.camera_serial)
                     throw std::runtime_error(
-                        "attached camera serial does not match "
-                        "api.egrabber.camera-serial " +
+                        "attached camera serial does not match configured serial " +
                         *options.camera_serial + " (reported " +
                         (actual.empty() ? "no serial" : actual) + ")");
             }
@@ -645,7 +644,8 @@ private:
             }
         };
         visit_category("Root");
-        if (std::getenv("EGRABBER_CLPROTOCOL_DEBUG")) {
+        if (std::getenv("GENICAM_CLPROTOCOL_DEBUG") ||
+                std::getenv("EGRABBER_CLPROTOCOL_DEBUG")) {
             std::cerr << "CLProtocol feature nodes:";
             for (const auto &name : names) std::cerr << ' ' << name;
             std::cerr << '\n';
@@ -731,8 +731,8 @@ std::unique_ptr<ControlBackend> make_clprotocol_control_backend(
     const auto libraries = discover_clprotocol_libraries(options);
     if (libraries.empty())
         throw std::runtime_error("no CLProtocol backend libraries were found; set "
-                                 "GENICAM_CLPROTOCOL or "
-                                 "api.egrabber.clprotocol-libraries");
+                                 "GENICAM_CLPROTOCOL or the plugin's "
+                                 "clprotocol-libraries property");
     std::ostringstream failures;
     for (const auto &library : libraries) {
         try {

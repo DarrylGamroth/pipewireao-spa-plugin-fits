@@ -5,7 +5,9 @@ for PipeWireAO. Each plugin is a loadable shared object that exports ordinary
 SPA factories and uses PipeWireAO's installed public SPA interfaces.
 
 The supported device integrations are `api.alpao.sink`,
-`api.egrabber.source`, and `api.bgapi2.source`. `api.fits.source` provides
+`api.egrabber.source`, `api.bgapi2.source`, `api.edtpdv.source`, and
+`api.flisdk.source`, and `api.andor3.source`.
+`api.fits.source` provides
 fixed-cadence vector and image-sequence playback from FITS arrays. The sources
 use PipeWireAO-owned image buffers and regular graph scheduling. eGrabber uses
 a configured polling data loop; BGAPI2 and FITS can instead select ordinary
@@ -67,6 +69,28 @@ locations. A development build may point Meson's `pkg_config_path` at a
 PipeWireAO `build/meson-uninstalled` directory; no source include flags are
 required.
 
+Build the EDT PDV source against the normally installed `/opt/EDTpdv` SDK with
+`-Dedtpdv=enabled`. For development without installing the vendor package,
+`-Dedtpdv-deb=~/edtpdv_6.2.1_amd64.deb` extracts a checksum-keyed build-tree
+SDK while keeping `/opt/EDTpdv` as the installed runtime location. See
+[EDT PDV camera source](spa/plugins/edtpdv/README.md) for its factory
+properties, supported raw formats, and qualification boundary.
+
+Build the First Light Imaging source against the normally installed
+`/opt/FirstLightImaging/FliSdk` SDK with `-Dflisdk=enabled`. For development,
+`-Dflisdk-run=~/FliSdk_2_9_3_Ubuntu_20_04_NoGui.run` extracts only the C/C++
+SDK payload without launching the vendor installer. See
+[FliSdk camera source](spa/plugins/flisdk/README.md) for capture ownership,
+factory properties, pixel signedness, and the hardware qualification boundary.
+
+Build the Andor SDK3 source against a normal host installation with
+`-Dandor3=enabled`. For the unpacked development bundle in `~/andor3`, use
+`-Dandor3-prefix=~/andor3`; the build creates a private runtime link farm for
+the bundle's versioned-only libraries. See
+[Andor SDK3 camera source](spa/plugins/andor3/README.md) for direct buffer
+ownership, supported pixel encodings, typed `andor3.*` features, and the
+qualification boundary.
+
 The `api.aravis.source` comparison implementation is retained as an
 experimental, opt-in plugin with `-Daravis=enabled`. It is not a supported RTC
 camera backend: measured completion polling through Aravis and Euresys
@@ -80,9 +104,12 @@ pool buffer. See [FITS sequence source](spa/plugins/fits/README.md) for axis,
 schema, cadence, `GRAY16_LE`, and optional mmap behavior.
 
 Optional Camera Link control through Grablink, CLProtocol, and the GenICam
-Reference Implementation is enabled with `-Dgenicam-root=PATH`. See
-[eGrabber Camera Link control](docs/egrabber-clprotocol.md) for its properties,
-two-level serial identity, and hardware qualification boundary.
+Reference Implementation is enabled with `-Dgenicam-root=PATH`. It supplies
+CLProtocol/GenApi control to both the eGrabber and FliSDK camera sources. See
+[eGrabber Camera Link control](docs/egrabber-clprotocol.md) for eGrabber properties,
+and the [FliSDK camera source](spa/plugins/flisdk/README.md) for the FliSDK serial
+adapter and its `api.flisdk.*` properties. The eGrabber guide also defines its
+two-level serial identity and hardware qualification boundary.
 
 The ASDK simulator smoke test also uses
 [alpao-binary-config](https://github.com/DarrylGamroth/alpao-binary-config) to
@@ -194,6 +221,9 @@ src/modules/                  out-of-tree PipeWire topology modules
 spa/plugins/alpao/            ALPAO SPA factories and optional SDK backend
 spa/plugins/egrabber/         Euresys camera manager, device, and source factories
 spa/plugins/bgapi2/           Baumer GAPI camera source factory
+spa/plugins/edtpdv/           EDT PCI DV/PDV Camera Link source factory
+spa/plugins/flisdk/           First Light Imaging FliSdk camera source factory
+spa/plugins/andor3/           Andor SDK3 camera source factory
 spa/plugins/aravis/           experimental Aravis GenTL comparison source
 spa/plugins/fits/             CFITSIO vector and image-sequence source factory
 spa/plugins/calculon/         Calculon SPA factory build and C ABI tests
