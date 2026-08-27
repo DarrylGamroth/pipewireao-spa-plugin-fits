@@ -363,6 +363,17 @@ static int capture(const struct spa_handle_factory *factory,
 	}
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, &io, sizeof(io)) == 0);
+	storage[0].buffer.n_metas = 0;
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			buffers, REQUESTED_BUFFERS) == -EINVAL);
+	storage[0].buffer.n_metas = 1;
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			buffers, REQUESTED_BUFFERS) == -EINVAL);
+	storage[0].buffer.n_metas = SPA_N_ELEMENTS(storage[0].metas);
+	storage[0].metas[1].size = sizeof(storage[0].acquisition) - 1u;
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			buffers, REQUESTED_BUFFERS) == -EINVAL);
+	storage[0].metas[1].size = sizeof(storage[0].acquisition);
 	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 			buffers, REQUESTED_BUFFERS) == 0);
 	props = enum_node_one(node, &params, SPA_PARAM_Props);

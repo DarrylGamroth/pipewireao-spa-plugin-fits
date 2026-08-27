@@ -1163,7 +1163,11 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 			: self->camera->payload_size();
 		if (buffers[i] == nullptr || buffers[i]->n_datas == 0 ||
 				(data = &buffers[i]->datas[0])->chunk == nullptr ||
-				data->maxsize < required)
+				data->maxsize < required ||
+				spa_buffer_find_meta_data(buffers[i], SPA_META_Header,
+					sizeof(struct spa_meta_header)) == nullptr ||
+				spa_buffer_find_meta_data(buffers[i], SPA_META_Acquisition,
+					sizeof(struct spa_meta_acquisition)) == nullptr)
 			return -EINVAL;
 		egrabber_pipewire::OfferedMemory type;
 		switch (data->type) {

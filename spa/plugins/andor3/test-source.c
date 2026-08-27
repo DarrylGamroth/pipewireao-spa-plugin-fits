@@ -233,6 +233,7 @@ int main(int argc, char *argv[])
 		struct spa_pod *props, *value, *write;
 		struct spa_pod_bool bool_value = SPA_POD_INIT_Bool(true);
 		struct spa_pod_long long_value = SPA_POD_INIT_Long(5);
+		struct spa_pod_long invalid_width = SPA_POD_INIT_Long(INT64_C(1) << 30);
 		struct spa_pod_long reset_width = SPA_POD_INIT_Long(4);
 		uint8_t write_storage[512];
 		const char *property_name = NULL;
@@ -265,6 +266,15 @@ int main(int argc, char *argv[])
 		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0, write) == -EBUSY);
 		spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 				NULL, 0) == 0);
+		write = build_control_write(write_storage, sizeof(write_storage),
+				"andor3.AOIWidth", &invalid_width.pod);
+		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
+				write) == -ENOTSUP);
+		spa_assert_se(spa_format_video_raw_parse(enum_one(node, &capture,
+				SPA_PARAM_Format), &video) >= 0);
+		spa_assert_se(video.size.width == 4 && video.size.height == 3);
+		write = build_control_write(write_storage, sizeof(write_storage),
+				"andor3.AOIWidth", &long_value.pod);
 		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0, write) == 0);
 		spa_assert_se(spa_format_video_raw_parse(enum_one(node, &capture,
 				SPA_PARAM_EnumFormat), &video) >= 0);

@@ -720,7 +720,9 @@ static int port_use_buffers(void *object, enum spa_direction direction,
 				(data = &buffers[i]->datas[0])->data == NULL ||
 				(data->type != SPA_DATA_MemPtr &&
 				 data->type != SPA_DATA_MemFd) ||
-				data->maxsize < required || data->chunk == NULL)
+				data->maxsize < required || data->chunk == NULL ||
+				spa_buffer_find_meta_data(buffers[i], SPA_META_Header,
+					sizeof(struct spa_meta_header)) == NULL)
 			return -EINVAL;
 	}
 	for (i = 0; i < n_buffers; i++)

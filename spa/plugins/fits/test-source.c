@@ -317,6 +317,14 @@ static void run_source(const struct spa_handle_factory *factory,
 		init_buffer(&storage[i], (uint32_t)payload_size);
 		buffers[i] = &storage[i].buffer;
 	}
+	storage[0].buffer.n_metas = 0;
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			buffers, N_BUFFERS) == -EINVAL);
+	storage[0].buffer.n_metas = SPA_N_ELEMENTS(storage[0].metas);
+	storage[0].metas[0].size = sizeof(storage[0].header) - 1u;
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			buffers, N_BUFFERS) == -EINVAL);
+	storage[0].metas[0].size = sizeof(storage[0].header);
 	res = spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 			buffers, N_BUFFERS);
 	spa_assert_se(res == 0);

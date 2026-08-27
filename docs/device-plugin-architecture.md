@@ -229,6 +229,25 @@ prepared. Pause, Suspend, final link removal, and destruction synchronously
 quiesce polling or fd readiness before SDK or buffer teardown, so lifecycle
 calls cannot overlap `process()`.
 
+A source SHALL reject a buffer pool in `port_use_buffers()` when any buffer
+lacks metadata that the source writes during publication, or when that metadata
+is smaller than its public SPA structure. It SHALL NOT accept the pool and then
+turn the same permanent admission error into a repeated data-loop failure.
+
+After a failed start discards a vendor producer queue, the plugin SHALL clear
+the corresponding local queued state before returning. A later `Start` must
+therefore offer every eligible buffer again instead of relying on queue state
+that the vendor has already discarded.
+
+A writable control that can change payload layout SHALL be failure-atomic with
+respect to the last advertised SPA format. The plugin SHALL read the old value,
+apply the requested value, refresh and validate the complete resulting layout,
+and publish new format parameters only after validation succeeds. If validation
+fails, it SHALL restore the old value and verify the restored layout. If that
+verification fails, the plugin SHALL invalidate its current format and refuse
+format enumeration, selection, and activation until a later successful layout
+control establishes a representable layout.
+
 The changing eGrabber camera allocation remains private in row-block mode.
 Only complete copied row-block ndarrays cross its output port. See
 [Scheduled nodes and row-block ndarrays](scheduled-node-migration.md).

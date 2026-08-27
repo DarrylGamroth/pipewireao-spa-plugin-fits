@@ -71,6 +71,7 @@ struct impl {
 	struct andor3_camera_info camera_info;
 	struct buffer_slot slots[MAX_BUFFERS];
 	uint32_t video_format;
+	bool layout_valid;
 	bool started;
 	bool discontinuity;
 	bool have_sequence;
@@ -240,10 +241,10 @@ static int parse_feature_value(enum andor3_feature_kind kind,
 	return -EINVAL;
 }
 
-static int refresh_layout_params(struct impl *self)
+static int read_layout(struct impl *self, struct andor3_camera_info *candidate,
+		uint32_t *format)
 {
 	const struct andor3_camera_info *info;
-	uint32_t format;
 	int res;
 
 	if ((res = andor3_camera_refresh_info(self->camera)) < 0)
@@ -251,10 +252,23 @@ static int refresh_layout_params(struct impl *self)
 	info = andor3_camera_get_info(self->camera);
 	if (info == NULL || info->payload_size > INT32_MAX ||
 			info->image_size > UINT32_MAX || info->stride > INT32_MAX ||
-			map_format(info, &format) < 0)
+			map_format(info, format) < 0)
 		return -ENOTSUP;
-	self->camera_info = *info;
+	*candidate = *info;
+	return 0;
+}
+
+static int refresh_layout_params(struct impl *self)
+{
+	struct andor3_camera_info candidate;
+	uint32_t format;
+	int res;
+
+	if ((res = read_layout(self, &candidate, &format)) < 0)
+		return res;
+	self->camera_info = candidate;
 	self->video_format = format;
+	self->layout_valid = true;
 	self->port.have_format = false;
 	self->port.params[0].flags ^= SPA_PARAM_INFO_SERIAL;
 	self->port.params[1].flags ^= SPA_PARAM_INFO_SERIAL;
@@ -264,17 +278,53 @@ static int refresh_layout_params(struct impl *self)
 	return 0;
 }
 
+static bool layout_matches(const struct andor3_camera_info *a,
+		const struct andor3_camera_info *b)
+{
+	return a->payload_size == b->payload_size &&
+		a->image_size == b->image_size && a->width == b->width &&
+		a->height == b->height && a->stride == b->stride &&
+		spa_streq(a->pixel_encoding, b->pixel_encoding);
+}
+
+static void invalidate_layout_params(struct impl *self)
+{
+	self->layout_valid = false;
+	self->port.have_format = false;
+	self->port.params[0].flags ^= SPA_PARAM_INFO_SERIAL;
+	self->port.params[1].flags ^= SPA_PARAM_INFO_SERIAL;
+	self->port.params[2].flags ^= SPA_PARAM_INFO_SERIAL;
+	self->port.info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
+	emit_port_info(self, false);
+}
+
+static int restore_layout_feature(struct impl *self, uint32_t feature_index,
+		const struct andor3_feature_value *old_value)
+{
+	struct andor3_camera_info restored;
+	uint32_t format;
+	int res;
+
+	if ((res = andor3_camera_set_feature_value(self->camera, feature_index,
+			old_value)) < 0 ||
+			(res = read_layout(self, &restored, &format)) < 0)
+		return res;
+	return format == self->video_format &&
+		layout_matches(&restored, &self->camera_info) ? 0 : -EIO;
+}
+
 static int node_set_param(void *object, uint32_t id,
 		uint32_t flags SPA_UNUSED, const struct spa_pod *param)
 {
 	struct impl *self = object;
 	struct andor3_feature_info info;
-	struct andor3_feature_value value;
+	struct andor3_feature_value value, old_value;
 	struct spa_pod_object *object_param;
 	struct spa_pod_prop *property;
 	const char *name = NULL;
 	struct spa_pod *value_pod = NULL;
 	uint32_t feature_index, operations = 0;
+	char *old_string = NULL;
 	int res;
 
 	spa_return_val_if_fail(self != NULL, -EINVAL);
@@ -341,16 +391,42 @@ static int node_set_param(void *object, uint32_t id,
 		if (map_format(&candidate, &format) < 0)
 			return -ENOTSUP;
 	}
+	if (info.changes_layout) {
+		if (!info.readable || (res = andor3_camera_get_feature_value(self->camera,
+				feature_index, &old_value)) < 0)
+			return !info.readable ? -EACCES : res;
+		if (old_value.kind == ANDOR3_FEATURE_STRING) {
+			if (old_value.string == NULL ||
+					(old_string = strdup(old_value.string)) == NULL)
+				return old_value.string == NULL ? -EINVAL : -errno;
+			old_value.string = old_string;
+		}
+	}
 	if ((res = andor3_camera_set_feature_value(self->camera, feature_index,
 			&value)) < 0)
-		return res;
-	if (info.changes_layout && (res = refresh_layout_params(self)) < 0)
-		return res;
+		goto done;
+	if (info.changes_layout && (res = refresh_layout_params(self)) < 0) {
+		int refresh_error = res;
+
+		if (restore_layout_feature(self, feature_index, &old_value) < 0) {
+			spa_log_error(self->log,
+					"could not roll back layout feature %s", info.name);
+			invalidate_layout_params(self);
+			res = -EIO;
+		} else {
+			res = refresh_error;
+		}
+		goto done;
+	}
 	self->params[0].flags ^= SPA_PARAM_INFO_SERIAL;
 	self->params[1].flags ^= SPA_PARAM_INFO_SERIAL;
 	self->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;
 	emit_node_info(self, false);
-	return 0;
+	res = 0;
+
+done:
+	free(old_string);
+	return res;
 }
 
 static int node_set_io(void *object SPA_UNUSED, uint32_t id SPA_UNUSED,
@@ -458,6 +534,8 @@ static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 	case SPA_PARAM_EnumFormat:
 		if (index > 0)
 			return 0;
+		if (!self->layout_valid)
+			return -EIO;
 		*param = spa_pod_builder_add_object(builder,
 				SPA_TYPE_OBJECT_Format, id,
 				SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
@@ -568,6 +646,8 @@ static int port_set_param(void *object, enum spa_direction direction,
 			self->port.have_format = false;
 		return 0;
 	}
+	if (!self->layout_valid)
+		return -EIO;
 	if (spa_format_video_raw_parse(param, &format) < 0 ||
 			format.format != self->video_format ||
 			format.size.width != self->camera_info.width ||
@@ -903,6 +983,7 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 		goto error;
 	}
 	self->camera_info = *camera_info;
+	self->layout_valid = true;
 	self->node.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Node,
 			SPA_VERSION_NODE, &node_methods, self);
 	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |

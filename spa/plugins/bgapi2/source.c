@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -79,6 +80,7 @@ struct impl {
 	struct buffer_slot slots[MAX_BUFFERS];
 	uint32_t video_format;
 	uint32_t bytes_per_pixel;
+	bool layout_valid;
 	bool started;
 	bool discontinuity;
 	bool have_sequence;
@@ -299,10 +301,10 @@ static int parse_feature_value(enum bgapi2_feature_kind kind,
 	return -EINVAL;
 }
 
-static int refresh_layout_params(struct impl *this)
+static int read_layout(struct impl *this, struct bgapi2_camera_info *candidate,
+		uint32_t *format, uint32_t *bytes_per_pixel)
 {
 	const struct bgapi2_camera_info *info;
-	uint32_t format, bytes_per_pixel;
 	int res;
 
 	if ((res = bgapi2_camera_refresh_info(this->camera)) < 0)
@@ -311,12 +313,25 @@ static int refresh_layout_params(struct impl *this)
 	if (info == NULL || info->width > UINT32_MAX ||
 			info->height > UINT32_MAX || info->payload_size > INT32_MAX ||
 			info->width > INT32_MAX ||
-			map_pixel_format(info->pixel_format, &format, &bytes_per_pixel) < 0 ||
-			info->width * bytes_per_pixel > INT32_MAX)
+			map_pixel_format(info->pixel_format, format, bytes_per_pixel) < 0 ||
+			info->width * (*bytes_per_pixel) > INT32_MAX)
 		return -ENOTSUP;
-	this->camera_info = *info;
+	*candidate = *info;
+	return 0;
+}
+
+static int refresh_layout_params(struct impl *this)
+{
+	struct bgapi2_camera_info candidate;
+	uint32_t format, bytes_per_pixel;
+	int res;
+
+	if ((res = read_layout(this, &candidate, &format, &bytes_per_pixel)) < 0)
+		return res;
+	this->camera_info = candidate;
 	this->video_format = format;
 	this->bytes_per_pixel = bytes_per_pixel;
+	this->layout_valid = true;
 	this->port.have_format = false;
 	this->port.params[0].flags ^= SPA_PARAM_INFO_SERIAL;
 	this->port.params[1].flags ^= SPA_PARAM_INFO_SERIAL;
@@ -326,17 +341,55 @@ static int refresh_layout_params(struct impl *this)
 	return 0;
 }
 
+static bool layout_matches(const struct bgapi2_camera_info *a,
+		const struct bgapi2_camera_info *b)
+{
+	return a->payload_size == b->payload_size && a->width == b->width &&
+		a->height == b->height && a->offset_x == b->offset_x &&
+		a->offset_y == b->offset_y &&
+		spa_streq(a->pixel_format, b->pixel_format);
+}
+
+static void invalidate_layout_params(struct impl *this)
+{
+	this->layout_valid = false;
+	this->port.have_format = false;
+	this->port.params[0].flags ^= SPA_PARAM_INFO_SERIAL;
+	this->port.params[1].flags ^= SPA_PARAM_INFO_SERIAL;
+	this->port.params[2].flags ^= SPA_PARAM_INFO_SERIAL;
+	this->port.info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
+	emit_port_info(this, false);
+}
+
+static int restore_layout_feature(struct impl *this, uint32_t feature_index,
+		const struct bgapi2_feature_value *old_value)
+{
+	struct bgapi2_camera_info restored;
+	uint32_t format, bytes_per_pixel;
+	int res;
+
+	if ((res = bgapi2_camera_set_feature_value(this->camera, feature_index,
+			old_value)) < 0 ||
+			(res = read_layout(this, &restored, &format,
+				&bytes_per_pixel)) < 0)
+		return res;
+	return format == this->video_format &&
+		bytes_per_pixel == this->bytes_per_pixel &&
+		layout_matches(&restored, &this->camera_info) ? 0 : -EIO;
+}
+
 static int impl_node_set_param(void *object, uint32_t id,
 		uint32_t flags SPA_UNUSED, const struct spa_pod *param)
 {
 	struct impl *this = object;
 	struct bgapi2_feature_info info;
-	struct bgapi2_feature_value value;
+	struct bgapi2_feature_value value, old_value;
 	struct spa_pod_object *object_param;
 	struct spa_pod_prop *property;
 	const char *name = NULL;
 	struct spa_pod *value_pod = NULL;
 	uint32_t feature_index, operations = 0;
+	char *old_string = NULL;
 	int res;
 
 	spa_return_val_if_fail(this != NULL, -EINVAL);
@@ -400,16 +453,42 @@ static int impl_node_set_param(void *object, uint32_t id,
 		if (map_pixel_format(entry, &format, &bytes_per_pixel) < 0)
 			return -ENOTSUP;
 	}
+	if (info.changes_layout) {
+		if (!info.readable || (res = bgapi2_camera_get_feature_value(this->camera,
+				feature_index, &old_value)) < 0)
+			return !info.readable ? -EACCES : res;
+		if (old_value.kind == BGAPI2_FEATURE_STRING) {
+			if (old_value.string == NULL ||
+					(old_string = strdup(old_value.string)) == NULL)
+				return old_value.string == NULL ? -EINVAL : -errno;
+			old_value.string = old_string;
+		}
+	}
 	if ((res = bgapi2_camera_set_feature_value(this->camera, feature_index,
 			&value)) < 0)
-		return res;
-	if (info.changes_layout && (res = refresh_layout_params(this)) < 0)
-		return res;
+		goto done;
+	if (info.changes_layout && (res = refresh_layout_params(this)) < 0) {
+		int refresh_error = res;
+
+		if (restore_layout_feature(this, feature_index, &old_value) < 0) {
+			spa_log_error(this->log,
+					"could not roll back layout feature %s", info.name);
+			invalidate_layout_params(this);
+			res = -EIO;
+		} else {
+			res = refresh_error;
+		}
+		goto done;
+	}
 	this->params[0].flags ^= SPA_PARAM_INFO_SERIAL;
 	this->params[1].flags ^= SPA_PARAM_INFO_SERIAL;
 	this->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;
 	emit_node_info(this, false);
-	return 0;
+	res = 0;
+
+done:
+	free(old_string);
+	return res;
 }
 
 static int impl_node_set_io(void *object SPA_UNUSED, uint32_t id SPA_UNUSED,
@@ -444,20 +523,28 @@ static int queue_producer_buffers(struct impl *this)
 	return 0;
 }
 
+static int discard_producer_buffers(struct impl *this)
+{
+	uint32_t i;
+	int res;
+
+	res = bgapi2_camera_discard_buffers(this->camera);
+	for (i = 0; i < this->port.n_buffers; i++)
+		this->slots[i].camera_queued = false;
+	return res;
+}
+
 static int stop_source(struct impl *this)
 {
 	int first_error = 0, res;
-	uint32_t i;
 
 	if (!this->started)
 		return 0;
 	if ((res = bgapi2_camera_stop(this->camera)) < 0)
 		first_error = res;
-	if ((res = bgapi2_camera_discard_buffers(this->camera)) < 0 &&
+	if ((res = discard_producer_buffers(this)) < 0 &&
 			first_error == 0)
 		first_error = res;
-	for (i = 0; i < this->port.n_buffers; i++)
-		this->slots[i].camera_queued = false;
 	this->started = false;
 	return first_error;
 }
@@ -487,7 +574,7 @@ static int impl_node_send_command(void *object,
 		if ((res = queue_producer_buffers(this)) < 0)
 			return res;
 		if ((res = bgapi2_camera_start(this->camera)) < 0) {
-			(void) bgapi2_camera_discard_buffers(this->camera);
+			(void) discard_producer_buffers(this);
 			return res;
 		}
 		this->started = true;
@@ -524,6 +611,8 @@ static int build_port_param(struct impl *this, uint32_t id, uint32_t index,
 	case SPA_PARAM_EnumFormat:
 		if (index > 0)
 			return 0;
+		if (!this->layout_valid)
+			return -EIO;
 		*param = spa_pod_builder_add_object(builder,
 				SPA_TYPE_OBJECT_Format, id,
 				SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
@@ -650,6 +739,8 @@ static int impl_node_port_set_param(void *object, enum spa_direction direction,
 		this->port.have_format = false;
 		return 0;
 	}
+	if (!this->layout_valid)
+		return -EIO;
 	if (spa_format_video_raw_parse(param, &format) < 0 ||
 			format.format != this->video_format ||
 			format.size.width != this->camera_info.width ||
@@ -706,7 +797,11 @@ static int impl_node_port_use_buffers(void *object,
 				(data = &buffers[i]->datas[0])->data == NULL ||
 				(data->type != SPA_DATA_MemPtr && data->type != SPA_DATA_MemFd) ||
 				data->maxsize < this->camera_info.payload_size ||
-				data->chunk == NULL)
+				data->chunk == NULL ||
+				spa_buffer_find_meta_data(buffers[i], SPA_META_Header,
+					sizeof(struct spa_meta_header)) == NULL ||
+				spa_buffer_find_meta_data(buffers[i], SPA_META_Acquisition,
+					sizeof(struct spa_meta_acquisition)) == NULL)
 			return -EINVAL;
 	}
 	for (i = 0; i < n_buffers; i++) {
@@ -1072,6 +1167,7 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 		return -ENOTSUP;
 	}
 	this->camera_info = *camera_info;
+	this->layout_valid = true;
 	if (this->eventfd_readiness) {
 		this->completion_source.func = completion_ready;
 		this->completion_source.data = this;

@@ -166,7 +166,7 @@ int andor3_camera_get_feature_integer_range(struct andor3_camera *camera,
 	if (camera == NULL || minimum == NULL || maximum == NULL || index > 3)
 		return -EINVAL;
 	*minimum = index < 2 ? 1 : 0;
-	*maximum = index < 2 ? 4096 : INT32_MAX;
+	*maximum = INT32_MAX;
 	return 0;
 }
 
@@ -205,13 +205,13 @@ int andor3_camera_set_feature_value(struct andor3_camera *camera,
 		return -EINVAL;
 	switch (index) {
 	case 0:
-		if (value->integer < 1 || value->integer > 4096)
+		if (value->integer < 1 || value->integer > INT32_MAX)
 			return -ERANGE;
 		camera->info.width = (uint32_t)value->integer;
 		refresh_layout(camera);
 		break;
 	case 1:
-		if (value->integer < 1 || value->integer > 4096)
+		if (value->integer < 1 || value->integer > INT32_MAX)
 			return -ERANGE;
 		camera->info.height = (uint32_t)value->integer;
 		refresh_layout(camera);
