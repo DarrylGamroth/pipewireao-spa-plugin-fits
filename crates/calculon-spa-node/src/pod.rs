@@ -92,7 +92,7 @@ pub(crate) fn port_param(
 
 fn format_value(format: &Format, object_id: u32) -> Value {
     match format.class {
-        FormatClass::Gray16 => object(
+        FormatClass::Gray8 | FormatClass::Gray16 => object(
             sys::SPA_TYPE_OBJECT_Format,
             object_id,
             vec![
@@ -100,7 +100,11 @@ fn format_value(format: &Format, object_id: u32) -> Value {
                 property(sys::SPA_FORMAT_mediaSubtype, id(sys::SPA_MEDIA_SUBTYPE_raw)),
                 property(
                     sys::SPA_FORMAT_VIDEO_format,
-                    id(sys::SPA_VIDEO_FORMAT_GRAY16_LE),
+                    id(match format.class {
+                        FormatClass::Gray8 => sys::SPA_VIDEO_FORMAT_GRAY8,
+                        FormatClass::Gray16 => sys::SPA_VIDEO_FORMAT_GRAY16_LE,
+                        FormatClass::NdArray => unreachable!(),
+                    }),
                 ),
                 property(
                     sys::SPA_FORMAT_VIDEO_size,
@@ -202,7 +206,7 @@ pub(crate) fn parse_format(value: Value, constraints: &[FormatConstraint]) -> Re
 
     let format =
         if media_type == sys::SPA_MEDIA_TYPE_video && media_subtype == sys::SPA_MEDIA_SUBTYPE_raw {
-            parse_gray16(&object.properties)?
+            parse_gray(&object.properties)?
         } else if media_type == sys::SPA_MEDIA_TYPE_application
             && media_subtype == sys::SPA_MEDIA_SUBTYPE_ndarray
         {
@@ -220,11 +224,15 @@ pub(crate) fn parse_format(value: Value, constraints: &[FormatConstraint]) -> Re
     Ok(format)
 }
 
-fn parse_gray16(properties: &[Property]) -> Result<Format, i32> {
-    match unique(properties, sys::SPA_FORMAT_VIDEO_format)? {
-        Some(Value::Id(Id(value))) if *value == sys::SPA_VIDEO_FORMAT_GRAY16_LE => {}
+fn parse_gray(properties: &[Property]) -> Result<Format, i32> {
+    let pixel_format = match unique(properties, sys::SPA_FORMAT_VIDEO_format)? {
+        Some(Value::Id(Id(value)))
+            if matches!(
+                *value,
+                sys::SPA_VIDEO_FORMAT_GRAY8 | sys::SPA_VIDEO_FORMAT_GRAY16_LE
+            ) => *value,
         _ => return Err(-libc::EINVAL),
-    }
+    };
     let size = match unique(properties, sys::SPA_FORMAT_VIDEO_size)? {
         Some(Value::Rectangle(size)) => *size,
         _ => return Err(-libc::EINVAL),
@@ -233,7 +241,11 @@ fn parse_gray16(properties: &[Property]) -> Result<Format, i32> {
         Some(Value::Fraction(rate)) => Rate::new(rate.num, rate.denom)?,
         _ => return Err(-libc::EINVAL),
     };
-    Format::gray16(size.width, size.height, rate)
+    if pixel_format == sys::SPA_VIDEO_FORMAT_GRAY8 {
+        Format::gray8(size.width, size.height, rate)
+    } else {
+        Format::gray16(size.width, size.height, rate)
+    }
 }
 
 fn parse_ndarray(properties: &[Property]) -> Result<Format, i32> {

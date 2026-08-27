@@ -113,10 +113,14 @@ struct spa_pod *bgapi2_build_feature_prop_info(struct bgapi2_camera *camera,
 		int64_t minimum, maximum;
 		int64_t value = have_value ? current.integer : 0;
 		if (info.available && bgapi2_camera_get_feature_integer_range(camera,
-				index, &minimum, &maximum) == 0)
-			spa_pod_builder_add(builder, SPA_POD_CHOICE_RANGE_Long(
-					value, minimum, maximum), 0);
-		else
+				index, &minimum, &maximum) == 0) {
+			struct spa_pod_frame choice;
+			spa_pod_builder_push_choice(builder, &choice, SPA_CHOICE_Range, 0);
+			spa_pod_builder_long(builder, value);
+			spa_pod_builder_long(builder, minimum);
+			spa_pod_builder_long(builder, maximum);
+			spa_pod_builder_pop(builder, &choice);
+		} else
 			spa_pod_builder_long(builder, value);
 		break;
 	}
@@ -124,10 +128,14 @@ struct spa_pod *bgapi2_build_feature_prop_info(struct bgapi2_camera *camera,
 		double minimum, maximum;
 		double value = have_value ? current.floating : 0.0;
 		if (info.available && bgapi2_camera_get_feature_float_range(camera,
-				index, &minimum, &maximum) == 0)
-			spa_pod_builder_add(builder, SPA_POD_CHOICE_RANGE_Double(
-					value, minimum, maximum), 0);
-		else
+				index, &minimum, &maximum) == 0) {
+			struct spa_pod_frame choice;
+			spa_pod_builder_push_choice(builder, &choice, SPA_CHOICE_Range, 0);
+			spa_pod_builder_double(builder, value);
+			spa_pod_builder_double(builder, minimum);
+			spa_pod_builder_double(builder, maximum);
+			spa_pod_builder_pop(builder, &choice);
+		} else
 			spa_pod_builder_double(builder, value);
 		break;
 	}

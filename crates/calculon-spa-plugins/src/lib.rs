@@ -8,6 +8,7 @@ compile_error!("the current Calculon SPA payload adapters require a little-endia
 mod alpao_command_normalization;
 mod config;
 mod frame_assembly;
+mod hnu240_decoder;
 mod pixel_calibration;
 mod shwfs_controller;
 
@@ -19,6 +20,7 @@ pub use alpao_command_normalization::{
     ALPAO_COMMAND_NORMALIZATION_FACTORY_NAME, ALPAO_NORMALIZED_ACTUATOR_COMMAND_V1,
 };
 pub use frame_assembly::FRAME_ASSEMBLY_FACTORY_NAME;
+pub use hnu240_decoder::{HNU240_CL_FULL_PROFILE, HNU240_DECODER_FACTORY_NAME};
 pub use pixel_calibration::PIXEL_CALIBRATION_FACTORY_NAME;
 pub use shwfs_controller::SHWFS_CONTROLLER_FACTORY_NAME;
 
@@ -28,11 +30,12 @@ pub const CALIBRATED_PIXEL_ROW_BLOCK_V1: &str = "org.calculon.ao.calibrated-pixe
 /// Schema for one complete immutable block of raw detector rows.
 pub const RAW_PIXEL_ROW_BLOCK_V1: &str = "org.calculon.ao.raw-pixel-row-block/1";
 
-static FACTORIES: [&Factory; 4] = [
+static FACTORIES: [&Factory; 5] = [
     &pixel_calibration::FACTORY,
     &frame_assembly::FACTORY,
     &shwfs_controller::FACTORY,
     &alpao_command_normalization::FACTORY,
+    &hnu240_decoder::FACTORY,
 ];
 
 /// Enumerates the Calculon SPA factories in this shared object.

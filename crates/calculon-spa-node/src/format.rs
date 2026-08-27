@@ -24,6 +24,8 @@ impl Rate {
 /// Logical family represented by one SPA format object.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FormatClass {
+    /// Standard raw-video `GRAY8` detector carrier bytes.
+    Gray8,
     /// Standard raw-video `GRAY16_LE` detector pixels.
     Gray16,
     /// PipeWireAO native `application/ndarray`.
@@ -50,6 +52,21 @@ pub struct Format {
 }
 
 impl Format {
+    /// Constructs an exact standard `GRAY8` detector format.
+    pub fn gray8(width: u32, height: u32, rate: Rate) -> Result<Self, i32> {
+        let format = Self {
+            class: FormatClass::Gray8,
+            element_type: sys::SPA_ELEMENT_TYPE_U8,
+            shape: Box::new([height, width]),
+            layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
+            rate: Some(rate),
+            schema: None,
+            profile: None,
+        };
+        format.validate()?;
+        Ok(format)
+    }
+
     /// Constructs an exact standard `GRAY16_LE` detector format.
     pub fn gray16(width: u32, height: u32, rate: Rate) -> Result<Self, i32> {
         let format = Self {
@@ -183,9 +200,14 @@ impl Format {
             return Err(-libc::EINVAL);
         }
         match self.class {
-            FormatClass::Gray16 => {
+            FormatClass::Gray8 | FormatClass::Gray16 => {
+                let expected_type = match self.class {
+                    FormatClass::Gray8 => sys::SPA_ELEMENT_TYPE_U8,
+                    FormatClass::Gray16 => sys::SPA_ELEMENT_TYPE_U16_LE,
+                    FormatClass::NdArray => unreachable!(),
+                };
                 if self.shape.len() != 2
-                    || self.element_type != sys::SPA_ELEMENT_TYPE_U16_LE
+                    || self.element_type != expected_type
                     || self.layout != sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR
                     || self.rate.is_none()
                     || self.schema.is_some()

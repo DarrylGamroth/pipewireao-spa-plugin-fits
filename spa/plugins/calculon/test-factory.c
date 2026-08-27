@@ -397,11 +397,60 @@ static void exercise(const struct spa_handle_factory *factory)
 	free(handle);
 }
 
+static void exercise_hnu240(const struct spa_handle_factory *factory)
+{
+	const struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_HNU240_FRAME_RATE, "3015/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_HNU240_TRANSPORT_PROFILE,
+				SPA_HNU240_CL_FULL_PROFILE),
+	};
+	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	const struct spa_dict_item bad_items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_HNU240_FRAME_RATE, "3015/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_HNU240_TRANSPORT_PROFILE, "unknown"),
+	};
+	const struct spa_dict bad_info = SPA_DICT_INIT(bad_items,
+			SPA_N_ELEMENTS(bad_items));
+	const size_t size = spa_handle_factory_get_size(factory, &info);
+	struct spa_handle *handle = calloc(1, size);
+	struct spa_node *node = NULL;
+	struct spa_hook listener;
+	struct param_capture capture = { .expected = SPA_ID_INVALID };
+	struct spa_video_info_raw raw = SPA_VIDEO_INFO_RAW_INIT();
+	struct spa_pod *format;
+
+	expect_invalid_info(factory, &bad_info);
+	spa_assert_se(handle != NULL);
+	spa_assert_se(spa_handle_factory_init(factory, handle, &info, NULL, 0) == 0);
+	spa_assert_se(spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Node,
+			(void **)&node) == 0);
+	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
+			&capture) == 0);
+
+	format = enum_one(node, &capture, SPA_DIRECTION_INPUT, 0);
+	spa_assert_se(spa_format_video_raw_parse(format, &raw) >= 0);
+	spa_assert_se(raw.format == SPA_VIDEO_FORMAT_GRAY8);
+	spa_assert_se(raw.size.width == 1408 && raw.size.height == 131);
+	spa_assert_se(raw.framerate.num == 3015 && raw.framerate.denom == 1);
+
+	memset(&raw, 0, sizeof(raw));
+	format = enum_one(node, &capture, SPA_DIRECTION_OUTPUT, 0);
+	spa_assert_se(spa_format_video_raw_parse(format, &raw) >= 0);
+	spa_assert_se(raw.format == SPA_VIDEO_FORMAT_GRAY16_LE);
+	spa_assert_se(raw.size.width == 240 && raw.size.height == 242);
+	spa_assert_se(raw.framerate.num == 3015 && raw.framerate.denom == 1);
+
+	spa_hook_remove(&listener);
+	spa_assert_se(spa_handle_clear(handle) == 0);
+	free(handle);
+}
+
 int main(int argc, char **argv)
 {
 	spa_handle_factory_enum_func_t enumerate;
 	const struct spa_handle_factory *factory = NULL;
 	const struct spa_handle_factory *pixel_factory = NULL;
+	const struct spa_handle_factory *hnu240_factory = NULL;
 	void *library;
 	void *symbol;
 	uint32_t index = 0;
@@ -426,8 +475,12 @@ int main(int argc, char **argv)
 	spa_assert_se(enumerate(&factory, &index) == 1);
 	spa_assert_se(spa_streq(factory->name,
 			SPA_NAME_API_ALPAO_COMMAND_NORMALIZATION));
+	spa_assert_se(enumerate(&factory, &index) == 1);
+	spa_assert_se(spa_streq(factory->name, SPA_NAME_API_HNU240_DECODER));
+	hnu240_factory = factory;
 	spa_assert_se(enumerate(&factory, &index) == 0);
 	exercise(pixel_factory);
+	exercise_hnu240(hnu240_factory);
 	spa_assert_se(dlclose(library) == 0);
 	return 0;
 }

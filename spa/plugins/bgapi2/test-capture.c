@@ -188,6 +188,36 @@ static struct spa_pod *enum_node_one(struct spa_node *node,
 	return capture->param;
 }
 
+static struct spa_pod *enum_node_at(struct spa_node *node,
+		struct param_result *capture, uint32_t id, uint32_t start)
+{
+	capture->expected = id;
+	capture->param = NULL;
+	spa_assert_se(spa_node_enum_params(node, 1, id, start, 1, NULL) == 0);
+	return capture->param;
+}
+
+static bool feature_is_writable(struct spa_node *node,
+		struct param_result *capture, const char *requested)
+{
+	uint32_t start;
+
+	for (start = 0;; start++) {
+		struct spa_pod *info = enum_node_at(node, capture,
+				SPA_PARAM_PropInfo, start);
+		const char *name = NULL;
+		bool writable = false;
+
+		if (info == NULL)
+			return false;
+		if (spa_pod_parse_object(info, SPA_TYPE_OBJECT_PropInfo, NULL,
+				SPA_PROP_INFO_name, SPA_POD_String(&name),
+				SPA_PROP_INFO_params, SPA_POD_Bool(&writable)) >= 0 &&
+				spa_streq(name, requested))
+			return writable;
+	}
+}
+
 static void init_buffer(struct test_buffer *storage, uint32_t size)
 {
 	storage->payload = calloc(1, size);
@@ -251,6 +281,7 @@ static int capture(const struct spa_handle_factory *factory,
 	uint8_t scalar_write_storage[512], width_write_storage[512];
 	const char *scalar_name = NULL;
 	const char *property_name = NULL;
+	bool width_writable;
 	uint64_t deadline;
 	int64_t last_pts = SPA_TIME_INVALID;
 	int32_t payload_size = 0;
@@ -293,6 +324,7 @@ static int capture(const struct spa_handle_factory *factory,
 					SPA_NODE_FLAG_POLL_DRIVER : 0));
 	spa_assert_se(spa_node_set_callbacks(node, &node_callbacks,
 			&readiness_state) == 0);
+	width_writable = feature_is_writable(node, &params, "genicam.Width");
 	prop_info = enum_node_one(node, &params, SPA_PARAM_PropInfo);
 	spa_assert_se(spa_pod_parse_object(prop_info, SPA_TYPE_OBJECT_PropInfo, NULL,
 			SPA_PROP_INFO_name, SPA_POD_String(&property_name)) >= 0);
@@ -336,10 +368,12 @@ static int capture(const struct spa_handle_factory *factory,
 	props = enum_node_one(node, &params, SPA_PARAM_Props);
 	width_value = find_control_value(props, "genicam.Width");
 	spa_assert_se(width_value != NULL);
-	width_write = build_control_write(width_write_storage,
-			sizeof(width_write_storage), "genicam.Width", width_value);
-	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
-			width_write) == -EBUSY);
+	if (width_writable) {
+		width_write = build_control_write(width_write_storage,
+				sizeof(width_write_storage), "genicam.Width", width_value);
+		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
+				width_write) == -EBUSY);
+	}
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
 			scalar_write) == -EBUSY);
@@ -385,10 +419,12 @@ static int capture(const struct spa_handle_factory *factory,
 	props = enum_node_one(node, &params, SPA_PARAM_Props);
 	width_value = find_control_value(props, "genicam.Width");
 	spa_assert_se(width_value != NULL);
-	width_write = build_control_write(width_write_storage,
-			sizeof(width_write_storage), "genicam.Width", width_value);
-	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
-			width_write) == 0);
+	if (width_writable) {
+		width_write = build_control_write(width_write_storage,
+				sizeof(width_write_storage), "genicam.Width", width_value);
+		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
+				width_write) == 0);
+	}
 	format = enum_one(node, &params, SPA_PARAM_EnumFormat);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_PARAM_Format, 0, format) == 0);

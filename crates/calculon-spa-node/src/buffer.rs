@@ -225,6 +225,11 @@ impl<'a> OutputFrame<'a> {
         (self.bytes, self.stride)
     }
 
+    /// Borrows aligned mutable `u16` storage.
+    pub fn u16_mut(&mut self) -> Result<(&mut [u16], usize), i32> {
+        self.cast_with_stride()
+    }
+
     /// Borrows aligned mutable `f32` storage.
     pub fn f32_mut(&mut self) -> Result<(&mut [f32], usize), i32> {
         self.cast_with_stride()

@@ -14,6 +14,7 @@
 	"api.calculon.shwfs-controller"
 #define SPA_NAME_API_ALPAO_COMMAND_NORMALIZATION \
 	"api.alpao.command-normalization"
+#define SPA_NAME_API_HNU240_DECODER "api.hnu240.decoder"
 
 #define SPA_KEY_API_CALCULON_DETECTOR_SIZE "api.calculon.detector-size"
 #define SPA_KEY_API_CALCULON_DETECTOR_RATE "api.calculon.detector-rate"
@@ -31,6 +32,9 @@
 #define SPA_KEY_API_CALCULON_CONTROLLER_POLE "api.calculon.controller-pole"
 #define SPA_KEY_API_CALCULON_COMMAND_MINIMUM "api.calculon.command-minimum"
 #define SPA_KEY_API_CALCULON_COMMAND_MAXIMUM "api.calculon.command-maximum"
+#define SPA_KEY_API_HNU240_FRAME_RATE "api.hnu240.frame-rate"
+#define SPA_KEY_API_HNU240_TRANSPORT_PROFILE "api.hnu240.transport-profile"
+#define SPA_HNU240_CL_FULL_PROFILE "hnu240-cl-full-8x8-v1"
 
 #define SPA_CALCULON_SCHEMA_DEMANDED_PDM_COMMAND \
 	"org.calculon.ao.demanded-pdm-command/1"

@@ -207,6 +207,20 @@ The adapter and algorithm are Rust. The exported shared object is nevertheless
 an ordinary C SPA plugin. See the architecture document for port formats,
 factory properties, language rationale, and validation boundary.
 
+## HNü240 Camera Link decoder
+
+The `api.hnu240.decoder` factory keeps the Nüvü pixel unpacking downstream of
+the camera driver. It accepts the exact raw Camera Link carrier as `GRAY8`,
+1408 by 131, and publishes `GRAY16_LE`, 240 by 242. The two extra output rows
+are the detector overscan rows. Construction requires
+`api.hnu240.frame-rate` and
+`api.hnu240.transport-profile=hnu240-cl-full-8x8-v1`; the profile prevents the
+decoder from silently accepting a different tap layout.
+
+The corresponding `CLProtocol_hnu240` project supplies camera control and the
+GenApi node map. The `EDTpdvGenTL` producer supplies raw EDT DMA frames to the
+existing BGAPI2 source. Neither layer embeds this decoder.
+
 The source repository containing a plugin is not part of its runtime identity.
 An out-of-tree plugin remains a native SPA plugin when it builds against the
 installed PipeWireAO SPA API and installs into the configured PipeWireAO SPA
