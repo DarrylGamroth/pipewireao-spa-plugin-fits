@@ -89,6 +89,23 @@ struct spa_pod *enum_node_one(struct spa_node *node, param_result &capture,
 	return capture.param;
 }
 
+void validate_all_prop_info(struct spa_node *node, param_result &capture)
+{
+	uint32_t count = 0;
+	for (; count < 4096; count++) {
+		struct spa_pod *prop_info = enum_node_one(node, capture,
+				SPA_PARAM_PropInfo, count);
+		if (prop_info == nullptr)
+			break;
+		const char *name = nullptr;
+		spa_assert_se(spa_pod_parse_object(prop_info,
+				SPA_TYPE_OBJECT_PropInfo, nullptr,
+				SPA_PROP_INFO_name, SPA_POD_String(&name)) >= 0);
+		spa_assert_se(name != nullptr && name[0] != '\0');
+	}
+	spa_assert_se(count > 0 && count < 4096);
+}
+
 struct spa_pod *find_control_value(struct spa_pod *props, const char *requested)
 {
 	auto *object = reinterpret_cast<struct spa_pod_object *>(props);
@@ -190,13 +207,7 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 			reinterpret_cast<void **>(&node)) == 0);
 	spa_assert_se(spa_node_add_listener(node, &listener, &node_events, &params) == 0);
 
-	struct spa_pod *prop_info = enum_node_one(node, params, SPA_PARAM_PropInfo);
-	spa_assert_se(prop_info != nullptr);
-	const char *first_control = nullptr;
-	spa_assert_se(spa_pod_parse_object(prop_info,
-			SPA_TYPE_OBJECT_PropInfo, nullptr,
-			SPA_PROP_INFO_name, SPA_POD_String(&first_control)) >= 0);
-	spa_assert_se(first_control != nullptr && first_control[0] != '\0');
+	validate_all_prop_info(node, params);
 	struct spa_pod *props = enum_node_one(node, params, SPA_PARAM_Props);
 	spa_assert_se(props != nullptr);
 	struct spa_pod *scalar_value = nullptr;

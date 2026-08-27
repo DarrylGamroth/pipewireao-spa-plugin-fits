@@ -96,20 +96,28 @@ spa_pod *build_feature_prop_info(Camera &camera, const Feature &feature,
 	case FeatureKind::integer: {
 		const auto value = std::get<std::int64_t>(current);
 		const auto range = camera.feature_integer_range(feature);
-		if (range)
-			spa_pod_builder_add(builder, SPA_POD_CHOICE_RANGE_Long(
-					value, range->first, range->second), 0);
-		else
+		if (range) {
+			spa_pod_frame choice;
+			spa_pod_builder_push_choice(builder, &choice, SPA_CHOICE_Range, 0);
+			spa_pod_builder_long(builder, value);
+			spa_pod_builder_long(builder, range->first);
+			spa_pod_builder_long(builder, range->second);
+			spa_pod_builder_pop(builder, &choice);
+		} else
 			spa_pod_builder_long(builder, value);
 		break;
 	}
 	case FeatureKind::floating: {
 		const auto value = std::get<double>(current);
 		const auto range = camera.feature_float_range(feature);
-		if (range)
-			spa_pod_builder_add(builder, SPA_POD_CHOICE_RANGE_Double(
-					value, range->first, range->second), 0);
-		else
+		if (range) {
+			spa_pod_frame choice;
+			spa_pod_builder_push_choice(builder, &choice, SPA_CHOICE_Range, 0);
+			spa_pod_builder_double(builder, value);
+			spa_pod_builder_double(builder, range->first);
+			spa_pod_builder_double(builder, range->second);
+			spa_pod_builder_pop(builder, &choice);
+		} else
 			spa_pod_builder_double(builder, value);
 		break;
 	}
