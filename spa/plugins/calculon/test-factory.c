@@ -25,6 +25,16 @@
 static const char profile[] =
 		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define TRACK_ALLOCATIONS 0
+#elif defined(__clang__) && (__has_feature(address_sanitizer) || \
+		__has_feature(thread_sanitizer) || __has_feature(memory_sanitizer))
+#define TRACK_ALLOCATIONS 0
+#else
+#define TRACK_ALLOCATIONS 1
+#endif
+
+#if TRACK_ALLOCATIONS
 /* glibc interposition observes allocations made by the loaded Rust cdylib. */
 extern void *__libc_malloc(size_t size);
 extern void *__libc_calloc(size_t count, size_t size);
@@ -56,6 +66,7 @@ void *realloc(void *previous, size_t size)
 		measured_allocations++;
 	return memory;
 }
+#endif
 
 struct param_capture {
 	uint32_t expected;
@@ -317,11 +328,15 @@ static void exercise_processing(struct spa_node *node,
 	output_io.status = SPA_STATUS_NEED_DATA;
 	spa_assert_se(spa_node_process(node) == SPA_STATUS_NEED_DATA);
 	raw_io.status = SPA_STATUS_HAVE_DATA;
+#if TRACK_ALLOCATIONS
 	measured_allocations = 0;
 	measure_allocations = true;
+#endif
 	spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
+#if TRACK_ALLOCATIONS
 	measure_allocations = false;
 	spa_assert_se(measured_allocations == 0);
+#endif
 	output_io.status = SPA_STATUS_NEED_DATA;
 	spa_assert_se(spa_node_process(node) == SPA_STATUS_NEED_DATA);
 	raw.chunk.size = 1;
@@ -370,11 +385,15 @@ static void exercise(const struct spa_handle_factory *factory)
 	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
 			&capture) == 0);
 
+#if TRACK_ALLOCATIONS
 	measured_allocations = 0;
 	measure_allocations = true;
+#endif
 	format = enum_one(node, &capture, SPA_DIRECTION_INPUT, 0);
+#if TRACK_ALLOCATIONS
 	measure_allocations = false;
 	spa_assert_se(measured_allocations > 0);
+#endif
 	spa_assert_se(spa_format_video_raw_parse(format, &raw) >= 0);
 	spa_assert_se(raw.format == SPA_VIDEO_FORMAT_GRAY16_LE);
 	spa_assert_se(raw.size.width == WIDTH && raw.size.height == HEIGHT);

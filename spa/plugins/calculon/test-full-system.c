@@ -38,6 +38,16 @@
 static const char profile[] =
 		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define TRACK_ALLOCATIONS 0
+#elif defined(__clang__) && (__has_feature(address_sanitizer) || \
+		__has_feature(thread_sanitizer) || __has_feature(memory_sanitizer))
+#define TRACK_ALLOCATIONS 0
+#else
+#define TRACK_ALLOCATIONS 1
+#endif
+
+#if TRACK_ALLOCATIONS
 extern void *__libc_malloc(size_t size);
 extern void *__libc_calloc(size_t count, size_t size);
 extern void *__libc_realloc(void *memory, size_t size);
@@ -68,6 +78,7 @@ void *realloc(void *previous, size_t size)
 		measured_allocations++;
 	return memory;
 }
+#endif
 
 struct param_capture {
 	uint32_t expected;
@@ -834,8 +845,10 @@ int main(int argc, char **argv)
 	pixel_output.buffer_id = 0;
 	controller_output.status = SPA_STATUS_NEED_DATA;
 	controller_output.buffer_id = 0;
+#if TRACK_ALLOCATIONS
 	measured_allocations = 0;
 	measure_allocations = true;
+#endif
 	raw.header.seq++;
 	raw_input.status = SPA_STATUS_HAVE_DATA;
 	raw_input.buffer_id = 0;
@@ -846,8 +859,10 @@ int main(int argc, char **argv)
 	normalizer_input.status = SPA_STATUS_HAVE_DATA;
 	normalizer_input.buffer_id = controller_output.buffer_id;
 	spa_assert_se(spa_node_process(normalizer.node) == SPA_STATUS_HAVE_DATA);
+#if TRACK_ALLOCATIONS
 	measure_allocations = false;
 	spa_assert_se(measured_allocations == 0);
+#endif
 	spa_assert_se(spa_node_process(sink.node) == SPA_STATUS_NEED_DATA);
 
 	for (iteration = 0; iteration < benchmark_warmup; iteration++) {
