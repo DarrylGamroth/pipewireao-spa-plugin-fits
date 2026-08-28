@@ -20,11 +20,18 @@ int pwao_queue_buffer_validate_layout(const struct spa_buffer *input,
 			input->n_datas > PWAO_QUEUE_MAX_DATA_BLOCKS ||
 			input->n_datas != output->n_datas ||
 			input->n_metas > PWAO_QUEUE_MAX_METAS ||
-			input->n_metas != output->n_metas)
+			output->n_metas > PWAO_QUEUE_MAX_METAS)
 		return -EINVAL;
 	for (i = 0; i < input->n_metas; i++) {
 		const struct spa_meta *in = &input->metas[i];
-		const struct spa_meta *out = spa_buffer_find_meta(output, in->type);
+		const struct spa_meta *out;
+
+		/* Busy is local to each endpoint. Feature metadata advertises a
+		 * capability and carries no per-buffer value to transfer. */
+		if (in->type == SPA_META_Busy ||
+				in->type >= SPA_META_START_features)
+			continue;
+		out = spa_buffer_find_meta(output, in->type);
 
 		if (out == NULL || out->size != in->size ||
 				(in->size > 0 && (in->data == NULL || out->data == NULL)))
@@ -48,9 +55,13 @@ int pwao_queue_buffer_transfer(const struct spa_buffer *input,
 		return result;
 	for (i = 0; i < input->n_metas; i++) {
 		const struct spa_meta *in = &input->metas[i];
-		struct spa_meta *out = spa_buffer_find_meta(output, in->type);
+		struct spa_meta *out;
 
-		if (in->type != SPA_META_Busy && in->size > 0)
+		if (in->type == SPA_META_Busy ||
+				in->type >= SPA_META_START_features)
+			continue;
+		out = spa_buffer_find_meta(output, in->type);
+		if (in->size > 0)
 			memcpy(out->data, in->data, in->size);
 	}
 	for (i = 0; i < input->n_datas; i++) {

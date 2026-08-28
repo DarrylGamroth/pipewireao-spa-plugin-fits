@@ -67,6 +67,8 @@ int main(int argc, char **argv)
 		"queue.max-buffers=1 queue.overflow=leaky queue.storage=copy",
 		"queue.max-buffers=1 queue.overflow=drop-oldest",
 		"queue.max-buffers=1 queue.overflow=drop-oldest queue.storage=zero-copy",
+		"queue.max-buffers=1 queue.overflow=drop-oldest queue.storage=copy "
+			"queue.media=video/encoded",
 	};
 	uint32_t i;
 	int path_length;
@@ -104,6 +106,7 @@ int main(int argc, char **argv)
 			"queue.max-buffers=1 "
 			"queue.overflow=drop-oldest "
 			"queue.storage=copy "
+			"queue.media=application/ndarray "
 			"remote.name=internal", NULL);
 	CHECK(module != NULL);
 	properties = pw_impl_module_get_properties(module);
@@ -112,6 +115,8 @@ int main(int argc, char **argv)
 	CHECK(strcmp(pw_properties_get(properties, "queue.overflow"),
 			"drop-oldest") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.storage"), "copy") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.media"),
+			"application/ndarray") == 0);
 	CHECK(strstr(pw_properties_get(properties, PW_KEY_MODULE_DESCRIPTION),
 			"bounded complete-buffer queue") != NULL);
 	CHECK(strcmp(pw_properties_get(properties, "queue.stats.publications"),

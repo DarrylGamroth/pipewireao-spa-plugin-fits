@@ -16,6 +16,8 @@ struct Feature {
     std::string name;
     std::string property_name;
     std::string description;
+    std::string group;
+    std::string visibility = "Beginner";
     FeatureKind kind = FeatureKind::unsupported;
     bool readable = false;
     bool writeable = false;

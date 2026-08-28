@@ -648,16 +648,26 @@ int validate_pixel_format_write(const egrabber_pipewire::Feature &feature,
 {
 	if (feature.name != "PixelFormat")
 		return 0;
-	int32_t index;
-	uint32_t id;
-	if (spa_pod_get_int(value, &index) < 0) {
-		if (spa_pod_get_id(value, &id) < 0 || id > INT32_MAX)
+	std::string format;
+	const char *label;
+	if (spa_pod_get_string(value, &label) == 0) {
+		const auto found = std::find(feature.enum_entries.begin(),
+				feature.enum_entries.end(), label);
+		if (found == feature.enum_entries.end())
 			return -EINVAL;
-		index = static_cast<int32_t>(id);
+		format = *found;
+	} else {
+		int32_t index;
+		uint32_t id;
+		if (spa_pod_get_int(value, &index) < 0) {
+			if (spa_pod_get_id(value, &id) < 0 || id > INT32_MAX)
+				return -EINVAL;
+			index = static_cast<int32_t>(id);
+		}
+		if (index < 0 || static_cast<size_t>(index) >= feature.enum_entries.size())
+			return -EINVAL;
+		format = feature.enum_entries[index];
 	}
-	if (index < 0 || static_cast<size_t>(index) >= feature.enum_entries.size())
-		return -EINVAL;
-	const auto &format = feature.enum_entries[index];
 	return format == "Mono8" || format == "Mono10" || format == "Mono12" ||
 			format == "Mono14" || format == "Mono16" ? 0 : -ENOTSUP;
 }
@@ -732,10 +742,8 @@ int set_param(void *object, uint32_t id, uint32_t,
 		return -ENOENT;
 	if (!found->writeable)
 		return -EACCES;
-	if (self->started)
-		return -EBUSY;
 	const bool layout_change = egrabber_pipewire::changes_payload_layout(*found);
-	if (layout_change && self->output.n_buffers != 0)
+	if (layout_change && (self->started || self->output.n_buffers != 0))
 		return -EBUSY;
 	int res = validate_pixel_format_write(*found, value);
 	if (res < 0)

@@ -7,7 +7,7 @@ bgapi2_sources = [
   'params.c',
 ]
 
-bgapi2_dependencies = [spa_dep, bgapi2_dep]
+bgapi2_dependencies = [spa_dep, bgapi2_dep, genicam_feature_dep]
 bgapi2_install_rpath = get_option('bgapi2-prefix') / 'lib'
 bgapi2_c_args = ['-Wno-strict-prototypes']
 bgapi2_cpp_args = ['-Wno-pedantic']

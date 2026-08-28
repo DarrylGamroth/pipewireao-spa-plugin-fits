@@ -75,7 +75,7 @@ int main(int argc, char *argv[])
 	const struct bgapi2_frame_info *frame;
 	uint64_t deadline;
 	uint32_t feature_count, i;
-	bool found_width = false, found_pixel_format = false;
+	bool found_width = false, found_pixel_format = false, found_offset = false;
 	int res;
 
 	if (argc != 2) {
@@ -124,12 +124,19 @@ int main(int argc, char *argv[])
 
 		if (bgapi2_camera_get_feature_info(camera, i, &feature) < 0 ||
 				feature.name == NULL || feature.property_name == NULL ||
-				feature.description == NULL ||
+				feature.description == NULL || feature.group == NULL ||
+				feature.visibility == NULL ||
+				(strcmp(feature.visibility, BGAPI2_NODEVISIBILITY_BEGINNER) != 0 &&
+				strcmp(feature.visibility, BGAPI2_NODEVISIBILITY_EXPERT) != 0 &&
+				strcmp(feature.visibility, BGAPI2_NODEVISIBILITY_GURU) != 0 &&
+				strcmp(feature.visibility, BGAPI2_NODEVISIBILITY_INVISIBLE) != 0) ||
 				strncmp(feature.property_name, "genicam.", 8) != 0) {
 			fprintf(stderr, "invalid GenICam feature metadata\n");
 			bgapi2_camera_close(camera);
 			return EXIT_FAILURE;
 		}
+		if (strcmp(feature.name, "OffsetX") == 0)
+			found_offset = !feature.changes_layout;
 		if (strcmp(feature.name, "Width") == 0) {
 			found_width = feature.kind == BGAPI2_FEATURE_INTEGER &&
 					feature.changes_layout;
@@ -159,7 +166,7 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
-	if (!found_width || !found_pixel_format) {
+	if (!found_width || !found_pixel_format || !found_offset) {
 		fprintf(stderr, "required GenICam layout features were not discovered\n");
 		bgapi2_camera_close(camera);
 		return EXIT_FAILURE;

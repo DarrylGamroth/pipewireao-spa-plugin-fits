@@ -147,6 +147,23 @@ struct spa_pod *build_control_write(uint8_t *storage, size_t size,
 	return static_cast<struct spa_pod *>(spa_pod_builder_pop(&builder, &object));
 }
 
+struct spa_pod *build_control_write(uint8_t *storage, size_t size,
+		const char *name, const char *value)
+{
+	spa_assert_se(size <= UINT32_MAX);
+	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
+			static_cast<uint32_t>(size));
+	struct spa_pod_frame object, values;
+	spa_pod_builder_push_object(&builder, &object,
+			SPA_TYPE_OBJECT_Props, SPA_PARAM_Props);
+	spa_pod_builder_prop(&builder, SPA_PROP_params, 0);
+	spa_pod_builder_push_struct(&builder, &values);
+	spa_pod_builder_string(&builder, name);
+	spa_pod_builder_string(&builder, value);
+	spa_pod_builder_pop(&builder, &values);
+	return static_cast<struct spa_pod *>(spa_pod_builder_pop(&builder, &object));
+}
+
 void init_buffer(test_buffer &storage, uint32_t size, uint32_t alignment)
 {
 	alignment = SPA_MAX(alignment, static_cast<uint32_t>(alignof(max_align_t)));
@@ -183,11 +200,16 @@ uint64_t monotonic_nsec()
 
 int capture(const struct spa_handle_factory *factory, const char *producer)
 {
-	const struct spa_dict_item item = SPA_DICT_ITEM_INIT(
-			SPA_KEY_API_EGRABBER_PRODUCER, producer == nullptr ? "" : producer);
-	const struct spa_dict info = SPA_DICT_INIT(&item,
-			producer == nullptr ? 0u : 1u);
-	const struct spa_dict *factory_info = producer == nullptr ? nullptr : &info;
+	const struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_EGRABBER_OUTPUT_MODE, "frame"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_EGRABBER_CONTROL, "auto"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_EGRABBER_BUFFER_COUNT, "8"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_EGRABBER_PRODUCER,
+				producer == nullptr ? "" : producer),
+	};
+	const struct spa_dict info = SPA_DICT_INIT(items,
+			producer == nullptr ? 3u : static_cast<uint32_t>(SPA_N_ELEMENTS(items)));
+	const struct spa_dict *factory_info = &info;
 	const struct spa_support support[] = {
 		SPA_SUPPORT_INIT(SPA_TYPE_INTERFACE_Log, &logger.log),
 	};
@@ -282,7 +304,14 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
-			scalar_write) == -EBUSY);
+			scalar_write) == 0);
+	if (struct spa_pod *offset = find_control_value(props, "genicam.OffsetX")) {
+		uint8_t offset_write_storage[512];
+		struct spa_pod *offset_write = build_control_write(offset_write_storage,
+				sizeof(offset_write_storage), "genicam.OffsetX", offset);
+		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
+				offset_write) == 0);
+	}
 
 	const uint64_t deadline = monotonic_nsec() + 3 * SPA_NSEC_PER_SEC;
 	uint32_t frames = 0;
@@ -327,6 +356,12 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 			sizeof(layout_write_storage), "genicam.Width", width);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
 			layout_write) == 0);
+	uint8_t pixel_format_write_storage[512];
+	struct spa_pod *pixel_format_write = build_control_write(
+			pixel_format_write_storage, sizeof(pixel_format_write_storage),
+			"genicam.PixelFormat", "Mono8");
+	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
+			pixel_format_write) == 0);
 	format = enum_one(node, params, SPA_PARAM_EnumFormat);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_PARAM_Format, 0, format) == 0);

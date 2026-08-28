@@ -6,12 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <algorithm>
 #include <string>
-#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <spa/utils/ringbuffer.h>
+
+#include "feature.h"
 
 template <typename Operation>
 static BGAPI2_RESULT guarded_call(Operation operation) noexcept
@@ -32,6 +34,8 @@ struct feature_record {
 	std::string name;
 	std::string property_name;
 	std::string description;
+	std::string group;
+	std::string visibility;
 	enum bgapi2_feature_kind kind = BGAPI2_FEATURE_STRING;
 	std::vector<std::string> enum_entries;
 	std::string value_storage;
@@ -151,23 +155,49 @@ static int checked_result(struct bgapi2_camera *, BGAPI2_RESULT result)
 #define checked(camera, expression) \
 	checked_result((camera), BGAPI2_CALL(expression))
 
-static bool feature_changes_layout(std::string_view name)
-{
-	static constexpr std::string_view exact[] = {
-		"PixelFormat", "Width", "Height", "OffsetX", "OffsetY",
-		"PayloadSize", "ChunkModeActive",
-	};
-	static constexpr std::string_view fragments[] = {
-		"Binning", "Decimation", "Resolution", "Region",
-		"ComponentEnable", "ChunkEnable",
-	};
+using feature_group_map = std::unordered_map<std::string, std::string>;
 
-	if (std::find(std::begin(exact), std::end(exact), name) != std::end(exact))
-		return true;
-	return std::any_of(std::begin(fragments), std::end(fragments),
-			[name](std::string_view fragment) {
-				return name.find(fragment) != std::string_view::npos;
-			});
+static void discover_category_groups(struct bgapi2_camera *camera,
+		BGAPI2_Node *category, const std::string &parent,
+		feature_group_map &groups,
+		std::unordered_set<BGAPI2_Node *> &visited)
+{
+	BGAPI2_NodeMap *children = nullptr;
+	bo_uint64 count = 0;
+
+	if (category == nullptr || !visited.insert(category).second ||
+			checked(camera, BGAPI2_Node_GetNodeList(category, &children)) < 0 ||
+			checked(camera, BGAPI2_NodeMap_GetNodeCount(children, &count)) < 0)
+		return;
+	for (bo_uint64 i = 0; i < count; i++) {
+		BGAPI2_Node *child = nullptr;
+		std::string interface, name;
+
+		if (checked(camera, BGAPI2_NodeMap_GetNodeByIndex(children, i,
+				&child)) < 0 ||
+				get_node_text(child, BGAPI2_Node_GetInterface, interface) < 0 ||
+				get_node_text(child, BGAPI2_Node_GetName, name) < 0 ||
+				name.empty())
+			continue;
+		if (interface == BGAPI2_NODEINTERFACE_CATEGORY) {
+			const std::string path = parent.empty() ? name : parent + "/" + name;
+			discover_category_groups(camera, child, path, groups, visited);
+		} else {
+			groups.try_emplace(name, parent);
+		}
+	}
+}
+
+static feature_group_map discover_feature_groups(struct bgapi2_camera *camera,
+		BGAPI2_NodeMap *node_map)
+{
+	feature_group_map groups;
+	std::unordered_set<BGAPI2_Node *> visited;
+	BGAPI2_Node *root = nullptr;
+
+	if (checked(camera, BGAPI2_NodeMap_GetNode(node_map, "Root", &root)) == 0)
+		discover_category_groups(camera, root, {}, groups, visited);
+	return groups;
 }
 
 static bool feature_kind(const std::string &interface,
@@ -236,6 +266,7 @@ static int discover_features(struct bgapi2_camera *camera)
 				&count))) < 0)
 			goto error;
 		store->features.reserve(static_cast<size_t>(count));
+		const auto groups = discover_feature_groups(camera, node_map);
 		for (bo_uint64 i = 0; i < count; i++) {
 			BGAPI2_Node *node = nullptr;
 			bo_bool implemented = 0;
@@ -254,9 +285,21 @@ static int discover_features(struct bgapi2_camera *camera)
 				continue;
 			feature.node = node;
 			feature.property_name = "genicam." + feature.name;
-			if (get_node_text(node, BGAPI2_Node_GetDescription,
+			const auto group = groups.find(feature.name);
+			if (group != groups.end())
+				feature.group = group->second;
+			if (get_node_text(node, BGAPI2_Node_GetToolTip,
 					feature.description) < 0 || feature.description.empty())
-				feature.description = feature.name;
+				if (get_node_text(node, BGAPI2_Node_GetDescription,
+						feature.description) < 0 || feature.description.empty())
+					feature.description = feature.name;
+			if (get_node_text(node, BGAPI2_Node_GetVisibility,
+					feature.visibility) < 0 ||
+					(feature.visibility != BGAPI2_NODEVISIBILITY_BEGINNER &&
+					feature.visibility != BGAPI2_NODEVISIBILITY_EXPERT &&
+					feature.visibility != BGAPI2_NODEVISIBILITY_GURU &&
+					feature.visibility != BGAPI2_NODEVISIBILITY_INVISIBLE))
+				feature.visibility = BGAPI2_NODEVISIBILITY_BEGINNER;
 			if (feature.kind == BGAPI2_FEATURE_ENUMERATION &&
 					discover_enum_entries(camera, feature) < 0)
 				continue;
@@ -748,12 +791,15 @@ int bgapi2_camera_get_feature_info(struct bgapi2_camera *camera,
 		.name = feature->name.c_str(),
 		.property_name = feature->property_name.c_str(),
 		.description = feature->description.c_str(),
+		.group = feature->group.c_str(),
+		.visibility = feature->visibility.c_str(),
 		.kind = feature->kind,
 		.n_enum_entries = static_cast<uint32_t>(feature->enum_entries.size()),
 		.available = available != 0,
 		.readable = readable != 0,
 		.writable = writable != 0,
-		.changes_layout = feature_changes_layout(feature->name),
+		.changes_layout = pwao_genicam_feature_changes_payload_layout(
+				feature->name.c_str()),
 	};
 	return 0;
 }
@@ -874,8 +920,6 @@ int bgapi2_camera_set_feature_value(struct bgapi2_camera *camera,
 
 	if (feature == nullptr || value == nullptr || value->kind != feature->kind)
 		return -EINVAL;
-	if (camera->acquiring)
-		return -EBUSY;
 	if ((res = checked(camera, BGAPI2_Node_GetAvailable(feature->node,
 			&available))) < 0 ||
 			(res = checked(camera, BGAPI2_Node_IsWriteable(feature->node,

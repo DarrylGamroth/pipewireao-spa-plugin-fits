@@ -103,6 +103,8 @@ struct impl {
 	uint32_t max_buffers;
 	enum pwao_queue_overflow overflow;
 	enum storage_mode storage;
+	uint32_t media_type;
+	uint32_t media_subtype;
 
 	_Alignas(SPA_CACHE_LINE_SIZE) struct input_stats input_stats;
 	_Alignas(SPA_CACHE_LINE_SIZE) struct output_stats output_stats;
@@ -118,6 +120,7 @@ static const struct spa_dict_item module_props[] = {
 		"queue.max-buffers=<1..62> "
 		"queue.overflow=<backpressure|drop-oldest|drop-newest> "
 		"queue.storage=<copy|lease> "
+		"queue.media=<application/ndarray|video/raw> "
 		"( capture.props=<properties> ) "
 		"( playback.props=<properties> )" },
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
@@ -789,10 +792,10 @@ static void capture_param_changed(void *data, uint32_t id,
 		return;
 	}
 	if (spa_format_parse(param, &media_type, &media_subtype) < 0 ||
-			media_type != SPA_MEDIA_TYPE_application ||
-			media_subtype != SPA_MEDIA_SUBTYPE_ndarray) {
+			media_type != impl->media_type ||
+			media_subtype != impl->media_subtype) {
 		(void)pw_stream_set_error(impl->capture, -EINVAL,
-				"queue requires application/ndarray");
+				"queue input does not match queue.media");
 		return;
 	}
 	free(impl->format);
@@ -1003,6 +1006,16 @@ static int parse_options(struct impl *impl, const struct pw_properties *props)
 		impl->storage = STORAGE_LEASE;
 	else
 		return -EINVAL;
+	value = pw_properties_get(props, "queue.media");
+	if (value == NULL || spa_streq(value, "application/ndarray")) {
+		impl->media_type = SPA_MEDIA_TYPE_application;
+		impl->media_subtype = SPA_MEDIA_SUBTYPE_ndarray;
+	} else if (spa_streq(value, "video/raw")) {
+		impl->media_type = SPA_MEDIA_TYPE_video;
+		impl->media_subtype = SPA_MEDIA_SUBTYPE_raw;
+	} else {
+		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -1058,15 +1071,15 @@ static int setup_properties(struct impl *impl, struct pw_properties *props,
 
 static int setup_capture(struct impl *impl)
 {
-	uint8_t buffer[256];
+	uint8_t buffer[512];
 	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer,
 			sizeof(buffer));
 	const struct spa_pod *params[1];
 
 	params[0] = spa_pod_builder_add_object(&builder,
 			SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-			SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_application),
-			SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_ndarray));
+			SPA_FORMAT_mediaType, SPA_POD_Id(impl->media_type),
+			SPA_FORMAT_mediaSubtype, SPA_POD_Id(impl->media_subtype));
 	impl->capture = pw_stream_new(impl->core, "queue input",
 			impl->capture_props);
 	impl->capture_props = NULL;

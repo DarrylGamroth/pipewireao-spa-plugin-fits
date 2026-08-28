@@ -15,7 +15,8 @@ egrabber_sources = [
   'timestamp_mapper.cpp',
 ]
 
-egrabber_dependencies = [spa_dep, egrabber_dep, threads_dep]
+egrabber_dependencies = [spa_dep, egrabber_dep, threads_dep,
+  genicam_feature_dep]
 egrabber_cpp_args = ['-Wno-pedantic']
 egrabber_includes = []
 
@@ -55,6 +56,13 @@ egrabber_lib = shared_library(
 )
 
 if get_option('tests').allowed()
+  egrabber_feature_test = executable(
+    'spa-egrabber-feature-test',
+    ['test-feature.cpp', 'feature.cpp'],
+    dependencies: [spa_dep, genicam_feature_dep],
+  )
+  test('spa-egrabber-feature', egrabber_feature_test)
+
   egrabber_buffer_memory_test = executable(
     'spa-egrabber-buffer-memory-test',
     ['test-buffer-memory.cpp', 'buffer_memory.cpp'],

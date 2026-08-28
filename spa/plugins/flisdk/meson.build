@@ -1,6 +1,6 @@
 flisdk_sources = ['plugin.c', 'source.c', 'camera.c']
 flisdk_mock_sources = ['plugin.c', 'source.c', 'camera-mock.c']
-flisdk_dependencies = [spa_dep, threads_dep]
+flisdk_dependencies = [spa_dep, threads_dep, genicam_feature_dep]
 flisdk_includes = []
 flisdk_c_args = ['-Wno-pedantic']
 flisdk_cpp_args = ['-Wno-pedantic']

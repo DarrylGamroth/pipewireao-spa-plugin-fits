@@ -89,6 +89,12 @@ static void test_copy(void)
 	CHECK(memcmp(&input_bytes[14], &output_bytes[14], 5) == 0);
 	CHECK(output_bytes[2] == 0xa5 && output_bytes[10] == 0xa5 &&
 			output_bytes[19] == 0xa5);
+	/* Busy belongs to the output endpoint and need not be present in the
+	 * producer's buffer layout. */
+	input.n_metas = 2;
+	output_busy.count = 5;
+	CHECK(pwao_queue_buffer_transfer(&input, &output, true) == 0);
+	CHECK(output_busy.count == 5);
 	input_bytes[3] ^= 0xffu;
 	CHECK(input_bytes[3] != output_bytes[3]);
 	output_data[1].maxsize = 18;

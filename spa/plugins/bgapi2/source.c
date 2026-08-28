@@ -272,27 +272,57 @@ static int impl_node_enum_params(void *object, int seq, uint32_t id,
 	return 0;
 }
 
-static int parse_feature_value(enum bgapi2_feature_kind kind,
+static int parse_feature_value(struct bgapi2_camera *camera,
+		uint32_t feature_index, const struct bgapi2_feature_info *info,
 		const struct spa_pod *pod, struct bgapi2_feature_value *value)
 {
+	const char *label;
+	double double_value;
+	float float_value;
+	int32_t int_value;
 	uint32_t id;
 
 	memset(value, 0, sizeof(*value));
-	value->kind = kind;
-	switch (kind) {
+	value->kind = info->kind;
+	switch (info->kind) {
 	case BGAPI2_FEATURE_BOOLEAN:
 		return spa_pod_get_bool(pod, &value->boolean);
 	case BGAPI2_FEATURE_INTEGER:
-		return spa_pod_get_long(pod, &value->integer);
+		if (spa_pod_get_long(pod, &value->integer) == 0)
+			return 0;
+		if (spa_pod_get_int(pod, &int_value) < 0)
+			return -EINVAL;
+		value->integer = int_value;
+		return 0;
 	case BGAPI2_FEATURE_FLOATING:
-		return spa_pod_get_double(pod, &value->floating);
+		if (spa_pod_get_double(pod, &double_value) == 0) {
+			value->floating = double_value;
+			return 0;
+		}
+		if (spa_pod_get_float(pod, &float_value) < 0)
+			return -EINVAL;
+		value->floating = float_value;
+		return 0;
 	case BGAPI2_FEATURE_ENUMERATION:
 		if (spa_pod_get_int(pod, &value->enumeration) == 0)
 			return 0;
-		if (spa_pod_get_id(pod, &id) < 0 || id > INT32_MAX)
+		if (spa_pod_get_id(pod, &id) == 0) {
+			if (id > INT32_MAX)
+				return -EINVAL;
+			value->enumeration = (int32_t)id;
+			return 0;
+		}
+		if (spa_pod_get_string(pod, &label) < 0)
 			return -EINVAL;
-		value->enumeration = (int32_t)id;
-		return 0;
+		for (uint32_t i = 0; i < info->n_enum_entries; i++) {
+			const char *entry = bgapi2_camera_get_feature_enum_entry(camera,
+					feature_index, i);
+			if (entry != NULL && spa_streq(entry, label)) {
+				value->enumeration = (int32_t)i;
+				return 0;
+			}
+		}
+		return -EINVAL;
 	case BGAPI2_FEATURE_STRING:
 		return spa_pod_get_string(pod, &value->string);
 	case BGAPI2_FEATURE_COMMAND:
@@ -426,8 +456,6 @@ static int impl_node_set_param(void *object, uint32_t id,
 	}
 	if (operations == 0)
 		return 0;
-	if (this->started)
-		return -EBUSY;
 	if ((res = bgapi2_camera_find_feature(this->camera, name,
 			&feature_index)) < 0 ||
 			(res = bgapi2_camera_get_feature_info(this->camera, feature_index,
@@ -437,9 +465,10 @@ static int impl_node_set_param(void *object, uint32_t id,
 		return -ENODATA;
 	if (!info.writable)
 		return -EACCES;
-	if (info.changes_layout && this->port.n_buffers != 0)
+	if (info.changes_layout && (this->started || this->port.n_buffers != 0))
 		return -EBUSY;
-	if ((res = parse_feature_value(info.kind, value_pod, &value)) < 0)
+	if ((res = parse_feature_value(this->camera, feature_index, &info,
+			value_pod, &value)) < 0)
 		return res;
 	if (spa_streq(info.name, "PixelFormat")) {
 		const char *entry;

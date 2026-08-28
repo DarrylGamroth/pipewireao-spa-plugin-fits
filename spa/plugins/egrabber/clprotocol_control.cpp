@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -628,10 +629,15 @@ private:
     std::vector<Feature> inspect_features() const {
         auto &api = genapi_.functions();
         std::vector<std::string> names;
+        std::map<std::string, std::string> groups;
         std::set<std::string> visited_categories;
         std::set<std::string> visited_features;
-        std::function<void(const std::string &)> visit_category = [&](const std::string &name) {
+        std::function<void(const std::string &, const std::string &)> visit_category =
+            [&](const std::string &name, const std::string &parent) {
             if (!visited_categories.insert(name).second) return;
+            const auto category_name = unqualified_node_name(name);
+            const auto group = category_name == "Root" ? parent
+                : parent.empty() ? category_name : parent + "/" + category_name;
             GenApiNodeHandle category{};
             genapi_.check(api.NodeMapGetNode(node_map_, name.c_str(), &category),
                           "NodeMapGetNode(" + name + ")");
@@ -639,11 +645,14 @@ private:
                 GenApiNodeHandle child{};
                 genapi_.check(api.NodeMapGetNode(node_map_, child_name.c_str(), &child),
                               "NodeMapGetNode(" + child_name + ")");
-                if (child.NodeType == GenApiCategoryNode) visit_category(child_name);
-                else if (visited_features.insert(child_name).second) names.push_back(child_name);
+                if (child.NodeType == GenApiCategoryNode) visit_category(child_name, group);
+                else if (visited_features.insert(child_name).second) {
+                    names.push_back(child_name);
+                    groups.emplace(child_name, group);
+                }
             }
         };
-        visit_category("Root");
+        visit_category("Root", "");
         if (std::getenv("GENICAM_CLPROTOCOL_DEBUG") ||
                 std::getenv("EGRABBER_CLPROTOCOL_DEBUG")) {
             std::cerr << "CLProtocol feature nodes:";
@@ -675,6 +684,17 @@ private:
                 feature.writeable = (mode & GenApiWriteOnly) != 0;
                 feature.property_name = feature.kind == FeatureKind::command
                     ? "genicam-command." + feature.name : "genicam." + feature.name;
+                if (const auto group = groups.find(name); group != groups.end())
+                    feature.group = group->second;
+                try {
+                    switch (static_cast<GenApiVisibility>(get_property<std::int64_t>(
+                                handle, GenApiNodeVisibility, GenApiInt64))) {
+                    case GenApiInvisible: feature.visibility = "Invisible"; break;
+                    case GenApiExpert: feature.visibility = "Expert"; break;
+                    case GenApiGuru: feature.visibility = "Guru"; break;
+                    case GenApiBeginner: feature.visibility = "Beginner"; break;
+                    }
+                } catch (...) {}
                 try { feature.description = get_string_property(handle, GenApiNodeToolTip); }
                 catch (...) {
                     try { feature.description = get_string_property(handle, GenApiNodeDescription); }

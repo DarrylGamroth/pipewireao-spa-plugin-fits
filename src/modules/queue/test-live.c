@@ -20,6 +20,7 @@
 #include <spa/buffer/meta.h>
 #include <spa/param/buffers.h>
 #include <spa/param/format.h>
+#include <spa/param/video/raw-utils.h>
 #include <spa/pod/builder.h>
 #include <spa/utils/defs.h>
 #include <spa/utils/result.h>
@@ -52,6 +53,7 @@ struct endpoint {
 	_Atomic uint32_t errors;
 	_Atomic uint32_t trigger_done;
 	_Atomic uint64_t trigger_done_nsec;
+	bool video_format;
 };
 
 struct producer {
@@ -90,6 +92,7 @@ struct fixture {
 	struct pw_impl_link *playback_link;
 	struct producer producer;
 	struct observer observer;
+	bool video_format;
 };
 
 struct latency_sample {
@@ -310,7 +313,8 @@ static void producer_process(void *data)
 		payload[i] = sequence * 1000u + i;
 	buffer->datas[0].chunk->offset = 0;
 	buffer->datas[0].chunk->size = PAYLOAD_WORDS * sizeof(uint32_t);
-	buffer->datas[0].chunk->stride = sizeof(uint32_t);
+	buffer->datas[0].chunk->stride = producer->endpoint.video_format ?
+			PAYLOAD_WORDS * sizeof(uint32_t) : sizeof(uint32_t);
 	header = spa_buffer_find_meta_data(buffer, SPA_META_Header,
 			sizeof(*header));
 	if (header == NULL) {
@@ -339,7 +343,7 @@ done:
 }
 
 static bool validate_observer_buffer(struct pw_buffer *pw_buffer,
-		uint32_t *sequence)
+		uint32_t *sequence, bool video_format)
 {
 	struct spa_buffer *buffer = pw_buffer->buffer;
 	struct spa_meta_header *header;
@@ -350,7 +354,8 @@ static bool validate_observer_buffer(struct pw_buffer *pw_buffer,
 			buffer->datas[0].chunk->offset != 0 ||
 			buffer->datas[0].chunk->size !=
 				PAYLOAD_WORDS * sizeof(uint32_t) ||
-			buffer->datas[0].chunk->stride != sizeof(uint32_t))
+			buffer->datas[0].chunk->stride != (int32_t)(video_format ?
+					PAYLOAD_WORDS * sizeof(uint32_t) : sizeof(uint32_t)))
 		return false;
 	header = spa_buffer_find_meta_data(buffer, SPA_META_Header,
 			sizeof(*header));
@@ -378,7 +383,8 @@ static void observer_process(void *data)
 		uint32_t delivery, sequence = 0;
 		bool same;
 
-		if (!validate_observer_buffer(pw_buffer, &sequence)) {
+		if (!validate_observer_buffer(pw_buffer, &sequence,
+				observer->endpoint.video_format)) {
 			atomic_fetch_add_explicit(&observer->endpoint.errors, 1,
 					memory_order_relaxed);
 			(void)pw_stream_queue_buffer(observer->endpoint.stream, pw_buffer);
@@ -431,12 +437,23 @@ static const struct pw_stream_events observer_events = {
 };
 
 static struct spa_pod *build_format(uint8_t *storage, size_t size,
-		uint32_t object_id)
+		uint32_t object_id, bool video_format)
 {
 	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
 			(uint32_t)size);
 	const int32_t shape[] = { (int32_t)PAYLOAD_WORDS };
 	const struct spa_fraction rate = SPA_FRACTION(1000, 1);
+	const struct spa_rectangle video_size =
+			SPA_RECTANGLE(PAYLOAD_WORDS * sizeof(uint32_t), 1);
+
+	if (video_format)
+		return spa_pod_builder_add_object(&builder,
+				SPA_TYPE_OBJECT_Format, object_id,
+				SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
+				SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+				SPA_FORMAT_VIDEO_format, SPA_POD_Id(SPA_VIDEO_FORMAT_GRAY8),
+				SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle(&video_size),
+				SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&rate));
 
 	return spa_pod_builder_add_object(&builder,
 			SPA_TYPE_OBJECT_Format, object_id,
@@ -465,7 +482,7 @@ static struct pw_stream *create_endpoint_stream(struct fixture *fixture,
 	struct spa_pod_builder header_builder = SPA_POD_BUILDER_INIT(
 			header_storage, sizeof(header_storage));
 	struct spa_pod *format = build_format(storage, sizeof(storage),
-			SPA_PARAM_EnumFormat);
+			SPA_PARAM_EnumFormat, fixture->video_format);
 	const struct spa_pod *params[3];
 	struct pw_stream *stream;
 
@@ -476,6 +493,7 @@ static struct pw_stream *create_endpoint_stream(struct fixture *fixture,
 					PW_KEY_NODE_PAUSE_ON_IDLE, "false", NULL));
 	CHECK(stream != NULL);
 	endpoint->stream = stream;
+	endpoint->video_format = fixture->video_format;
 	atomic_init(&endpoint->state, PW_STREAM_STATE_UNCONNECTED);
 	atomic_init(&endpoint->errors, 0);
 	atomic_init(&endpoint->trigger_done, 0);
@@ -488,7 +506,9 @@ static struct pw_stream *create_endpoint_stream(struct fixture *fixture,
 			SPA_PARAM_BUFFERS_blocks, SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,
 			SPA_POD_Int(PAYLOAD_WORDS * (int32_t)sizeof(uint32_t)),
-			SPA_PARAM_BUFFERS_stride, SPA_POD_Int(sizeof(uint32_t)),
+			SPA_PARAM_BUFFERS_stride,
+			SPA_POD_Int(fixture->video_format ?
+					PAYLOAD_WORDS * sizeof(uint32_t) : sizeof(uint32_t)),
 			SPA_PARAM_BUFFERS_align, SPA_POD_Int(16),
 			SPA_PARAM_BUFFERS_dataType,
 			SPA_POD_CHOICE_FLAGS_Int(1u << SPA_DATA_MemFd));
@@ -622,8 +642,16 @@ static void trigger_observer(struct fixture *fixture, uint32_t expected)
 					spa_strerror(result), pw_stream_is_driving(
 						fixture->observer.endpoint.stream));
 		CHECK(result >= 0);
-		wait_for_counter(fixture, &fixture->observer.endpoint.trigger_done,
-				trigger_done + 1u, "observer graph cycle");
+		/* A graph rebuilt after format withdrawal can accept a trigger before
+		 * the new driver activation has reached its data loop. Keep driving the
+		 * bounded test graph until one trigger completes or the overall
+		 * delivery deadline expires. */
+		for (uint32_t iteration = 0; iteration < 64u &&
+				atomic_load_explicit(
+					&fixture->observer.endpoint.trigger_done,
+					memory_order_acquire) == trigger_done;
+				iteration++)
+			iterate_main_loop(fixture);
 	}
 	if (atomic_load_explicit(&fixture->observer.deliveries,
 			memory_order_acquire) < expected)
@@ -650,7 +678,8 @@ static void release_observer(struct fixture *fixture)
 
 	/* The graph cycle is complete, so its data loop no longer owns this buffer. */
 	CHECK(fixture->observer.held != NULL);
-	CHECK(validate_observer_buffer(fixture->observer.held, &sequence));
+	CHECK(validate_observer_buffer(fixture->observer.held, &sequence,
+			fixture->observer.endpoint.video_format));
 	CHECK(sequence == fixture->observer.held_sequence);
 	CHECK(pw_stream_queue_buffer(fixture->observer.endpoint.stream,
 			fixture->observer.held) == 0);
@@ -658,8 +687,8 @@ static void release_observer(struct fixture *fixture)
 	fixture->observer.held_sequence = 0;
 }
 
-static void fixture_init(struct fixture *fixture, const char *overflow,
-		const char *storage)
+static void fixture_init_format(struct fixture *fixture, const char *overflow,
+		const char *storage, bool video_format)
 {
 	char args[512];
 	int length;
@@ -667,6 +696,7 @@ static void fixture_init(struct fixture *fixture, const char *overflow,
 			*observer_node;
 
 	memset(fixture, 0, sizeof(*fixture));
+	fixture->video_format = video_format;
 	fixture->main_loop = pw_main_loop_new(NULL);
 	CHECK(fixture->main_loop != NULL);
 	fixture->context = pw_context_new(pw_main_loop_get_loop(fixture->main_loop),
@@ -680,10 +710,12 @@ static void fixture_init(struct fixture *fixture, const char *overflow,
 	CHECK(fixture->core != NULL);
 	length = snprintf(args, sizeof(args),
 			"queue.max-buffers=1 queue.overflow=%s queue.storage=%s "
+			"queue.media=%s "
 			"remote.name=internal "
 			"capture.props={ node.name=test.queue-input } "
 			"playback.props={ node.name=test.queue-output }",
-			overflow, storage);
+			overflow, storage,
+			video_format ? "video/raw" : "application/ndarray");
 	CHECK(length > 0 && (size_t)length < sizeof(args));
 	fixture->module = pw_context_load_module(fixture->context,
 			"libpipewire-module-queue", args, NULL);
@@ -715,6 +747,12 @@ static void fixture_init(struct fixture *fixture, const char *overflow,
 	wait_for_link(fixture, fixture->playback_link);
 	wait_for_streaming(fixture, &fixture->producer.endpoint);
 	wait_for_streaming(fixture, &fixture->observer.endpoint);
+}
+
+static void fixture_init(struct fixture *fixture, const char *overflow,
+		const char *storage)
+{
+	fixture_init_format(fixture, overflow, storage, false);
 }
 
 static void fixture_clear(struct fixture *fixture)
@@ -765,6 +803,20 @@ static void test_drop_policy(const char *overflow, const char *storage,
 			dropped_arrivals);
 	CHECK(module_counter(&fixture, "queue.stats.backpressure") == 0);
 	CHECK(module_counter(&fixture, "queue.stats.deliveries") == 2);
+	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
+	fixture_clear(&fixture);
+}
+
+static void test_video_format(void)
+{
+	struct fixture fixture;
+
+	fixture_init_format(&fixture, "drop-oldest", "copy", true);
+	trigger_producer(&fixture, 1);
+	trigger_observer(&fixture, 1);
+	CHECK(fixture.observer.sequence[0] == 1);
+	atomic_store_explicit(&fixture.observer.hold, 0, memory_order_release);
+	release_observer(&fixture);
 	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
 	fixture_clear(&fixture);
 }
@@ -1159,6 +1211,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "queue lifecycle storage=%s case=format-recreation\n", name);
 		test_format_recreation(name);
 	}
+	test_video_format();
 	pw_deinit();
 	return 0;
 }

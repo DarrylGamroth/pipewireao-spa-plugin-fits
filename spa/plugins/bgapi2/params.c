@@ -97,6 +97,8 @@ struct spa_pod *bgapi2_build_feature_prop_info(struct bgapi2_camera *camera,
 	spa_pod_builder_add(builder,
 			SPA_PROP_INFO_name, SPA_POD_String(info.property_name),
 			SPA_PROP_INFO_description, SPA_POD_String(info.description),
+			SPA_PROP_INFO_group, SPA_POD_String(info.group),
+			SPA_PROP_INFO_visibility, SPA_POD_String(info.visibility),
 			0);
 	spa_pod_builder_prop(builder, SPA_PROP_INFO_type, 0);
 	switch (info.kind) {

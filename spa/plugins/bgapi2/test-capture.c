@@ -161,6 +161,22 @@ static struct spa_pod *build_control_write(uint8_t *storage, size_t size,
 	return spa_pod_builder_pop(&builder, &object);
 }
 
+static struct spa_pod *build_string_control_write(uint8_t *storage, size_t size,
+		const char *name, const char *value)
+{
+	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, size);
+	struct spa_pod_frame object, values;
+
+	spa_pod_builder_push_object(&builder, &object,
+			SPA_TYPE_OBJECT_Props, SPA_PARAM_Props);
+	spa_pod_builder_prop(&builder, SPA_PROP_params, 0);
+	spa_pod_builder_push_struct(&builder, &values);
+	spa_pod_builder_string(&builder, name);
+	spa_pod_builder_string(&builder, value);
+	spa_pod_builder_pop(&builder, &values);
+	return spa_pod_builder_pop(&builder, &object);
+}
+
 static const struct spa_node_events node_events = {
 	.version = SPA_VERSION_NODE_EVENTS,
 	.info = on_info,
@@ -278,10 +294,13 @@ static int capture(const struct spa_handle_factory *factory,
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
 	struct spa_pod *format, *buffers_param, *prop_info, *props;
 	struct spa_pod *scalar_value, *scalar_write, *width_value, *width_write;
+	struct spa_pod *offset_value = NULL, *offset_write = NULL, *pixel_write;
 	uint8_t scalar_write_storage[512], width_write_storage[512];
+	uint8_t offset_write_storage[512], pixel_write_storage[512];
 	const char *scalar_name = NULL;
-	const char *property_name = NULL;
-	bool width_writable;
+	const char *property_name = NULL, *description = NULL, *group = NULL;
+	const char *visibility = NULL;
+	bool width_writable, offset_writable, pixel_format_writable;
 	uint64_t deadline;
 	int64_t last_pts = SPA_TIME_INVALID;
 	int32_t payload_size = 0;
@@ -325,11 +344,18 @@ static int capture(const struct spa_handle_factory *factory,
 	spa_assert_se(spa_node_set_callbacks(node, &node_callbacks,
 			&readiness_state) == 0);
 	width_writable = feature_is_writable(node, &params, "genicam.Width");
+	offset_writable = feature_is_writable(node, &params, "genicam.OffsetX");
+	pixel_format_writable = feature_is_writable(node, &params,
+			"genicam.PixelFormat");
 	prop_info = enum_node_one(node, &params, SPA_PARAM_PropInfo);
 	spa_assert_se(spa_pod_parse_object(prop_info, SPA_TYPE_OBJECT_PropInfo, NULL,
-			SPA_PROP_INFO_name, SPA_POD_String(&property_name)) >= 0);
+			SPA_PROP_INFO_name, SPA_POD_String(&property_name),
+			SPA_PROP_INFO_description, SPA_POD_String(&description),
+			SPA_PROP_INFO_group, SPA_POD_String(&group),
+			SPA_PROP_INFO_visibility, SPA_POD_String(&visibility)) >= 0);
 	spa_assert_se(property_name != NULL &&
-			strncmp(property_name, "genicam.", 8) == 0);
+			strncmp(property_name, "genicam.", 8) == 0 &&
+			description != NULL && group != NULL && visibility != NULL);
 	props = enum_node_one(node, &params, SPA_PARAM_Props);
 	spa_assert_se(props_have_values(props));
 	for (i = 0; i < 3; i++) {
@@ -347,6 +373,10 @@ static int capture(const struct spa_handle_factory *factory,
 			sizeof(scalar_write_storage), scalar_name, scalar_value);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
 			scalar_write) == 0);
+	offset_value = find_control_value(props, "genicam.OffsetX");
+	if (offset_value != NULL)
+		offset_write = build_control_write(offset_write_storage,
+				sizeof(offset_write_storage), "genicam.OffsetX", offset_value);
 	format = enum_one(node, &params, SPA_PARAM_EnumFormat);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_PARAM_Format, 0, format) == 0);
@@ -387,7 +417,10 @@ static int capture(const struct spa_handle_factory *factory,
 	}
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
-			scalar_write) == -EBUSY);
+			scalar_write) == 0);
+	if (offset_writable && offset_write != NULL)
+		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
+				offset_write) == 0);
 	deadline = monotonic_nsec() + 3 * SPA_NSEC_PER_SEC;
 	while (frames < REQUESTED_FRAMES) {
 		uint32_t id;
@@ -435,6 +468,17 @@ static int capture(const struct spa_handle_factory *factory,
 				sizeof(width_write_storage), "genicam.Width", width_value);
 		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
 				width_write) == 0);
+	}
+	if (pixel_format_writable) {
+		pixel_write = build_string_control_write(pixel_write_storage,
+				sizeof(pixel_write_storage), "genicam.PixelFormat", "Mono8");
+		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
+				pixel_write) == 0);
+		pixel_write = build_string_control_write(pixel_write_storage,
+				sizeof(pixel_write_storage), "genicam.PixelFormat",
+				"not-a-pixel-format");
+		spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
+				pixel_write) == -EINVAL);
 	}
 	format = enum_one(node, &params, SPA_PARAM_EnumFormat);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,

@@ -150,8 +150,17 @@ CLProtocol properties are documented in
 ## Controls and lifecycle
 
 Scalar GenICam controls are enumerated with `SPA_PARAM_PropInfo` and read or
-written with `SPA_PARAM_Props`. Writes require a paused node. A layout-changing
-write also requires the output pool to be released; afterward the host must
+written with `SPA_PARAM_Props`. Each control publishes its GenICam category
+path as `SPA_PROP_INFO_group` and its Beginner, Expert, Guru, or Invisible
+level as `SPA_PROP_INFO_visibility`, so clients can reproduce the camera's
+feature tree and visibility filtering. A GenICam enumeration accepts either
+its advertised label or its integer index.
+Controls that do not change the payload layout may be written during
+acquisition when the device reports them writable. `OffsetX` and `OffsetY`
+change the image origin without changing the buffer shape, so the source tries
+them live and rolls them back if the transport reports that buffers must
+change. `Width`, `Height`, `PixelFormat`, and other payload-layout controls
+require a paused node with its output pool released; afterward the host must
 renegotiate Format and Buffers.
 
 `Start` resets sequence and timestamp state, installs callbacks, announces
@@ -161,7 +170,8 @@ destruction synchronously stop acquisition and recycle or free all slots.
 
 The source polling loop is the sole owner of event dispatch, completion,
 filled-size observation, publication, and recycling. Control and pool mutation
-remain on the stopped control path.
+are serialized independently; pool mutation remains on the stopped control
+path.
 
 ## Qualification
 

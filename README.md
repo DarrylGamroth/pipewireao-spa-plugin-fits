@@ -7,17 +7,19 @@ SPA factories and uses PipeWireAO's installed public SPA interfaces.
 The supported device integrations are `api.alpao.sink`,
 `api.egrabber.source`, `api.bgapi2.source`, `api.edtpdv.source`, and
 `api.flisdk.source`, and `api.andor3.source`.
-`api.fits.source` provides
-fixed-cadence vector and image-sequence playback from FITS arrays. The sources
-use PipeWireAO-owned image buffers and regular graph scheduling. eGrabber uses
-a configured polling data loop; BGAPI2 and FITS can instead select ordinary
-eventfd or timerfd readiness;
+`api.fits.source` provides fixed-cadence vector and image-sequence playback and
+a preloaded simulated camera row-readout mode. The sources use PipeWireAO-owned
+image buffers and regular graph scheduling. eGrabber uses a configured polling
+data loop; BGAPI2 and FITS can instead select ordinary eventfd or timerfd
+readiness;
 proprietary SDKs and CFITSIO remain optional build dependencies.
 Proprietary SDKs, drivers, device configuration files, calibration files, and
 redistributable binaries do not belong in this repository.
 
 The accepted repository and interface boundary is recorded in
 [Device plugin architecture](docs/device-plugin-architecture.md).
+The GUI-visible contract shared by the supported GenICam adapters is tracked in
+the [GenICam Video/Source matrix](docs/genicam-video-source-matrix.md).
 The separate scientific-algorithm boundary is recorded in
 [Algorithm plugin architecture](docs/algorithm-plugin-architecture.md).
 The generic bounded handoff for isolating telemetry, GUI, and recorder graphs
@@ -100,8 +102,10 @@ manual test commands.
 
 Enable or require the FITS source with `-Dfits=enabled`. Its default `file`
 profile reads each scheduled plane through CFITSIO directly into a PipeWireAO
-pool buffer. See [FITS sequence source](spa/plugins/fits/README.md) for axis,
-schema, cadence, `GRAY16_LE`, and optional mmap behavior.
+pool buffer. Its row mode preloads U16 frames and publishes scheduled ordinary
+row-block ndarrays for camera-pipeline qualification. See
+[FITS sequence source](spa/plugins/fits/README.md) for axis, schema, cadence,
+`GRAY16_LE`, simulated readout, and optional mmap behavior.
 
 Optional Camera Link control through Grablink, CLProtocol, and the GenICam
 Reference Implementation is enabled with `-Dgenicam-root=PATH`. It supplies

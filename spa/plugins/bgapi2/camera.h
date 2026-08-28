@@ -94,6 +94,8 @@ struct bgapi2_feature_info {
 	const char *name;
 	const char *property_name;
 	const char *description;
+	const char *group;
+	const char *visibility;
 	enum bgapi2_feature_kind kind;
 	uint32_t n_enum_entries;
 	bool available;
@@ -126,7 +128,7 @@ void bgapi2_camera_close(struct bgapi2_camera *camera);
 const struct bgapi2_camera_info *bgapi2_camera_get_info(
 		const struct bgapi2_camera *camera);
 
-/* GenICam discovery and feature access are stopped control-path operations. */
+/* GenICam discovery and feature access are serialized control-path operations. */
 uint32_t bgapi2_camera_get_feature_count(const struct bgapi2_camera *camera);
 int bgapi2_camera_get_feature_info(struct bgapi2_camera *camera,
 		uint32_t index, struct bgapi2_feature_info *info);

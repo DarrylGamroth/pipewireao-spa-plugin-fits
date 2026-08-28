@@ -7,7 +7,8 @@ Decision: PWAO-PLUGIN-003
 
 Baseline: `pipewireao-spa-plugins` `main` at `344d763`
 
-Applicable profiles: complete-buffer `application/ndarray` streams on Linux
+Applicable profiles: complete-buffer `application/ndarray` and `video/raw`
+streams on Linux
 
 ## Purpose and authority
 
@@ -16,7 +17,7 @@ This document is the normative contract for the out-of-tree
 capacity and overload behavior, payload-storage modes, lease lifetime,
 execution boundary, lifecycle, and counters.
 
-The negotiated ndarray format and metadata ABIs remain owned by PipeWireAO.
+The negotiated ndarray, raw-video, and metadata ABIs remain owned by PipeWireAO.
 Device and algorithm plugins remain responsible for the semantic validity of
 the products they publish. Deployment configuration owns graph-driver and data
 loop placement. This module does not define a scientific product, clock, or
@@ -51,6 +52,7 @@ directional values are not used here.
 | `queue.max-buffers` | Decimal integer from 1 through 62. |
 | `queue.overflow` | `backpressure`, `drop-oldest`, or `drop-newest`. |
 | `queue.storage` | `copy` or `lease`. |
+| `queue.media` | Optional `application/ndarray` (default) or `video/raw`. |
 | `capture.props` | Optional PipeWire properties for the input stream. |
 | `playback.props` | Optional PipeWire properties for the output stream. |
 
@@ -64,6 +66,7 @@ The recommended observer-isolation profile is:
 queue.max-buffers = 1
 queue.overflow = drop-oldest
 queue.storage = copy
+queue.media = application/ndarray
 ```
 
 `queue.storage = lease` selects the bounded zero-payload-copy alternative.
@@ -88,6 +91,7 @@ context.modules = [
             queue.max-buffers = 1
             queue.overflow = drop-oldest
             queue.storage = copy
+            queue.media = application/ndarray
             capture.props = {
                 node.name = telemetry-queue-input
             }
@@ -133,16 +137,27 @@ progress makes room for a retained arrival. That recovery can wake the producer
 data loop. It does not run on the producer publication path, but it is another
 reason that `backpressure` is not the observer-isolation profile.
 
+For a complete-frame camera observer, the queue forwards the source's exact
+raw-video format without converting it:
+
+```text
+eGrabber Video/Source -> capacity-one queue -> GUI video observer
+```
+
+That deployment MUST set `queue.media=video/raw`. Selecting one media family
+at module creation keeps input format negotiation deterministic; the exact
+format details are still copied from the source to the output.
+
 ### QUEUE-001 — Ordinary complete-buffer boundary
 
 The module MUST expose one input stream and one output stream using ordinary
-PipeWire complete-buffer transport. It MUST negotiate one exact
-`application/ndarray` format on the input and advertise that exact format on
-the output. It MUST NOT require a private buffer-ownership protocol on either
-side.
+PipeWire complete-buffer transport. It MUST accept the media family selected
+by `queue.media`, negotiate one exact `application/ndarray` or `video/raw`
+format on the input, and advertise that exact format on the output. It MUST
+NOT require a private buffer-ownership protocol on either side.
 
 Verification intent (informative): inspect stream flags and negotiated PODs;
-exercise an exact ndarray format through ordinary stream I/O.
+exercise exact ndarray and raw-video formats through ordinary stream I/O.
 
 ### QUEUE-002 — Finite capacity and admission
 

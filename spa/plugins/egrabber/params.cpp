@@ -81,6 +81,8 @@ spa_pod *build_feature_prop_info(Camera &camera, const Feature &feature,
 	spa_pod_builder_add(builder,
 			SPA_PROP_INFO_name, SPA_POD_String(feature.property_name.c_str()),
 			SPA_PROP_INFO_description, SPA_POD_String(feature.description.c_str()),
+			SPA_PROP_INFO_group, SPA_POD_String(feature.group.c_str()),
+			SPA_PROP_INFO_visibility, SPA_POD_String(feature.visibility.c_str()),
 			0);
 	spa_pod_builder_prop(builder, SPA_PROP_INFO_type, 0);
 	switch (feature.kind) {

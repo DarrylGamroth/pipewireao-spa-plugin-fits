@@ -65,10 +65,14 @@ are published as node properties.
 
 The plugin discovers scalar controls from the remote GenICam NodeMap instead of
 maintaining a camera-specific list. Properties use canonical names such as
-`genicam.ExposureTime` and `genicam.PixelFormat`; enumeration labels, numeric
-ranges, descriptions, and current access state come from the camera. A write
-contains exactly one typed property and is accepted only while acquisition is
-stopped. Layout-changing controls also require all buffers to be released and
+`genicam.ExposureTime` and `genicam.PixelFormat`; category groups, visibility,
+tooltips, enumeration labels, numeric ranges, and current access state come
+from the camera. Enumeration writes accept either the published string label or
+its numeric index. A write contains exactly one typed property. The camera's
+current GenICam access state decides whether a non-layout control can be changed
+while acquiring. `OffsetX` and `OffsetY` therefore remain live controls on
+cameras that permit them. Payload-layout controls such as `Width`, `Height`, and
+`PixelFormat` require stopped acquisition and a released buffer pool, then
 invalidate format and buffer negotiation. GenICam command nodes are not exposed
 as persistent SPA properties.
 

@@ -4,7 +4,8 @@ This is the implemented execution and buffer model for the PipeWireAO SPA
 plugins. Production nodes use the regular PipeWire scheduler and ordinary
 complete buffers. Latency-critical sources can be polled by a named data loop;
 eGrabber can publish fixed row-block ndarrays so calibration starts before the
-camera finishes the frame.
+camera finishes the frame. The FITS source can reproduce the same public
+artifact boundary on an explicit simulated readout schedule.
 
 ## Result
 
@@ -23,7 +24,7 @@ the activation flag that permits polling across processes.
 
 | Factory | Scheduling role | Wake/readiness | Buffer contract |
 | --- | --- | --- | --- |
-| `api.fits.source` | graph driver | configured `poll` or `timerfd` | complete ordinary output |
+| `api.fits.source` | graph driver | configured `poll` or `timerfd` | complete planes or simulated complete raw row blocks |
 | `api.bgapi2.source` | graph driver | configured `poll` or `eventfd` | complete ordinary output |
 | `api.aravis.source` | comparison graph driver | nonblocking camera probe | complete ordinary output |
 | `api.egrabber.source` | graph driver | nonblocking camera or row-readout probe | complete video frames or complete raw row blocks |
@@ -143,6 +144,22 @@ api.calculon.row-block-rows = 8
 height. Row-block eGrabber operation requires qualified
 `StartOfCameraReadout` and filled-size support. `frame` is the default
 output mode.
+
+For source-to-graph qualification without camera hardware, configure the FITS
+source with the same artifact size and an explicit frame readout duration:
+
+```ini
+api.fits.output-mode = row-block
+api.fits.row-block-rows = 8
+api.fits.simulated-readout-time-ns = 250000
+api.fits.schema = org.calculon.ao.raw-pixel-row-block/1
+api.fits.profile = detector-profile-id
+api.calculon.row-block-rows = 8
+```
+
+The FITS source preloads and converts the cube before activation. Its uniform
+block schedule is an experimental input, not a substitute for measured camera
+tap and row-arrival timing.
 
 An exported source configures the polling loop in its client process. The
 daemon's remote node participates in topology and shares activation state, but

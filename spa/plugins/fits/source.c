@@ -29,6 +29,8 @@
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 
+#include <pipewireao-plugins/calculon.h>
+
 #include "cube.h"
 #include "fits.h"
 #include "../image-frame.h"
@@ -41,6 +43,11 @@ enum output_kind {
 	OUTPUT_NONE,
 	OUTPUT_NDARRAY,
 	OUTPUT_GRAY16,
+};
+
+enum output_mode {
+	OUTPUT_MODE_FRAME,
+	OUTPUT_MODE_ROW_BLOCK,
 };
 
 enum buffer_state {
@@ -75,6 +82,17 @@ struct cadence {
 	bool ended;
 };
 
+struct row_cadence {
+	struct spa_fraction frame_rate;
+	uint64_t readout_time_ns;
+	uint64_t epoch;
+	uint64_t next_sequence;
+	uint64_t next_pts;
+	uint32_t blocks_per_frame;
+	uint32_t next_block;
+	bool ended;
+};
+
 struct impl {
 	struct spa_handle handle;
 	struct spa_node node;
@@ -87,7 +105,7 @@ struct impl {
 	uint64_t info_all;
 	struct spa_node_info info;
 	struct spa_dict props;
-	struct spa_dict_item prop_items[16];
+	struct spa_dict_item prop_items[20];
 	char path[PATH_MAX];
 	char schema[TEXT_SIZE];
 	char profile[TEXT_SIZE];
@@ -100,11 +118,20 @@ struct impl {
 	char prefault_text[8];
 	char loop_text[8];
 	char readiness_text[8];
+	char output_mode_text[16];
+	char row_block_rows_text[16];
+	char simulated_readout_time_text[32];
 	struct port port;
 	struct fits_cube *cube;
 	struct fits_cube_info cube_info;
 	struct spa_fraction rate;
+	struct spa_fraction output_rate;
 	struct cadence cadence;
+	struct row_cadence row_cadence;
+	uint16_t *preloaded_frames;
+	uint64_t simulated_readout_time_ns;
+	uint32_t row_block_rows;
+	enum output_mode output_mode;
 	bool loop;
 	bool discontinuity;
 	bool started;
@@ -128,6 +155,30 @@ static int parse_u32(const char *text, uint32_t fallback, uint32_t *value)
 		return 0;
 	}
 	return spa_atou32(text, value, 10) ? 0 : -EINVAL;
+}
+
+static int parse_u64(const char *text, uint64_t fallback, uint64_t *value)
+{
+	const char *cursor;
+	uintmax_t parsed;
+	char *end = NULL;
+
+	if (text == NULL) {
+		*value = fallback;
+		return 0;
+	}
+	if (text[0] == '\0')
+		return -EINVAL;
+	for (cursor = text; *cursor != '\0'; cursor++)
+		if (*cursor < '0' || *cursor > '9')
+			return -EINVAL;
+	errno = 0;
+	parsed = strtoumax(text, &end, 10);
+	if (errno == ERANGE || end == text || *end != '\0' ||
+			parsed > UINT64_MAX)
+		return -EINVAL;
+	*value = (uint64_t)parsed;
+	return 0;
 }
 
 static int parse_bool(const char *text, bool fallback, bool *value)
@@ -166,6 +217,34 @@ static int parse_rate(const char *text, struct spa_fraction *rate)
 		return -EINVAL;
 	rate->num = numerator;
 	rate->denom = denominator;
+	return 0;
+}
+
+static uint64_t greatest_common_divisor(uint64_t left, uint64_t right)
+{
+	while (right != 0) {
+		uint64_t remainder = left % right;
+
+		left = right;
+		right = remainder;
+	}
+	return left;
+}
+
+static int block_rate(const struct spa_fraction *frame_rate, uint32_t blocks,
+		struct spa_fraction *rate)
+{
+	uint64_t numerator = (uint64_t)frame_rate->num * blocks;
+	uint64_t denominator = frame_rate->denom;
+	uint64_t divisor = greatest_common_divisor(numerator, denominator);
+
+	numerator /= divisor;
+	denominator /= divisor;
+	if (numerator == 0 || numerator > UINT32_MAX || denominator == 0 ||
+			denominator > UINT32_MAX)
+		return -EOVERFLOW;
+	rate->num = (uint32_t)numerator;
+	rate->denom = (uint32_t)denominator;
 	return 0;
 }
 
@@ -231,6 +310,139 @@ static int cadence_due(struct cadence *cadence, uint64_t now,
 	} else {
 		cadence->next_pts = sequence_pts(cadence, cadence->next_sequence);
 	}
+	return 1;
+}
+
+static uint64_t saturated_time_add(uint64_t base, __uint128_t offset)
+{
+	return offset > UINT64_MAX - base ? UINT64_MAX :
+			base + (uint64_t)offset;
+}
+
+static uint64_t row_frame_start(const struct row_cadence *cadence,
+		uint64_t sequence)
+{
+	__uint128_t offset = (__uint128_t)sequence * SPA_NSEC_PER_SEC *
+			cadence->frame_rate.denom / cadence->frame_rate.num;
+
+	return saturated_time_add(cadence->epoch, offset);
+}
+
+static uint64_t row_block_pts(const struct row_cadence *cadence,
+		uint64_t sequence, uint32_t block)
+{
+	uint64_t start = row_frame_start(cadence, sequence);
+	__uint128_t numerator = (__uint128_t)(block + 1u) *
+			cadence->readout_time_ns;
+	__uint128_t completion = (numerator + cadence->blocks_per_frame - 1u) /
+			cadence->blocks_per_frame;
+
+	return saturated_time_add(start, completion);
+}
+
+static void row_cadence_start(struct row_cadence *cadence,
+		const struct spa_fraction *frame_rate, uint64_t readout_time_ns,
+		uint32_t blocks_per_frame, uint64_t now)
+{
+	cadence->frame_rate = *frame_rate;
+	cadence->readout_time_ns = readout_time_ns;
+	cadence->epoch = now;
+	cadence->next_sequence = 0;
+	cadence->blocks_per_frame = blocks_per_frame;
+	cadence->next_block = 0;
+	cadence->next_pts = row_block_pts(cadence, 0, 0);
+	cadence->ended = false;
+}
+
+static void row_cadence_finish(struct row_cadence *cadence)
+{
+	cadence->ended = true;
+	cadence->next_pts = UINT64_MAX;
+}
+
+static void row_cadence_advance(struct row_cadence *cadence,
+		uint64_t sample_count, bool loop)
+{
+	if (++cadence->next_block < cadence->blocks_per_frame) {
+		cadence->next_pts = row_block_pts(cadence,
+				cadence->next_sequence, cadence->next_block);
+		return;
+	}
+	if (cadence->next_sequence == UINT64_MAX ||
+			(!loop && cadence->next_sequence + 1u >= sample_count)) {
+		row_cadence_finish(cadence);
+		return;
+	}
+	cadence->next_sequence++;
+	cadence->next_block = 0;
+	cadence->next_pts = row_block_pts(cadence,
+			cadence->next_sequence, 0);
+}
+
+static void row_cadence_abandon(struct row_cadence *cadence, uint64_t now,
+		uint64_t sample_count, bool loop)
+{
+	__uint128_t elapsed, due_frame_128;
+	uint64_t candidate, due_frame;
+
+	if (cadence->ended)
+		return;
+	if (cadence->next_sequence == UINT64_MAX) {
+		row_cadence_finish(cadence);
+		return;
+	}
+	elapsed = now > cadence->epoch ? now - cadence->epoch : 0;
+	due_frame_128 = elapsed * cadence->frame_rate.num /
+			((__uint128_t)SPA_NSEC_PER_SEC * cadence->frame_rate.denom);
+	due_frame = due_frame_128 > UINT64_MAX ? UINT64_MAX :
+			(uint64_t)due_frame_128;
+	candidate = cadence->next_sequence + 1u;
+	if (candidate < due_frame)
+		candidate = due_frame;
+	if (candidate != UINT64_MAX && row_block_pts(cadence, candidate, 0) <= now)
+		candidate++;
+	if (candidate == UINT64_MAX || (!loop && candidate >= sample_count)) {
+		row_cadence_finish(cadence);
+		return;
+	}
+	cadence->next_sequence = candidate;
+	cadence->next_block = 0;
+	cadence->next_pts = row_block_pts(cadence, candidate, 0);
+}
+
+static bool row_cadence_select_latest(struct row_cadence *cadence,
+		uint64_t now, uint64_t sample_count, bool loop)
+{
+	__uint128_t elapsed, due_frame_128;
+	uint64_t due_frame;
+
+	if (cadence->ended || cadence->next_block != 0 || now <= cadence->epoch)
+		return false;
+	elapsed = now - cadence->epoch;
+	due_frame_128 = elapsed * cadence->frame_rate.num /
+			((__uint128_t)SPA_NSEC_PER_SEC * cadence->frame_rate.denom);
+	due_frame = due_frame_128 > UINT64_MAX ? UINT64_MAX :
+			(uint64_t)due_frame_128;
+	if (!loop && due_frame >= sample_count)
+		due_frame = sample_count - 1u;
+	if (due_frame <= cadence->next_sequence)
+		return false;
+	cadence->next_sequence = due_frame;
+	cadence->next_pts = row_block_pts(cadence, due_frame, 0);
+	return true;
+}
+
+static int row_cadence_due(struct row_cadence *cadence, uint64_t now,
+		uint64_t sample_count, bool loop, uint64_t *sequence,
+		uint64_t *sample, uint32_t *block, uint64_t *pts)
+{
+	if (cadence->ended || now < cadence->next_pts)
+		return 0;
+	*sequence = cadence->next_sequence;
+	*sample = loop ? cadence->next_sequence % sample_count :
+			cadence->next_sequence;
+	*block = cadence->next_block;
+	*pts = cadence->next_pts;
 	return 1;
 }
 
@@ -329,6 +541,13 @@ static uint64_t release_after(const struct cadence *cadence, uint64_t now)
 	return sequence_pts(cadence, sequence);
 }
 
+static uint64_t next_release(struct impl *self, uint64_t now)
+{
+	return self->output_mode == OUTPUT_MODE_ROW_BLOCK ?
+			self->row_cadence.next_pts :
+			release_after(&self->cadence, now);
+}
+
 static void timer_ready(struct spa_source *source)
 {
 	struct impl *self = source->data;
@@ -354,9 +573,14 @@ static void timer_ready(struct spa_source *source)
 	if (self->port.io != NULL &&
 			self->port.io->status == SPA_STATUS_HAVE_DATA) {
 		self->discontinuity = true;
-		if (monotonic_nsec(&now) == 0)
+		if (monotonic_nsec(&now) == 0) {
+			if (self->output_mode == OUTPUT_MODE_ROW_BLOCK &&
+					now >= self->row_cadence.next_pts)
+				row_cadence_abandon(&self->row_cadence, now,
+						self->cube_info.samples, self->loop);
 			(void) set_release_timer(self,
-					release_after(&self->cadence, now));
+					next_release(self, now));
+		}
 		return;
 	}
 	res = node_process(self);
@@ -370,7 +594,7 @@ static void timer_ready(struct spa_source *source)
 		spa_node_call_ready(&self->callbacks, res);
 	if (monotonic_nsec(&now) == 0)
 		(void) set_release_timer(self,
-				release_after(&self->cadence, now));
+				next_release(self, now));
 }
 
 static int remove_timer_source(struct spa_loop *loop SPA_UNUSED,
@@ -411,11 +635,18 @@ static int node_send_command(void *object, const struct spa_command *command)
 			return 0;
 		if ((res = monotonic_nsec(&now)) < 0)
 			return res;
-		cadence_start(&self->cadence, &self->rate, now);
+		if (self->output_mode == OUTPUT_MODE_ROW_BLOCK)
+			row_cadence_start(&self->row_cadence, &self->rate,
+					self->simulated_readout_time_ns,
+					self->cube_info.height / self->row_block_rows, now);
+		else
+			cadence_start(&self->cadence, &self->rate, now);
 		self->started = true;
 		if (self->timerfd_readiness &&
 				(res = set_release_timer(self,
-					self->cadence.next_pts)) < 0) {
+					self->output_mode == OUTPUT_MODE_ROW_BLOCK ?
+						self->row_cadence.next_pts :
+						self->cadence.next_pts)) < 0) {
 			self->started = false;
 			return res;
 		}
@@ -445,10 +676,26 @@ static struct spa_pod *build_ndarray_format(struct impl *self,
 		struct spa_pod_builder *builder, uint32_t id)
 {
 	struct spa_pod_frame object;
-	int32_t shape[2] = {
-		(int32_t)self->cube_info.width,
-		(int32_t)self->cube_info.height,
-	};
+	int32_t shape[2];
+	enum spa_element_type element_type;
+	enum spa_ndarray_layout layout;
+	uint32_t n_dimensions;
+
+	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK) {
+		shape[0] = (int32_t)self->row_block_rows;
+		shape[1] = (int32_t)self->cube_info.width;
+		element_type = SPA_ELEMENT_TYPE_U16_LE;
+		layout = SPA_NDARRAY_LAYOUT_ROW_MAJOR;
+		n_dimensions = 2;
+	} else {
+		shape[0] = (int32_t)self->cube_info.width;
+		shape[1] = (int32_t)self->cube_info.height;
+		element_type = self->cube_info.element_type;
+		layout = self->cube_info.sample_rank == 1 ?
+				SPA_NDARRAY_LAYOUT_ROW_MAJOR :
+				SPA_NDARRAY_LAYOUT_COLUMN_MAJOR;
+		n_dimensions = self->cube_info.sample_rank;
+	}
 
 	spa_pod_builder_push_object(builder, &object, SPA_TYPE_OBJECT_Format, id);
 	spa_pod_builder_add(builder,
@@ -456,14 +703,11 @@ static struct spa_pod *build_ndarray_format(struct impl *self,
 			SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_ndarray),
 			SPA_FORMAT_NDARRAY_schema, SPA_POD_String(self->schema),
 			SPA_FORMAT_NDARRAY_elementType,
-			SPA_POD_Id(self->cube_info.element_type),
+			SPA_POD_Id(element_type),
 			SPA_FORMAT_NDARRAY_shape, SPA_POD_Array(sizeof(int32_t),
-					SPA_TYPE_Int, self->cube_info.sample_rank, shape),
-			SPA_FORMAT_NDARRAY_layout,
-			SPA_POD_Id(self->cube_info.sample_rank == 1 ?
-					SPA_NDARRAY_LAYOUT_ROW_MAJOR :
-					SPA_NDARRAY_LAYOUT_COLUMN_MAJOR),
-			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&self->rate), 0);
+					SPA_TYPE_Int, n_dimensions, shape),
+			SPA_FORMAT_NDARRAY_layout, SPA_POD_Id(layout),
+			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&self->output_rate), 0);
 	if (self->profile[0] != '\0')
 		spa_pod_builder_add(builder, SPA_FORMAT_NDARRAY_profile,
 				SPA_POD_String(self->profile), 0);
@@ -485,13 +729,17 @@ static struct spa_pod *build_video_format(struct impl *self,
 
 static size_t output_size(const struct impl *self)
 {
+	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK)
+		return (size_t)self->row_block_rows * self->cube_info.width *
+				sizeof(uint16_t);
 	return self->port.output == OUTPUT_NDARRAY ? self->cube_info.plane_size :
 			self->cube_info.plane_elements * sizeof(uint16_t);
 }
 
 static uint32_t output_stride(const struct impl *self)
 {
-	size_t element_size = self->port.output == OUTPUT_NDARRAY ?
+	size_t element_size = self->output_mode == OUTPUT_MODE_ROW_BLOCK ?
+			sizeof(uint16_t) : self->port.output == OUTPUT_NDARRAY ?
 			self->cube_info.element_size : sizeof(uint16_t);
 
 	return self->cube_info.width * element_size;
@@ -506,7 +754,8 @@ static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 	case SPA_PARAM_EnumFormat:
 		if (index == 0)
 			*param = build_ndarray_format(self, builder, id);
-		else if (index == 1 && self->cube_info.sample_rank == 2)
+		else if (index == 1 && self->output_mode == OUTPUT_MODE_FRAME &&
+				self->cube_info.sample_rank == 2)
 			*param = build_video_format(self, builder, id);
 		else
 			return 0;
@@ -596,18 +845,35 @@ static int validate_ndarray_format(struct impl *self,
 	struct spa_ndarray_info format = SPA_NDARRAY_INFO_INIT();
 	const struct spa_pod_prop *property;
 	const char *value;
+	enum spa_element_type element_type;
+	enum spa_ndarray_layout layout;
+	uint32_t n_dimensions;
+	uint32_t shape[2];
+
+	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK) {
+		element_type = SPA_ELEMENT_TYPE_U16_LE;
+		layout = SPA_NDARRAY_LAYOUT_ROW_MAJOR;
+		n_dimensions = 2;
+		shape[0] = self->row_block_rows;
+		shape[1] = self->cube_info.width;
+	} else {
+		element_type = self->cube_info.element_type;
+		layout = self->cube_info.sample_rank == 1 ?
+				SPA_NDARRAY_LAYOUT_ROW_MAJOR :
+				SPA_NDARRAY_LAYOUT_COLUMN_MAJOR;
+		n_dimensions = self->cube_info.sample_rank;
+		shape[0] = self->cube_info.width;
+		shape[1] = self->cube_info.height;
+	}
 
 	if (spa_format_ndarray_parse(param, &format) < 0 ||
-			format.element_type != self->cube_info.element_type ||
-			format.layout != (self->cube_info.sample_rank == 1 ?
-					SPA_NDARRAY_LAYOUT_ROW_MAJOR :
-					SPA_NDARRAY_LAYOUT_COLUMN_MAJOR) ||
-			format.rate.num != self->rate.num ||
-			format.rate.denom != self->rate.denom ||
-			format.n_dimensions != self->cube_info.sample_rank ||
-			format.shape[0] != self->cube_info.width ||
-			(self->cube_info.sample_rank == 2 &&
-			 format.shape[1] != self->cube_info.height) ||
+			format.element_type != element_type ||
+			format.layout != layout ||
+			format.rate.num != self->output_rate.num ||
+			format.rate.denom != self->output_rate.denom ||
+			format.n_dimensions != n_dimensions ||
+			format.shape[0] != shape[0] ||
+			(n_dimensions == 2 && format.shape[1] != shape[1]) ||
 			spa_ndarray_format_key_count(param,
 					SPA_FORMAT_NDARRAY_schema) != 1)
 		return -EINVAL;
@@ -632,7 +898,8 @@ static int validate_video_format(struct impl *self,
 {
 	struct spa_video_info_raw format = { 0 };
 
-	return self->cube_info.sample_rank == 2 &&
+	return self->output_mode == OUTPUT_MODE_FRAME &&
+			self->cube_info.sample_rank == 2 &&
 			spa_format_video_raw_parse(param, &format) >= 0 &&
 			format.format == SPA_VIDEO_FORMAT_GRAY16_LE &&
 			format.size.width == self->cube_info.width &&
@@ -810,6 +1077,81 @@ static void return_buffer(struct impl *self, struct buffer *buffer)
 		self->port.scan_hint = 0;
 }
 
+static int process_row_block(struct impl *self, uint64_t now)
+{
+	struct pwao_image_frame publication;
+	struct buffer *output;
+	struct spa_data *data;
+	const uint16_t *source;
+	uint64_t sequence, sample, pts;
+	uint32_t block, first_row, size, header_flags = 0;
+	int due, res;
+
+	if (row_cadence_select_latest(&self->row_cadence, now,
+			self->cube_info.samples, self->loop))
+		self->discontinuity = true;
+	due = row_cadence_due(&self->row_cadence, now,
+			self->cube_info.samples, self->loop, &sequence, &sample,
+			&block, &pts);
+	if (due == 0)
+		return SPA_STATUS_OK;
+	if (self->port.io->status == SPA_STATUS_HAVE_DATA) {
+		row_cadence_abandon(&self->row_cadence, now,
+				self->cube_info.samples, self->loop);
+		self->discontinuity = true;
+		return SPA_STATUS_HAVE_DATA;
+	}
+	output = take_buffer(self);
+	if (output == NULL) {
+		row_cadence_abandon(&self->row_cadence, now,
+				self->cube_info.samples, self->loop);
+		self->discontinuity = true;
+		return SPA_STATUS_OK;
+	}
+	if (output->buffer == NULL || output->buffer->n_datas == 0 ||
+			self->preloaded_frames == NULL) {
+		return_buffer(self, output);
+		return -EPROTO;
+	}
+	data = &output->buffer->datas[0];
+	size = (uint32_t)output_size(self);
+	first_row = block * self->row_block_rows;
+	source = self->preloaded_frames +
+			(size_t)sample * self->cube_info.plane_elements +
+			(size_t)first_row * self->cube_info.width;
+	memcpy(data->data, source, size);
+	if (block + 1u == self->row_cadence.blocks_per_frame)
+		header_flags |= SPA_META_HEADER_FLAG_MARKER;
+	if (block == 0 && (sequence == 0 || self->discontinuity))
+		header_flags |= SPA_META_HEADER_FLAG_DISCONT;
+	publication = (struct pwao_image_frame) {
+		.data_index = 0,
+		.header_flags = header_flags,
+		.offset = 0,
+		.size = size,
+		.stride = (int32_t)output_stride(self),
+		.header_offset = first_row,
+		.sequence = sequence,
+		.pts = (int64_t)pts,
+	};
+	res = pwao_image_frame_write(output->buffer, &publication,
+			PWAO_IMAGE_FRAME_REQUIRE_HEADER);
+	if (res < 0) {
+		return_buffer(self, output);
+		row_cadence_abandon(&self->row_cadence, now,
+				self->cube_info.samples, self->loop);
+		self->discontinuity = true;
+		return res;
+	}
+	row_cadence_advance(&self->row_cadence, self->cube_info.samples,
+			self->loop);
+	self->port.io->buffer_id = output->id;
+	self->port.io->status = SPA_STATUS_HAVE_DATA;
+	output->state = BUFFER_PUBLISHED;
+	self->discontinuity = false;
+	return SPA_STATUS_HAVE_DATA;
+}
+
 static int node_process(void *object)
 {
 	struct impl *self = object;
@@ -829,6 +1171,8 @@ static int node_process(void *object)
 		return res;
 	if ((res = monotonic_nsec(&now)) < 0)
 		return res;
+	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK)
+		return process_row_block(self, now);
 	if (cadence_due(&self->cadence, now, self->cube_info.samples,
 			self->loop, &sequence, &sample, &pts, &discontinuity) == 0)
 		return SPA_STATUS_OK;
@@ -907,6 +1251,36 @@ static int get_interface(struct spa_handle *handle, const char *type,
 	return 0;
 }
 
+static int preload_row_frames(struct impl *self)
+{
+	size_t frame_size, total_size;
+	uint64_t sample;
+	int res;
+
+	if (self->cube_info.plane_elements > SIZE_MAX / sizeof(uint16_t))
+		return -EOVERFLOW;
+	frame_size = self->cube_info.plane_elements * sizeof(uint16_t);
+	if (self->cube_info.samples > SIZE_MAX / frame_size)
+		return -EOVERFLOW;
+	total_size = (size_t)self->cube_info.samples * frame_size;
+	self->preloaded_frames = malloc(total_size);
+	if (self->preloaded_frames == NULL)
+		return -ENOMEM;
+	for (sample = 0; sample < self->cube_info.samples; sample++) {
+		res = fits_cube_read_plane(self->cube, sample,
+				FITS_CUBE_OUTPUT_GRAY16,
+				self->preloaded_frames +
+						(size_t)sample * self->cube_info.plane_elements,
+				frame_size);
+		if (res < 0) {
+			free(self->preloaded_frames);
+			self->preloaded_frames = NULL;
+			return res;
+		}
+	}
+	return 0;
+}
+
 static int clear(struct spa_handle *handle)
 {
 	struct impl *self = (struct impl *)handle;
@@ -931,6 +1305,8 @@ static int clear(struct spa_handle *handle)
 	}
 	fits_cube_close(self->cube);
 	self->cube = NULL;
+	free(self->preloaded_frames);
+	self->preloaded_frames = NULL;
 	return first_error;
 }
 
@@ -949,6 +1325,11 @@ static void configure_props(struct impl *self)
 		snprintf(self->description, sizeof(self->description),
 				"FITS vector sequence %u (%" PRIu64 " samples)",
 				self->cube_info.width, self->cube_info.samples);
+	else if (self->output_mode == OUTPUT_MODE_ROW_BLOCK)
+		snprintf(self->description, sizeof(self->description),
+				"Simulated FITS camera readout %ux%u (%" PRIu64 " frames)",
+				self->cube_info.width, self->cube_info.height,
+				self->cube_info.samples);
 	else
 		snprintf(self->description, sizeof(self->description),
 				"FITS image cube %ux%u (%" PRIu64 " frames)",
@@ -973,6 +1354,13 @@ static void configure_props(struct impl *self)
 	ADD_ITEM(SPA_KEY_API_FITS_PREFAULT, self->prefault_text);
 	ADD_ITEM(SPA_KEY_API_FITS_LOOP, self->loop_text);
 	ADD_ITEM(SPA_KEY_API_FITS_READINESS, self->readiness_text);
+	ADD_ITEM(SPA_KEY_API_FITS_OUTPUT_MODE, self->output_mode_text);
+	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK) {
+		ADD_ITEM(SPA_KEY_API_FITS_ROW_BLOCK_ROWS,
+				self->row_block_rows_text);
+		ADD_ITEM(SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS,
+				self->simulated_readout_time_text);
+	}
 #undef ADD_ITEM
 	self->props = SPA_DICT_INIT(self->prop_items, n);
 }
@@ -1014,6 +1402,31 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	value = spa_dict_lookup(info, SPA_KEY_API_FITS_RATE);
 	if (parse_rate(value, &self->rate) < 0)
 		return -EINVAL;
+	self->output_rate = self->rate;
+	value = spa_dict_lookup(info, SPA_KEY_API_FITS_OUTPUT_MODE);
+	if (value == NULL || spa_streq(value, "frame"))
+		self->output_mode = OUTPUT_MODE_FRAME;
+	else if (spa_streq(value, "row-block"))
+		self->output_mode = OUTPUT_MODE_ROW_BLOCK;
+	else
+		return -EINVAL;
+	if (parse_u32(spa_dict_lookup(info, SPA_KEY_API_FITS_ROW_BLOCK_ROWS), 1,
+			&self->row_block_rows) < 0 || self->row_block_rows == 0)
+		return -EINVAL;
+	if (parse_u64(spa_dict_lookup(info,
+			SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS), 0,
+			&self->simulated_readout_time_ns) < 0)
+		return -EINVAL;
+	if (self->output_mode == OUTPUT_MODE_FRAME) {
+		if (spa_dict_lookup(info, SPA_KEY_API_FITS_ROW_BLOCK_ROWS) != NULL ||
+				spa_dict_lookup(info,
+					SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS) != NULL)
+			return -EINVAL;
+	} else if (self->simulated_readout_time_ns == 0 ||
+			(__uint128_t)self->simulated_readout_time_ns * self->rate.num >
+					(__uint128_t)SPA_NSEC_PER_SEC * self->rate.denom) {
+		return -EINVAL;
+	}
 	if (parse_u32(spa_dict_lookup(info, SPA_KEY_API_FITS_HDU), 1,
 			&options.hdu) < 0 || options.hdu == 0)
 		return -EINVAL;
@@ -1063,6 +1476,24 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 		res = -EOVERFLOW;
 		goto error;
 	}
+	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK) {
+		if (self->cube_info.sample_rank != 2 || self->profile[0] == '\0' ||
+				!spa_streq(self->schema,
+					SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK) ||
+				self->row_block_rows >= self->cube_info.height ||
+				self->cube_info.height % self->row_block_rows != 0) {
+			res = -EINVAL;
+			goto error;
+		}
+		if ((res = block_rate(&self->rate,
+				self->cube_info.height / self->row_block_rows,
+				&self->output_rate)) < 0)
+			goto error;
+		if ((res = preload_row_frames(self)) < 0)
+			goto error;
+		fits_cube_close(self->cube);
+		self->cube = NULL;
+	}
 	snprintf(self->hdu_text, sizeof(self->hdu_text), "%u", options.hdu);
 	snprintf(self->sample_rank_text, sizeof(self->sample_rank_text), "%u",
 			options.sample_rank);
@@ -1076,6 +1507,13 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 			self->loop ? "true" : "false");
 	snprintf(self->readiness_text, sizeof(self->readiness_text), "%s",
 			self->timerfd_readiness ? "timerfd" : "poll");
+	snprintf(self->output_mode_text, sizeof(self->output_mode_text), "%s",
+			self->output_mode == OUTPUT_MODE_ROW_BLOCK ? "row-block" : "frame");
+	snprintf(self->row_block_rows_text, sizeof(self->row_block_rows_text), "%u",
+			self->row_block_rows);
+	snprintf(self->simulated_readout_time_text,
+			sizeof(self->simulated_readout_time_text), "%" PRIu64,
+			self->simulated_readout_time_ns);
 	if (self->timerfd_readiness) {
 		self->timer_source.func = timer_ready;
 		self->timer_source.data = self;
@@ -1136,6 +1574,8 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 error:
 	fits_cube_close(self->cube);
 	self->cube = NULL;
+	free(self->preloaded_frames);
+	self->preloaded_frames = NULL;
 	return res;
 }
 

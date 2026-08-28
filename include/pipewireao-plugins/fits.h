@@ -14,5 +14,9 @@
 #define SPA_KEY_API_FITS_PREFAULT "api.fits.prefault"
 #define SPA_KEY_API_FITS_LOOP "api.fits.loop"
 #define SPA_KEY_API_FITS_READINESS "api.fits.readiness"
+#define SPA_KEY_API_FITS_OUTPUT_MODE "api.fits.output-mode"
+#define SPA_KEY_API_FITS_ROW_BLOCK_ROWS "api.fits.row-block-rows"
+#define SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS \
+	"api.fits.simulated-readout-time-ns"
 
 #endif /* PIPEWIREAO_PLUGINS_FITS_H */

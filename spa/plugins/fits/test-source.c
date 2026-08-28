@@ -13,6 +13,7 @@
 #include <fitsio.h>
 #include <pipewire/loop.h>
 #include <pipewire/pipewire.h>
+#include <pipewireao-plugins/calculon.h>
 #include <spa/buffer/meta.h>
 #include <spa/node/io.h>
 #include <spa/node/node.h>
@@ -36,6 +37,9 @@ struct param_result {
 	struct spa_pod *param;
 	uint64_t node_flags;
 	const char *readiness;
+	const char *output_mode;
+	const char *row_block_rows;
+	const char *simulated_readout_time_ns;
 };
 
 struct test_buffer {
@@ -49,6 +53,12 @@ struct test_buffer {
 
 struct source_case {
 	const char *path;
+	const char *rate;
+	const char *schema;
+	const char *profile;
+	const char *output_mode;
+	const char *row_block_rows;
+	const char *simulated_readout_time_ns;
 	uint32_t sample_rank;
 	uint32_t format_index;
 	enum spa_element_type expected_element;
@@ -105,6 +115,14 @@ static void on_info(void *data, const struct spa_node_info *info)
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS)
 		capture->readiness = spa_dict_lookup(info->props,
 				SPA_KEY_API_FITS_READINESS);
+	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS) {
+		capture->output_mode = spa_dict_lookup(info->props,
+				SPA_KEY_API_FITS_OUTPUT_MODE);
+		capture->row_block_rows = spa_dict_lookup(info->props,
+				SPA_KEY_API_FITS_ROW_BLOCK_ROWS);
+		capture->simulated_readout_time_ns = spa_dict_lookup(info->props,
+				SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS);
+	}
 }
 
 static const struct spa_node_events node_events = {
@@ -212,31 +230,68 @@ static const char *format_string(const struct spa_pod *format, uint32_t key)
 	return value;
 }
 
+static int init_node(const struct spa_handle_factory *factory,
+		const struct source_case *test, const char *readiness,
+		const struct spa_support *support, uint32_t n_support,
+		struct spa_handle **handle, struct spa_node **node)
+{
+	char rank_text[8];
+	struct spa_dict_item items[11];
+	struct spa_dict info;
+	uint32_t n_items = 0;
+	int res;
+
+	snprintf(rank_text, sizeof(rank_text), "%u", test->sample_rank);
+	#define ADD_ITEM(key, value) \
+		items[n_items++] = SPA_DICT_ITEM_INIT((key), (value))
+	ADD_ITEM(SPA_KEY_API_FITS_PATH, test->path);
+	ADD_ITEM(SPA_KEY_API_FITS_SAMPLE_RANK, rank_text);
+	ADD_ITEM(SPA_KEY_API_FITS_RATE,
+			test->rate == NULL ? "1000/1" : test->rate);
+	ADD_ITEM(SPA_KEY_API_FITS_SCHEMA,
+			test->schema == NULL ? TEST_SCHEMA : test->schema);
+	if (test->profile != NULL || test->output_mode == NULL)
+		ADD_ITEM(SPA_KEY_API_FITS_PROFILE,
+				test->profile == NULL ? TEST_PROFILE : test->profile);
+	ADD_ITEM(SPA_KEY_API_FITS_LOOP, "true");
+	ADD_ITEM(SPA_KEY_API_FITS_READINESS, readiness);
+	if (test->output_mode != NULL)
+		ADD_ITEM(SPA_KEY_API_FITS_OUTPUT_MODE, test->output_mode);
+	if (test->row_block_rows != NULL)
+		ADD_ITEM(SPA_KEY_API_FITS_ROW_BLOCK_ROWS, test->row_block_rows);
+	if (test->simulated_readout_time_ns != NULL)
+		ADD_ITEM(SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS,
+				test->simulated_readout_time_ns);
+	#undef ADD_ITEM
+	info = SPA_DICT_INIT(items, n_items);
+	*handle = calloc(1, factory->get_size(factory, &info));
+	spa_assert_se(*handle != NULL);
+	*node = NULL;
+	res = factory->init(factory, *handle, &info, support, n_support);
+	if (res < 0) {
+		free(*handle);
+		*handle = NULL;
+		return res;
+	}
+	res = spa_handle_get_interface(*handle, SPA_TYPE_INTERFACE_Node,
+			(void **)node);
+	if (res < 0) {
+		spa_assert_se((*handle)->clear(*handle) == 0);
+		free(*handle);
+		*handle = NULL;
+	}
+	return res;
+}
+
 static struct spa_node *make_node(const struct spa_handle_factory *factory,
-		const char *path, uint32_t rank, const char *readiness,
+		const struct source_case *test, const char *readiness,
 		const struct spa_support *support, uint32_t n_support,
 		struct spa_handle **handle)
 {
-	char rank_text[8];
-	const struct spa_dict_item items[] = {
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PATH, path),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_SAMPLE_RANK, rank_text),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_RATE, "1000/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_SCHEMA, TEST_SCHEMA),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PROFILE, TEST_PROFILE),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_LOOP, "true"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_READINESS, readiness),
-	};
-	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
 	struct spa_node *node = NULL;
 
-	snprintf(rank_text, sizeof(rank_text), "%u", rank);
-	*handle = calloc(1, factory->get_size(factory, &info));
-	spa_assert_se(*handle != NULL);
-	spa_assert_se(factory->init(factory, *handle, &info, support,
-			n_support) == 0);
-	spa_assert_se(spa_handle_get_interface(*handle, SPA_TYPE_INTERFACE_Node,
-			(void **)&node) == 0);
+	spa_assert_se(init_node(factory, test, readiness, support, n_support,
+			handle, &node) == 0);
 	return node;
 }
 
@@ -279,7 +334,7 @@ static void run_source(const struct spa_handle_factory *factory,
 			.data = loop->system,
 		};
 	}
-	node = make_node(factory, test->path, test->sample_rank, readiness,
+	node = make_node(factory, test, readiness,
 			support, n_support, &handle);
 	spa_assert_se(spa_node_set_callbacks(node, &node_callbacks,
 			&readiness_state) == 0);
@@ -288,6 +343,10 @@ static void run_source(const struct spa_handle_factory *factory,
 			&capture) == 0);
 	spa_assert_se(capture.readiness != NULL &&
 			spa_streq(capture.readiness, readiness));
+	spa_assert_se(capture.output_mode != NULL &&
+			spa_streq(capture.output_mode, "frame"));
+	spa_assert_se(capture.row_block_rows == NULL);
+	spa_assert_se(capture.simulated_readout_time_ns == NULL);
 	spa_assert_se((capture.node_flags & SPA_NODE_FLAG_POLL_DRIVER) ==
 			(spa_streq(readiness, "poll") ?
 					SPA_NODE_FLAG_POLL_DRIVER : 0));
@@ -382,6 +441,254 @@ static void run_source(const struct spa_handle_factory *factory,
 		free(storage[i].payload);
 }
 
+static void run_row_source(const struct spa_handle_factory *factory,
+		const char *path, const char *readiness, bool force_overload,
+		bool force_backlog)
+{
+	const struct source_case test = {
+		.path = path,
+		.rate = "20/1",
+		.schema = SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK,
+		.profile = TEST_PROFILE,
+		.output_mode = "row-block",
+		.row_block_rows = "1",
+		.simulated_readout_time_ns = "30000000",
+		.sample_rank = 2,
+	};
+	struct test_buffer storage[N_BUFFERS] = { 0 };
+	struct spa_buffer *buffers[N_BUFFERS];
+	struct spa_io_buffers io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
+	};
+	struct param_result capture = { .expected = SPA_ID_INVALID };
+	struct readiness_state readiness_state = { 0 };
+	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
+	struct spa_ndarray_info ndarray = SPA_NDARRAY_INFO_INIT();
+	struct spa_hook listener;
+	struct pw_loop *loop = NULL;
+	struct spa_support support[2];
+	uint32_t n_support = 0;
+	struct spa_handle *handle;
+	struct spa_node *node;
+	struct spa_pod *format, *buffers_param;
+	int32_t payload_size = 0;
+	int64_t previous_pts = SPA_TIME_INVALID;
+	uint32_t cycle, cycles = force_overload ? 2u : force_backlog ? 4u : 6u;
+	uint32_t id, i;
+	int res;
+
+	spa_assert_se(!(force_overload && force_backlog));
+	spa_assert_se((!force_overload && !force_backlog) ||
+			spa_streq(readiness, "poll"));
+	if (spa_streq(readiness, "timerfd")) {
+		loop = pw_loop_new(NULL);
+		spa_assert_se(loop != NULL);
+		pw_loop_enter(loop);
+		support[n_support++] = (struct spa_support) {
+			.type = SPA_TYPE_INTERFACE_DataLoop,
+			.data = loop->loop,
+		};
+		support[n_support++] = (struct spa_support) {
+			.type = SPA_TYPE_INTERFACE_DataSystem,
+			.data = loop->system,
+		};
+	}
+	node = make_node(factory, &test, readiness, support, n_support, &handle);
+	spa_assert_se(spa_node_set_callbacks(node, &node_callbacks,
+			&readiness_state) == 0);
+	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
+			&capture) == 0);
+	spa_assert_se(capture.output_mode != NULL &&
+			spa_streq(capture.output_mode, "row-block"));
+	spa_assert_se(capture.row_block_rows != NULL &&
+			spa_streq(capture.row_block_rows, "1"));
+	spa_assert_se(capture.simulated_readout_time_ns != NULL &&
+			spa_streq(capture.simulated_readout_time_ns, "30000000"));
+
+	format = enum_one(node, &capture, SPA_PARAM_EnumFormat, 0);
+	spa_assert_se(spa_format_ndarray_parse(format, &ndarray) == 0);
+	spa_assert_se(ndarray.element_type == SPA_ELEMENT_TYPE_U16_LE);
+	spa_assert_se(ndarray.n_dimensions == 2 &&
+			ndarray.shape[0] == 1 && ndarray.shape[1] == 4);
+	spa_assert_se(ndarray.layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR);
+	spa_assert_se(ndarray.rate.num == 60 && ndarray.rate.denom == 1);
+	spa_assert_se(spa_streq(format_string(format,
+			SPA_FORMAT_NDARRAY_schema),
+			SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK));
+	spa_assert_se(spa_streq(format_string(format,
+			SPA_FORMAT_NDARRAY_profile), TEST_PROFILE));
+	capture.expected = SPA_PARAM_EnumFormat;
+	capture.param = NULL;
+	spa_assert_se(spa_node_port_enum_params(node, 1, SPA_DIRECTION_OUTPUT, 0,
+			SPA_PARAM_EnumFormat, 1, 1, NULL) == 0);
+	spa_assert_se(capture.param == NULL);
+	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_PARAM_Format, 0, format) == 0);
+	buffers_param = enum_one(node, &capture, SPA_PARAM_Buffers, 0);
+	spa_assert_se(spa_pod_parse_object(buffers_param,
+			SPA_TYPE_OBJECT_ParamBuffers, NULL,
+			SPA_PARAM_BUFFERS_size, SPA_POD_Int(&payload_size)) >= 0);
+	spa_assert_se(payload_size == 4 * (int32_t)sizeof(uint16_t));
+	for (i = 0; i < N_BUFFERS; i++) {
+		init_buffer(&storage[i], (uint32_t)payload_size);
+		buffers[i] = &storage[i].buffer;
+	}
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			buffers, N_BUFFERS) == 0);
+	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_IO_Buffers, &io, sizeof(io)) == 0);
+	spa_assert_se(spa_node_send_command(node, &start) == 0);
+	for (cycle = 0; cycle < cycles; cycle++) {
+		const uint16_t *values;
+		uint64_t sequence;
+		uint32_t first_row;
+
+		while (io.status != SPA_STATUS_HAVE_DATA) {
+			if (loop != NULL)
+				spa_assert_se(pw_loop_iterate(loop, 1000) >= 0);
+			else {
+				res = spa_node_process(node);
+				spa_assert_se(res >= SPA_STATUS_OK);
+			}
+		}
+		id = io.buffer_id;
+		spa_assert_se(id < N_BUFFERS);
+		sequence = storage[id].header.seq;
+		first_row = storage[id].header.offset;
+		if (force_backlog) {
+			const uint64_t expected_sequences[] = { 0, 0, 0, 2 };
+			const uint32_t expected_rows[] = { 0, 1, 2, 0 };
+			const int64_t expected_deltas[] = {
+					0, 10000000, 10000000, 80000000,
+			};
+
+			spa_assert_se(sequence == expected_sequences[cycle]);
+			spa_assert_se(first_row == expected_rows[cycle]);
+			if (previous_pts != SPA_TIME_INVALID)
+				spa_assert_se(storage[id].header.pts - previous_pts ==
+						expected_deltas[cycle]);
+		} else if (!force_overload) {
+			uint64_t expected_sequence = cycle / 3u;
+			uint32_t expected_row = cycle % 3u;
+			int64_t expected_delta = expected_row == 0 ?
+					30000000 : 10000000;
+
+			spa_assert_se(sequence == expected_sequence);
+			spa_assert_se(first_row == expected_row);
+			if (previous_pts != SPA_TIME_INVALID)
+				spa_assert_se(storage[id].header.pts - previous_pts ==
+						expected_delta);
+		} else if (cycle == 0) {
+			spa_assert_se(sequence == 0 && first_row == 0);
+		} else {
+			spa_assert_se(sequence > 0 && first_row == 0);
+			spa_assert_se((storage[id].header.flags &
+					SPA_META_HEADER_FLAG_DISCONT) != 0);
+		}
+		spa_assert_se(storage[id].chunk.offset == 0);
+		spa_assert_se(storage[id].chunk.size == (uint32_t)payload_size);
+		spa_assert_se(storage[id].chunk.stride ==
+				4 * (int32_t)sizeof(uint16_t));
+		spa_assert_se((storage[id].header.flags &
+				SPA_META_HEADER_FLAG_MARKER) ==
+				(first_row == 2 ? SPA_META_HEADER_FLAG_MARKER : 0));
+		spa_assert_se((storage[id].header.flags &
+				SPA_META_HEADER_FLAG_DISCONT) ==
+				(cycle == 0 || (force_overload && cycle == 1) ||
+				 (force_backlog && cycle == 3) ?
+						SPA_META_HEADER_FLAG_DISCONT : 0));
+		values = storage[id].payload;
+		for (i = 0; i < 4; i++)
+			spa_assert_se(values[i] ==
+					(sequence % 2u) * 100u + first_row * 10u + i);
+		previous_pts = storage[id].header.pts;
+		if (force_overload && cycle == 0) {
+			const struct timespec delay = {
+				.tv_nsec = 25000000,
+			};
+
+			spa_assert_se(nanosleep(&delay, NULL) == 0);
+			res = spa_node_process(node);
+			spa_assert_se(res >= SPA_STATUS_OK);
+			spa_assert_se(io.status == SPA_STATUS_HAVE_DATA &&
+					io.buffer_id == id);
+		}
+		io.status = SPA_STATUS_NEED_DATA;
+		if (force_backlog && (cycle == 0 || cycle == 2)) {
+			const struct timespec delay = {
+				.tv_nsec = cycle == 0 ? 25000000 : 80000000,
+			};
+
+			spa_assert_se(nanosleep(&delay, NULL) == 0);
+		}
+	}
+	spa_assert_se(spa_node_send_command(node, &pause) == 0);
+	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_IO_Buffers, NULL, 0) == 0);
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			NULL, 0) == 0);
+	spa_hook_remove(&listener);
+	spa_assert_se(handle->clear(handle) == 0);
+	free(handle);
+	if (loop != NULL) {
+		spa_assert_se(readiness_state.ready_calls >= cycles);
+		pw_loop_leave(loop);
+		pw_loop_destroy(loop);
+	}
+	free(capture.storage);
+	for (i = 0; i < N_BUFFERS; i++)
+		free(storage[i].payload);
+}
+
+static void assert_init_fails(const struct spa_handle_factory *factory,
+		const struct source_case *test, int expected)
+{
+	struct spa_handle *handle = NULL;
+	struct spa_node *node = NULL;
+
+	spa_assert_se(init_node(factory, test, "poll", NULL, 0, &handle,
+			&node) == expected);
+	spa_assert_se(handle == NULL && node == NULL);
+}
+
+static void test_row_options(const struct spa_handle_factory *factory,
+		const char *vector_path, const char *image_path)
+{
+	const struct source_case valid = {
+		.path = image_path,
+		.rate = "20/1",
+		.schema = SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK,
+		.profile = TEST_PROFILE,
+		.output_mode = "row-block",
+		.row_block_rows = "1",
+		.simulated_readout_time_ns = "30000000",
+		.sample_rank = 2,
+	};
+	struct source_case test;
+
+	test = valid;
+	test.schema = TEST_SCHEMA;
+	assert_init_fails(factory, &test, -EINVAL);
+	test = valid;
+	test.profile = NULL;
+	assert_init_fails(factory, &test, -EINVAL);
+	test = valid;
+	test.row_block_rows = "2";
+	assert_init_fails(factory, &test, -EINVAL);
+	test = valid;
+	test.simulated_readout_time_ns = "60000000";
+	assert_init_fails(factory, &test, -EINVAL);
+	test = valid;
+	test.path = vector_path;
+	test.sample_rank = 1;
+	assert_init_fails(factory, &test, -EINVAL);
+	test = valid;
+	test.output_mode = "frame";
+	assert_init_fails(factory, &test, -EINVAL);
+}
+
 int main(int argc, char *argv[])
 {
 	spa_handle_factory_enum_func_t enumerate;
@@ -421,6 +728,11 @@ int main(int argc, char *argv[])
 		.expected_element = SPA_ELEMENT_TYPE_F64_LE,
 		.expected_size = 4u * sizeof(double),
 	}, "timerfd");
+	run_row_source(factory, image_path, "poll", false, false);
+	run_row_source(factory, image_path, "timerfd", false, false);
+	run_row_source(factory, image_path, "poll", true, false);
+	run_row_source(factory, image_path, "poll", false, true);
+	test_row_options(factory, vector_path, image_path);
 	spa_assert_se(dlclose(library) == 0);
 	spa_assert_se(unlink(vector_path) == 0);
 	spa_assert_se(unlink(image_path) == 0);

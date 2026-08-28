@@ -495,8 +495,6 @@ public:
         std::lock_guard lock(mutex_);
         if (!control_->writeable(feature))
             throw std::runtime_error(feature.name + " is not currently writeable");
-        if (started_)
-            throw std::runtime_error("GenICam properties can only change while acquisition is stopped");
         std::function<void()> restore;
         bool value_applied = false;
         try {
@@ -538,16 +536,28 @@ public:
             }
             case FeatureKind::enumeration: {
                 const auto old = control_->get_string(feature);
-                std::int32_t index;
-                if (spa_pod_get_int(value, &index) < 0) {
-                    std::uint32_t id;
-                    if (spa_pod_get_id(value, &id) < 0) throw std::runtime_error("expected an enum index");
-                    index = static_cast<std::int32_t>(id);
+                std::string selected;
+                const char *label;
+                if (spa_pod_get_string(value, &label) == 0) {
+                    const auto found = std::find(feature.enum_entries.begin(),
+                                                 feature.enum_entries.end(), label);
+                    if (found == feature.enum_entries.end())
+                        throw std::runtime_error("enum label is not an advertised entry");
+                    selected = *found;
+                } else {
+                    std::int32_t index;
+                    if (spa_pod_get_int(value, &index) < 0) {
+                        std::uint32_t id;
+                        if (spa_pod_get_id(value, &id) < 0)
+                            throw std::runtime_error("expected an enum label or index");
+                        index = static_cast<std::int32_t>(id);
+                    }
+                    if (index < 0 || static_cast<std::size_t>(index) >= feature.enum_entries.size())
+                        throw std::runtime_error("enum index is out of range");
+                    selected = feature.enum_entries[index];
                 }
-                if (index < 0 || static_cast<std::size_t>(index) >= feature.enum_entries.size())
-                    throw std::runtime_error("enum index is out of range");
                 restore = [&, old] { control_->set_string(feature, old); };
-                control_->set_string(feature, feature.enum_entries[index]);
+                control_->set_string(feature, selected);
                 value_applied = true;
                 break;
             }

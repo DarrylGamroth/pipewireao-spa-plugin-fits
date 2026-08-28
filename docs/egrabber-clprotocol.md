@@ -9,7 +9,9 @@ The source opens the documented Grablink `DeviceModule` serial interface,
 loads a CLProtocol 1.x provider, retrieves its GenApi XML, and constructs a node
 map with the GenICam Reference Implementation C API. The resulting scalar
 features use the same `SPA_PARAM_PropInfo` and `SPA_PARAM_Props` interface as
-features obtained from eGrabber's `RemoteModule`.
+features obtained from eGrabber's `RemoteModule`. Both paths publish the
+category path in `SPA_PROP_INFO_group` and GenICam visibility in
+`SPA_PROP_INFO_visibility`.
 
 ## Build
 

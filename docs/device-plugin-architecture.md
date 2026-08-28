@@ -334,6 +334,13 @@ only against the public `libspa-ao-0.2` package, and their complete connected
 camera matrix passes from this repository. Their factory identities and SPA
 install paths did not change during migration.
 
+Their shared GenICam boundary is above the vendor SDKs. Common code may define
+the canonical feature model, payload-layout policy, and SPA property encoding.
+Each adapter retains discovery, dynamic access checks, reads, writes, exception
+containment, and SDK object lifetime. This keeps the GUI contract consistent
+without introducing a lowest-common-denominator wrapper around incompatible
+vendor objects. See the [GenICam Video/Source matrix](genicam-video-source-matrix.md).
+
 The Andor SDK3 source follows the same public SPA boundary but uses SDK3's
 typed feature API directly. It preserves SDK3 feature identifiers and units
 under `andor3.*`; the GenICam-like shape of the vendor GUI does not make SDK3 a

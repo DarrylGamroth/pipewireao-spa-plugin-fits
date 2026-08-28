@@ -4,6 +4,9 @@
 #include "egrabber.hpp"
 
 #include <algorithm>
+#include <functional>
+#include <map>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -79,8 +82,32 @@ public:
     }
 
 private:
+    std::map<std::string, std::string> feature_groups() {
+        std::map<std::string, std::string> groups;
+        std::set<std::string> visited;
+        std::function<void(const std::string &, const std::string &)> visit =
+            [&](const std::string &category, const std::string &parent) {
+                if (!visited.insert(category).second) return;
+                const auto group = category == "Root" ? parent
+                    : parent.empty() ? category : parent + "/" + category;
+                for (const auto &name : grabber_.getStringList<RemoteModule>(
+                         Euresys::query::featuresOf(category, false)))
+                    groups.try_emplace(name, group);
+                for (const auto &child : grabber_.getStringList<RemoteModule>(
+                         Euresys::query::categoriesOf(category, false)))
+                    visit(child, group);
+            };
+        try { visit("Root", ""); }
+        catch (const std::exception &error) {
+            spa_log_warn(log_, "could not inspect the GenICam category tree: %s",
+                         error.what());
+        }
+        return groups;
+    }
+
     std::vector<Feature> inspect_features() {
         std::vector<Feature> result;
+        const auto groups = feature_groups();
         for (const auto &name : grabber_.getStringList<RemoteModule>(
                  Euresys::query::features(false))) {
             try {
@@ -95,11 +122,23 @@ private:
                         Euresys::query::interfaces(name)), command);
                 feature.property_name = feature.kind == FeatureKind::command
                     ? "genicam-command." + name : "genicam." + name;
+                if (const auto group = groups.find(name); group != groups.end())
+                    feature.group = group->second;
                 try {
                     feature.description = grabber_.getString<RemoteModule>(
                         Euresys::query::info(name, "Tooltip"));
-                } catch (...) { feature.description = name; }
+                } catch (...) {}
+                if (feature.description.empty()) {
+                    try {
+                        feature.description = grabber_.getString<RemoteModule>(
+                            Euresys::query::info(name, "Description"));
+                    } catch (...) {}
+                }
                 if (feature.description.empty()) feature.description = name;
+                try {
+                    feature.visibility = grabber_.getString<RemoteModule>(
+                        Euresys::query::info(name, "Visibility"));
+                } catch (...) {}
                 if (feature.kind == FeatureKind::enumeration)
                     feature.enum_entries = grabber_.getStringList<RemoteModule>(
                         Euresys::query::enumEntries(name, false));
