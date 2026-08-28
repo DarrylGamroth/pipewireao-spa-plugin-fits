@@ -2,6 +2,7 @@ aravis_lib = shared_library(
   'spa-aravis',
   ['plugin.c', 'source.c', 'camera.c', 'params.c'],
   dependencies: [spa_dep, aravis_dep],
+  include_directories: plugin_include,
   c_args: ['-Wno-pedantic'],
   install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'aravis',

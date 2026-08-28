@@ -198,9 +198,10 @@ factory. Sources set `node.driver=true`. A source reports
 `SPA_NODE_FLAG_POLL_DRIVER` only when its configured execution profile requires
 a bounded, nonblocking `process()` probe on a busy-spin data loop. BGAPI2 and
 FITS also provide ordinary eventfd and timerfd readiness profiles. Aravis and
-eGrabber remain polling sources; eGrabber publishes either complete video
-frames or copied, complete row-block ndarrays. ALPAO is an ordinary scheduled
-follower and accepts `SPA_IO_Buffers`.
+eGrabber remain polling sources. EGrabber publishes either complete video
+frames or copied, complete row-block ndarrays; the experimental native Aravis
+GigE Vision path has the same public artifact boundary. ALPAO is an ordinary
+scheduled follower and accepts `SPA_IO_Buffers`.
 
 The EDT PDV source is also a polling source. It probes EDT's cumulative DMA
 completion count without blocking and copies the latest completed raw EDT ring

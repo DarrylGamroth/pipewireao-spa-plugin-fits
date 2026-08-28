@@ -95,8 +95,10 @@ qualification boundary.
 
 The `api.aravis.source` comparison implementation is retained as an
 experimental, opt-in plugin with `-Daravis=enabled`. It is not a supported RTC
-camera backend: measured completion polling through Aravis and Euresys
-Gigelink was slower than the direct eGrabber and BGAPI2 integrations. See
+camera backend: measured GenTL completion polling through Aravis and Euresys
+Gigelink was slower than the direct eGrabber and BGAPI2 integrations. Its
+native GigE Vision path also provides experimental copied row-block output for
+progressive-readout evaluation. See
 [Aravis comparison source](spa/plugins/aravis/README.md) for its scope and
 manual test commands.
 
@@ -242,7 +244,7 @@ spa/plugins/bgapi2/           Baumer GAPI camera source factory
 spa/plugins/edtpdv/           EDT PCI DV/PDV Camera Link source factory
 spa/plugins/flisdk/           First Light Imaging FliSdk camera source factory
 spa/plugins/andor3/           Andor SDK3 camera source factory
-spa/plugins/aravis/           experimental Aravis GenTL comparison source
+spa/plugins/aravis/           experimental Aravis GenTL/native-GV comparison source
 spa/plugins/fits/             CFITSIO vector and image-sequence source factory
 spa/plugins/calculon/         Calculon SPA factory build and C ABI tests
 crates/calculon-spa-node/     reusable Rust SPA ABI adapter

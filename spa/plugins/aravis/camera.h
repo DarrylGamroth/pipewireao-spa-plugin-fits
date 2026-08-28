@@ -8,8 +8,15 @@
 
 #include <arv.h>
 
+enum aravis_transport {
+	ARAVIS_TRANSPORT_AUTO,
+	ARAVIS_TRANSPORT_GENTL,
+	ARAVIS_TRANSPORT_NATIVE_GV,
+};
+
 struct aravis_camera_options {
 	const char *device_id;
+	enum aravis_transport transport;
 };
 
 struct aravis_camera_info {
@@ -18,6 +25,7 @@ struct aravis_camera_info {
 	uint32_t height;
 	uint32_t offset_x;
 	uint32_t offset_y;
+	double frame_rate;
 	char pixel_format[64];
 	char model[128];
 	char serial[128];
@@ -43,6 +51,13 @@ struct aravis_camera_completion {
 	void *user_data;
 	struct aravis_frame_info frame;
 	int result;
+};
+
+struct aravis_buffer_progress {
+	uint64_t frame_id;
+	uint64_t committed_size;
+	bool active;
+	bool supported;
 };
 
 enum aravis_feature_kind {
@@ -85,11 +100,13 @@ int aravis_camera_open(struct aravis_camera **camera,
 void aravis_camera_close(struct aravis_camera *camera);
 const struct aravis_camera_info *aravis_camera_get_info(
 		const struct aravis_camera *camera);
+enum aravis_transport aravis_camera_get_transport(
+		const struct aravis_camera *camera);
 
 /* GenICam discovery and feature access are stopped control-path operations. */
 uint32_t aravis_camera_get_feature_count(const struct aravis_camera *camera);
-int aravis_camera_get_feature_info(struct aravis_camera *camera,
-		uint32_t index, struct aravis_feature_info *info);
+int aravis_camera_get_feature_info(struct aravis_camera *camera, uint32_t index,
+		struct aravis_feature_info *info);
 const char *aravis_camera_get_feature_enum_entry(
 		const struct aravis_camera *camera, uint32_t index,
 		uint32_t entry_index);
@@ -113,9 +130,12 @@ int aravis_camera_revoke(struct aravis_camera *camera, ArvBuffer **buffer);
 int aravis_camera_start(struct aravis_camera *camera);
 int aravis_camera_stop(struct aravis_camera *camera);
 
-/* RTC-owner operations: one direct GenTL call is made by each poll or queue. */
+/* RTC-owner operations: one direct stream call is made by each poll or queue.
+ */
 int aravis_camera_queue(struct aravis_camera *camera, ArvBuffer *buffer);
 int aravis_camera_try_get_completion(struct aravis_camera *camera,
 		struct aravis_camera_completion *completion);
+int aravis_camera_get_buffer_progress(struct aravis_camera *camera,
+		ArvBuffer *buffer, struct aravis_buffer_progress *progress);
 
 #endif

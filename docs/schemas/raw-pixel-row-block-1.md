@@ -1,6 +1,7 @@
 # Raw pixel row-block schema, version 1
 
-Status: implemented for eGrabber row-block output and Calculon pixel calibration
+Status: implemented for eGrabber and experimental native Aravis row-block
+output, and Calculon pixel calibration
 
 Schema identifier:
 `org.calculon.ao.raw-pixel-row-block/1`

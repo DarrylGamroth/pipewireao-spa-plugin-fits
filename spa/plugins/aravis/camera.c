@@ -19,9 +19,35 @@ struct aravis_camera {
 	ArvStream *stream;
 	GPtrArray *features;
 	struct aravis_camera_info info;
+	enum aravis_transport transport;
 	uint32_t announced_count;
 	bool started;
 };
+
+static ArvCamera *open_camera(
+		const struct aravis_camera_options *options, GError **error)
+{
+	ArvInterface *interface;
+	ArvDevice *device;
+	ArvCamera *camera;
+	const char *interface_id;
+
+	if (options->transport == ARAVIS_TRANSPORT_AUTO)
+		return arv_camera_new(options->device_id, error);
+	interface_id = options->transport == ARAVIS_TRANSPORT_GENTL
+			? "GenTL"
+			: "GigEVision";
+	interface = arv_get_interface_by_id(interface_id);
+	if (interface == NULL)
+		return NULL;
+	device = arv_interface_open_device(
+			interface, options->device_id, error);
+	if (device == NULL)
+		return NULL;
+	camera = arv_camera_new_with_device(device, error);
+	g_object_unref(device);
+	return camera;
+}
 
 static void free_feature(gpointer data)
 {
@@ -70,24 +96,34 @@ static int query_info(struct aravis_camera *camera)
 	camera->info.offset_y = (uint32_t)y;
 	camera->info.width = (uint32_t)width;
 	camera->info.height = (uint32_t)height;
+	camera->info.frame_rate =
+			arv_camera_get_frame_rate(camera->camera, &error);
+	if (error != NULL) {
+		g_clear_error(&error);
+		camera->info.frame_rate = 0.0;
+	}
 
 	text = arv_camera_get_pixel_format_as_string(camera->camera, &error);
-	if (error != NULL || (res = copy_text(camera->info.pixel_format,
-			sizeof(camera->info.pixel_format), text)) < 0)
+	if (error != NULL ||
+			(res = copy_text(camera->info.pixel_format,
+					 sizeof(camera->info.pixel_format),
+					 text)) < 0)
 		return clear_error(&error, error != NULL ? -EIO : res);
 	text = arv_camera_get_model_name(camera->camera, &error);
-	if (error != NULL || (res = copy_text(camera->info.model,
-			sizeof(camera->info.model), text)) < 0)
+	if (error != NULL ||
+			(res = copy_text(camera->info.model,
+					 sizeof(camera->info.model), text)) < 0)
 		return clear_error(&error, error != NULL ? -EIO : res);
 	text = arv_camera_get_device_serial_number(camera->camera, &error);
-	if (error != NULL || (res = copy_text(camera->info.serial,
-			sizeof(camera->info.serial), text)) < 0)
+	if (error != NULL ||
+			(res = copy_text(camera->info.serial,
+					 sizeof(camera->info.serial), text)) <
+					0)
 		return clear_error(&error, error != NULL ? -EIO : res);
 	return 0;
 }
 
-static bool feature_kind(ArvGcFeatureNode *node,
-		enum aravis_feature_kind *kind)
+static bool feature_kind(ArvGcFeatureNode *node, enum aravis_feature_kind *kind)
 {
 	if (ARV_IS_GC_ENUMERATION(node))
 		*kind = ARAVIS_FEATURE_ENUMERATION;
@@ -106,8 +142,7 @@ static bool feature_kind(ArvGcFeatureNode *node,
 	return true;
 }
 
-static void add_feature(struct aravis_camera *camera,
-		ArvGcFeatureNode *node)
+static void add_feature(struct aravis_camera *camera, ArvGcFeatureNode *node)
 {
 	struct aravis_feature *feature;
 	const char *name;
@@ -129,13 +164,15 @@ static void add_feature(struct aravis_camera *camera,
 
 		feature->enum_entries = g_ptr_array_new();
 		for (entry = arv_gc_enumeration_get_entries(
-				ARV_GC_ENUMERATION(node)); entry != NULL;
-				entry = entry->next) {
+				     ARV_GC_ENUMERATION(node));
+				entry != NULL; entry = entry->next) {
 			ArvGcFeatureNode *entry_node = entry->data;
 
 			if (ARV_IS_GC_ENUM_ENTRY(entry_node) &&
-					arv_gc_feature_node_is_implemented(entry_node, NULL))
-				g_ptr_array_add(feature->enum_entries, entry_node);
+					arv_gc_feature_node_is_implemented(
+							entry_node, NULL))
+				g_ptr_array_add(feature->enum_entries,
+						entry_node);
 		}
 	}
 	g_ptr_array_add(camera->features, feature);
@@ -151,15 +188,17 @@ static void collect_features(struct aravis_camera *camera, ArvGc *genicam,
 	g_hash_table_add(visited, g_strdup(name));
 	node = arv_gc_get_node(genicam, name);
 	if (!ARV_IS_GC_FEATURE_NODE(node) ||
-			!arv_gc_feature_node_is_implemented(ARV_GC_FEATURE_NODE(node),
-				NULL))
+			!arv_gc_feature_node_is_implemented(
+					ARV_GC_FEATURE_NODE(node), NULL))
 		return;
 	if (ARV_IS_GC_CATEGORY(node)) {
 		const GSList *feature;
 
-		for (feature = arv_gc_category_get_features(ARV_GC_CATEGORY(node));
+		for (feature = arv_gc_category_get_features(
+				     ARV_GC_CATEGORY(node));
 				feature != NULL; feature = feature->next)
-			collect_features(camera, genicam, feature->data, visited);
+			collect_features(camera, genicam, feature->data,
+					visited);
 		return;
 	}
 	add_feature(camera, ARV_GC_FEATURE_NODE(node));
@@ -193,23 +232,40 @@ int aravis_camera_open(struct aravis_camera **camera_ptr,
 	if (camera == NULL)
 		return -errno;
 
-	camera->camera = arv_camera_new(options->device_id, &error);
+	if (options->transport != ARAVIS_TRANSPORT_AUTO &&
+			options->transport != ARAVIS_TRANSPORT_GENTL &&
+			options->transport != ARAVIS_TRANSPORT_NATIVE_GV) {
+		res = -EINVAL;
+		goto error;
+	}
+	camera->camera = open_camera(options, &error);
 	if (camera->camera == NULL) {
 		res = clear_error(&error, -ENODEV);
 		goto error;
 	}
-	camera->stream = arv_camera_create_stream(camera->camera, NULL, NULL,
-			NULL, &error);
+	camera->stream = arv_camera_create_stream(
+			camera->camera, NULL, NULL, NULL, &error);
 	if (camera->stream == NULL) {
 		res = clear_error(&error, -EIO);
 		goto error;
 	}
-	if (!ARV_IS_GENTL_STREAM(camera->stream)) {
+	if (ARV_IS_GENTL_STREAM(camera->stream)) {
+		camera->transport = ARAVIS_TRANSPORT_GENTL;
+	} else if (ARV_IS_GV_STREAM(camera->stream)) {
+		camera->transport = ARAVIS_TRANSPORT_NATIVE_GV;
+	} else {
 		res = -ENOTSUP;
 		goto error;
 	}
-	if (!arv_gentl_stream_set_caller_polling(
-			ARV_GENTL_STREAM(camera->stream), TRUE, &error)) {
+	if (options->transport != ARAVIS_TRANSPORT_AUTO &&
+			camera->transport != options->transport) {
+		res = -ENODEV;
+		goto error;
+	}
+	if (camera->transport == ARAVIS_TRANSPORT_GENTL &&
+			!arv_gentl_stream_set_caller_polling(
+					ARV_GENTL_STREAM(camera->stream), TRUE,
+					&error)) {
 		res = clear_error(&error, -EIO);
 		goto error;
 	}
@@ -223,6 +279,12 @@ int aravis_camera_open(struct aravis_camera **camera_ptr,
 error:
 	aravis_camera_close(camera);
 	return res;
+}
+
+enum aravis_transport aravis_camera_get_transport(
+		const struct aravis_camera *camera)
+{
+	return camera == NULL ? ARAVIS_TRANSPORT_AUTO : camera->transport;
 }
 
 void aravis_camera_close(struct aravis_camera *camera)
@@ -249,8 +311,8 @@ uint32_t aravis_camera_get_feature_count(const struct aravis_camera *camera)
 	return camera->features->len;
 }
 
-static struct aravis_feature *get_feature(const struct aravis_camera *camera,
-		uint32_t index)
+static struct aravis_feature *get_feature(
+		const struct aravis_camera *camera, uint32_t index)
 {
 	if (camera == NULL || camera->features == NULL ||
 			index >= camera->features->len)
@@ -261,12 +323,23 @@ static struct aravis_feature *get_feature(const struct aravis_camera *camera,
 static bool feature_changes_layout(const char *name)
 {
 	static const char *const exact[] = {
-		"PixelFormat", "Width", "Height", "OffsetX", "OffsetY",
-		"PayloadSize", "ChunkModeActive",
+		"PixelFormat",
+		"Width",
+		"Height",
+		"OffsetX",
+		"OffsetY",
+		"PayloadSize",
+		"ChunkModeActive",
+		"AcquisitionFrameRate",
+		"AcquisitionFrameRateAbs",
 	};
 	static const char *const fragments[] = {
-		"Binning", "Decimation", "Resolution", "Region",
-		"ComponentEnable", "ChunkEnable",
+		"Binning",
+		"Decimation",
+		"Resolution",
+		"Region",
+		"ComponentEnable",
+		"ChunkEnable",
 	};
 	uint32_t i;
 
@@ -279,8 +352,8 @@ static bool feature_changes_layout(const char *name)
 	return false;
 }
 
-int aravis_camera_get_feature_info(struct aravis_camera *camera,
-		uint32_t index, struct aravis_feature_info *info)
+int aravis_camera_get_feature_info(struct aravis_camera *camera, uint32_t index,
+		struct aravis_feature_info *info)
 {
 	struct aravis_feature *feature = get_feature(camera, index);
 	ArvGcAccessMode access;
@@ -303,21 +376,24 @@ int aravis_camera_get_feature_info(struct aravis_camera *camera,
 	if (description == NULL)
 		description = arv_gc_feature_node_get_tooltip(feature->node);
 	if (description == NULL)
-		description = arv_gc_feature_node_get_display_name(feature->node);
+		description = arv_gc_feature_node_get_display_name(
+				feature->node);
 	if (description == NULL)
 		description = arv_gc_feature_node_get_name(feature->node);
-	*info = (struct aravis_feature_info) {
+	*info = (struct aravis_feature_info){
 		.name = arv_gc_feature_node_get_name(feature->node),
 		.property_name = feature->property_name,
 		.description = description,
 		.kind = feature->kind,
-		.n_enum_entries = feature->enum_entries == NULL ? 0 :
-				feature->enum_entries->len,
+		.n_enum_entries = feature->enum_entries == NULL
+				? 0
+				: feature->enum_entries->len,
 		.available = available,
 		.readable = access == ARV_GC_ACCESS_MODE_RO ||
 				access == ARV_GC_ACCESS_MODE_RW,
-		.writable = !locked && (access == ARV_GC_ACCESS_MODE_WO ||
-				access == ARV_GC_ACCESS_MODE_RW),
+		.writable = !locked &&
+				(access == ARV_GC_ACCESS_MODE_WO ||
+						access == ARV_GC_ACCESS_MODE_RW),
 		.changes_layout = feature_changes_layout(
 				arv_gc_feature_node_get_name(feature->node)),
 	};
@@ -373,7 +449,8 @@ int aravis_camera_get_feature_value(struct aravis_camera *camera,
 		for (i = 0; i < feature->enum_entries->len; i++) {
 			ArvGcEnumEntry *entry = g_ptr_array_index(
 					feature->enum_entries, i);
-			gint64 candidate = arv_gc_enum_entry_get_value(entry, &error);
+			gint64 candidate = arv_gc_enum_entry_get_value(
+					entry, &error);
 
 			if (error != NULL)
 				break;
@@ -405,10 +482,12 @@ int aravis_camera_get_feature_integer_range(struct aravis_camera *camera,
 	if (feature == NULL || feature->kind != ARAVIS_FEATURE_INTEGER ||
 			minimum == NULL || maximum == NULL)
 		return -EINVAL;
-	*minimum = arv_gc_integer_get_min(ARV_GC_INTEGER(feature->node), &error);
+	*minimum = arv_gc_integer_get_min(
+			ARV_GC_INTEGER(feature->node), &error);
 	if (error != NULL)
 		return clear_error(&error, -EIO);
-	*maximum = arv_gc_integer_get_max(ARV_GC_INTEGER(feature->node), &error);
+	*maximum = arv_gc_integer_get_max(
+			ARV_GC_INTEGER(feature->node), &error);
 	return error == NULL ? 0 : clear_error(&error, -EIO);
 }
 
@@ -482,17 +561,20 @@ int aravis_camera_set_feature_value(struct aravis_camera *camera,
 		gint64 enum_value;
 
 		if (value->enumeration < 0 || feature->enum_entries == NULL ||
-				(uint32_t)value->enumeration >= feature->enum_entries->len)
+				(uint32_t)value->enumeration >=
+						feature->enum_entries->len)
 			return -EINVAL;
 		entry = g_ptr_array_index(feature->enum_entries,
 				(uint32_t)value->enumeration);
-		if (!arv_gc_feature_node_is_available(ARV_GC_FEATURE_NODE(entry),
-				&error))
-			return error == NULL ? -ENODATA : clear_error(&error, -EIO);
+		if (!arv_gc_feature_node_is_available(
+				    ARV_GC_FEATURE_NODE(entry), &error))
+			return error == NULL ? -ENODATA
+					     : clear_error(&error, -EIO);
 		enum_value = arv_gc_enum_entry_get_value(entry, &error);
 		if (error == NULL)
 			arv_gc_enumeration_set_int_value(
-					ARV_GC_ENUMERATION(feature->node), enum_value, &error);
+					ARV_GC_ENUMERATION(feature->node),
+					enum_value, &error);
 		break;
 	}
 	case ARAVIS_FEATURE_STRING:
@@ -523,13 +605,16 @@ int aravis_camera_announce(struct aravis_camera *camera, void *memory,
 	GError *error = NULL;
 
 	if (camera == NULL || memory == NULL || size == 0 ||
-			buffer_ptr == NULL || *buffer_ptr != NULL || camera->started)
+			buffer_ptr == NULL || *buffer_ptr != NULL ||
+			camera->started)
 		return -EINVAL;
 	buffer = arv_buffer_new_full((size_t)size, memory, user_data, NULL);
 	if (buffer == NULL)
 		return -ENOMEM;
-	if (!arv_gentl_stream_prepare_buffer(ARV_GENTL_STREAM(camera->stream),
-			buffer, &error)) {
+	if (camera->transport == ARAVIS_TRANSPORT_GENTL &&
+			!arv_gentl_stream_prepare_buffer(
+					ARV_GENTL_STREAM(camera->stream),
+					buffer, &error)) {
 		g_object_unref(buffer);
 		return clear_error(&error, -EIO);
 	}
@@ -540,7 +625,8 @@ int aravis_camera_announce(struct aravis_camera *camera, void *memory,
 
 int aravis_camera_revoke(struct aravis_camera *camera, ArvBuffer **buffer)
 {
-	if (camera == NULL || buffer == NULL || *buffer == NULL || camera->started)
+	if (camera == NULL || buffer == NULL || *buffer == NULL ||
+			camera->started)
 		return -EINVAL;
 	g_clear_object(buffer);
 	camera->announced_count--;
@@ -571,6 +657,8 @@ int aravis_camera_stop(struct aravis_camera *camera)
 		return 0;
 	if (!arv_camera_stop_acquisition(camera->camera, &error))
 		return clear_error(&error, -EIO);
+	if (camera->transport == ARAVIS_TRANSPORT_NATIVE_GV)
+		(void)arv_stream_delete_buffers(camera->stream);
 	camera->started = false;
 	return 0;
 }
@@ -579,8 +667,15 @@ int aravis_camera_queue(struct aravis_camera *camera, ArvBuffer *buffer)
 {
 	if (camera == NULL || buffer == NULL)
 		return -EINVAL;
-	return arv_gentl_stream_queue_buffer(ARV_GENTL_STREAM(camera->stream),
-			buffer, NULL) ? 0 : -EIO;
+	if (camera->transport == ARAVIS_TRANSPORT_GENTL)
+		return arv_gentl_stream_queue_buffer(
+				       ARV_GENTL_STREAM(camera->stream), buffer,
+				       NULL)
+				? 0
+				: -EIO;
+	/* ArvStream takes full ownership; retain the announcement reference. */
+	arv_stream_push_buffer(camera->stream, g_object_ref(buffer));
+	return 0;
 }
 
 int aravis_camera_try_get_completion(struct aravis_camera *camera,
@@ -595,27 +690,51 @@ int aravis_camera_try_get_completion(struct aravis_camera *camera,
 	if (camera == NULL || completion == NULL || !camera->started)
 		return -EINVAL;
 	memset(completion, 0, sizeof(*completion));
-	poll = arv_gentl_stream_poll_buffer(ARV_GENTL_STREAM(camera->stream),
-			&buffer, NULL);
-	if (poll == ARV_GENTL_STREAM_POLL_EMPTY)
-		return 0;
-	if (poll != ARV_GENTL_STREAM_POLL_BUFFER)
-		return -EIO;
+	if (camera->transport == ARAVIS_TRANSPORT_GENTL) {
+		poll = arv_gentl_stream_poll_buffer(
+				ARV_GENTL_STREAM(camera->stream), &buffer,
+				NULL);
+		if (poll == ARV_GENTL_STREAM_POLL_EMPTY)
+			return 0;
+		if (poll != ARV_GENTL_STREAM_POLL_BUFFER)
+			return -EIO;
+	} else {
+		buffer = arv_stream_try_pop_buffer(camera->stream);
+		if (buffer == NULL)
+			return 0;
+	}
+	if (arv_buffer_get_status(buffer) != ARV_BUFFER_STATUS_SUCCESS) {
+		completion->buffer = buffer;
+		completion->user_data =
+				(void *)arv_buffer_get_user_data(buffer);
+		completion->frame.frame_id = arv_buffer_get_frame_id(buffer);
+		completion->frame.camera_timestamp_ns =
+				arv_buffer_get_timestamp(buffer);
+		completion->frame.incomplete = true;
+		completion->result = -EIO;
+		if (camera->transport == ARAVIS_TRANSPORT_NATIVE_GV)
+			g_object_unref(buffer);
+		return 1;
+	}
 
 	base = arv_buffer_get_data(buffer, &size_filled);
 	image = arv_buffer_get_image_data(buffer, &image_size);
 	arv_buffer_get_image_region(buffer, &x, &y, &width, &height);
 	arv_buffer_get_image_padding(buffer, &x_padding, &y_padding);
-	if (base == NULL || image == NULL || (uintptr_t)image < (uintptr_t)base ||
-			x < 0 || y < 0 ||
-			width < 0 || height < 0 || x_padding < 0 || y_padding < 0 ||
+	if (base == NULL || image == NULL ||
+			(uintptr_t)image < (uintptr_t)base || x < 0 || y < 0 ||
+			width < 0 || height < 0 || x_padding < 0 ||
+			y_padding < 0 ||
 			(uintptr_t)image - (uintptr_t)base > UINT32_MAX ||
-			image_size > UINT32_MAX)
+			image_size > UINT32_MAX) {
+		if (camera->transport == ARAVIS_TRANSPORT_NATIVE_GV)
+			g_object_unref(buffer);
 		return -EPROTO;
+	}
 
 	completion->buffer = buffer;
 	completion->user_data = (void *)arv_buffer_get_user_data(buffer);
-	completion->frame = (struct aravis_frame_info) {
+	completion->frame = (struct aravis_frame_info){
 		.frame_id = arv_buffer_get_frame_id(buffer),
 		.camera_timestamp_ns = arv_buffer_get_timestamp(buffer),
 		.size_filled = size_filled,
@@ -627,8 +746,32 @@ int aravis_camera_try_get_completion(struct aravis_camera *camera,
 		.y_padding = (uint32_t)y_padding,
 		.image_offset = (uint32_t)((uintptr_t)image - (uintptr_t)base),
 		.image_size = (uint32_t)image_size,
-		.incomplete = arv_buffer_get_status(buffer) != ARV_BUFFER_STATUS_SUCCESS,
+		.incomplete = arv_buffer_get_status(buffer) !=
+				ARV_BUFFER_STATUS_SUCCESS,
 	};
 	completion->result = 0;
+	if (camera->transport == ARAVIS_TRANSPORT_NATIVE_GV)
+		g_object_unref(buffer);
 	return 1;
+}
+
+int aravis_camera_get_buffer_progress(struct aravis_camera *camera,
+		ArvBuffer *buffer, struct aravis_buffer_progress *progress)
+{
+	ArvGvStreamBufferProgress snapshot;
+
+	if (camera == NULL || buffer == NULL || progress == NULL)
+		return -EINVAL;
+	if (camera->transport != ARAVIS_TRANSPORT_NATIVE_GV)
+		return -ENOTSUP;
+	if (!arv_gv_stream_get_buffer_progress(
+			    ARV_GV_STREAM(camera->stream), buffer, &snapshot))
+		return -EAGAIN;
+	*progress = (struct aravis_buffer_progress){
+		.frame_id = snapshot.frame_id,
+		.committed_size = snapshot.committed_size,
+		.active = snapshot.active,
+		.supported = snapshot.supported,
+	};
+	return 0;
 }

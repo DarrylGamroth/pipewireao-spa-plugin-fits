@@ -11,6 +11,7 @@
 #include <spa/node/io.h>
 #include <spa/node/node.h>
 #include <spa/param/buffers.h>
+#include <spa/param/ndarray-utils.h>
 #include <spa/param/props.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/pod/builder.h>
@@ -39,8 +40,8 @@ struct test_buffer {
 	void *payload;
 };
 
-static void on_result(void *data, int seq SPA_UNUSED, int res,
-		uint32_t type, const void *result)
+static void on_result(void *data, int seq SPA_UNUSED, int res, uint32_t type,
+		const void *result)
 {
 	struct param_result *capture = data;
 	const struct spa_result_node_params *params;
@@ -67,7 +68,8 @@ static bool props_have_values(struct spa_pod *props)
 	struct spa_pod_object *object = (struct spa_pod_object *)props;
 	struct spa_pod_prop *property;
 
-	SPA_POD_OBJECT_FOREACH(object, property) {
+	SPA_POD_OBJECT_FOREACH(object, property)
+	{
 		struct spa_pod_parser parser;
 		struct spa_pod_frame frame;
 		const char *name = NULL;
@@ -85,13 +87,14 @@ static bool props_have_values(struct spa_pod *props)
 	return false;
 }
 
-static struct spa_pod *find_control_value(struct spa_pod *props,
-		const char *requested)
+static struct spa_pod *find_control_value(
+		struct spa_pod *props, const char *requested)
 {
 	struct spa_pod_object *object = (struct spa_pod_object *)props;
 	struct spa_pod_prop *property;
 
-	SPA_POD_OBJECT_FOREACH(object, property) {
+	SPA_POD_OBJECT_FOREACH(object, property)
+	{
 		struct spa_pod_parser parser;
 		struct spa_pod_frame frame;
 
@@ -105,7 +108,8 @@ static struct spa_pod *find_control_value(struct spa_pod *props,
 
 			if (spa_pod_parser_get_string(&parser, &name) < 0)
 				break;
-			spa_assert_se(spa_pod_parser_get_pod(&parser, &value) == 0);
+			spa_assert_se(spa_pod_parser_get_pod(&parser, &value) ==
+					0);
 			if (spa_streq(name, requested))
 				return value;
 		}
@@ -119,8 +123,8 @@ static struct spa_pod *build_control_write(uint8_t *storage, size_t size,
 	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, size);
 	struct spa_pod_frame object, values;
 
-	spa_pod_builder_push_object(&builder, &object,
-			SPA_TYPE_OBJECT_Props, SPA_PARAM_Props);
+	spa_pod_builder_push_object(&builder, &object, SPA_TYPE_OBJECT_Props,
+			SPA_PARAM_Props);
 	spa_pod_builder_prop(&builder, SPA_PROP_params, 0);
 	spa_pod_builder_push_struct(&builder, &values);
 	spa_pod_builder_string(&builder, name);
@@ -139,8 +143,8 @@ static struct spa_pod *enum_one(struct spa_node *node,
 {
 	capture->expected = id;
 	capture->param = NULL;
-	spa_assert_se(spa_node_port_enum_params(node, 1, SPA_DIRECTION_OUTPUT, 0,
-			id, 0, 1, NULL) == 0);
+	spa_assert_se(spa_node_port_enum_params(node, 1, SPA_DIRECTION_OUTPUT,
+				      0, id, 0, 1, NULL) == 0);
 	spa_assert_se(capture->param != NULL);
 	return capture->param;
 }
@@ -164,12 +168,12 @@ static void init_buffer(struct test_buffer *storage, uint32_t size)
 	storage->data.maxsize = size;
 	storage->data.fd = -1;
 	storage->data.chunk = &storage->chunk;
-	storage->metas[0] = (struct spa_meta) {
+	storage->metas[0] = (struct spa_meta){
 		.type = SPA_META_Header,
 		.size = sizeof(storage->header),
 		.data = &storage->header,
 	};
-	storage->metas[1] = (struct spa_meta) {
+	storage->metas[1] = (struct spa_meta){
 		.type = SPA_META_Acquisition,
 		.size = sizeof(storage->acquisition),
 		.data = &storage->acquisition,
@@ -189,12 +193,20 @@ static uint64_t monotonic_nsec(void)
 }
 
 static int capture(const struct spa_handle_factory *factory,
-		const char *device_id)
+		const char *device_id, bool row_blocks)
 {
 	const struct spa_dict_item items[] = {
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_DEVICE, device_id),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_TRANSPORT,
+				row_blocks ? "native-gv" : "auto"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_OUTPUT_MODE,
+				row_blocks ? "row-block" : "frame"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_ROW_BLOCK_ROWS, "128"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_DETECTOR_PROFILE,
+				"test-profile"),
 	};
-	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	const struct spa_dict info =
+			SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
 	struct test_buffer storage[REQUESTED_BUFFERS] = { 0 };
 	struct spa_buffer *buffers[REQUESTED_BUFFERS];
 	struct spa_io_buffers io = {
@@ -206,79 +218,103 @@ static int capture(const struct spa_handle_factory *factory,
 	struct spa_handle *handle;
 	struct spa_node *node = NULL;
 	struct spa_video_info_raw video = { 0 };
-	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
-	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
+	struct spa_ndarray_info ndarray = SPA_NDARRAY_INFO_INIT();
+	struct spa_command start =
+			SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	struct spa_command pause =
+			SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
 	struct spa_pod *format, *buffers_param, *prop_info, *props;
-	struct spa_pod *scalar_value = NULL, *scalar_write, *width_value, *width_write;
+	struct spa_pod *scalar_value = NULL, *scalar_write, *width_value,
+		       *width_write;
 	uint8_t scalar_write_storage[512], width_write_storage[512];
 	const char *scalar_name = NULL;
 	const char *property_name = NULL;
 	uint64_t deadline;
+	uint64_t row_sequence = 0;
 	int64_t last_pts = SPA_TIME_INVALID;
 	int32_t payload_size = 0;
-	uint32_t frames = 0, i;
+	uint32_t frames = 0, i, expected_row = 0, row_markers = 0;
+	int init_result;
 
 	handle = calloc(1, factory->get_size(factory, &info));
 	spa_assert_se(handle != NULL);
-	if (factory->init(factory, handle, &info, NULL, 0) < 0) {
+	init_result = factory->init(factory, handle, &info, NULL, 0);
+	if (init_result < 0) {
+		fprintf(stderr, "Aravis source init failed: %s (%d)\n",
+				strerror(-init_result), init_result);
 		free(handle);
 		return 77;
 	}
 	spa_assert_se(spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Node,
-			(void **)&node) == 0);
+				      (void **)&node) == 0);
 	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
-			&params) == 0);
+				      &params) == 0);
 	prop_info = enum_node_one(node, &params, SPA_PARAM_PropInfo);
-	spa_assert_se(spa_pod_parse_object(prop_info, SPA_TYPE_OBJECT_PropInfo, NULL,
-			SPA_PROP_INFO_name, SPA_POD_String(&property_name)) >= 0);
+	spa_assert_se(spa_pod_parse_object(prop_info, SPA_TYPE_OBJECT_PropInfo,
+				      NULL, SPA_PROP_INFO_name,
+				      SPA_POD_String(&property_name)) >= 0);
 	spa_assert_se(property_name != NULL &&
 			strncmp(property_name, "genicam.", 8) == 0);
 	props = enum_node_one(node, &params, SPA_PARAM_Props);
 	spa_assert_se(props_have_values(props));
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < 5; i++) {
 		static const char *const candidates[] = {
-			"genicam.ExposureTime", "genicam.Gain",
+			"genicam.ExposureTime",
+			"genicam.Gain",
 			"genicam.AcquisitionFrameRate",
+			"genicam.ExposureTimeAbs",
+			"genicam.GainRaw",
 		};
 
-		if ((scalar_value = find_control_value(props, candidates[i])) != NULL) {
+		if ((scalar_value = find_control_value(props, candidates[i])) !=
+				NULL) {
 			scalar_name = candidates[i];
 			break;
 		}
 	}
 	spa_assert_se(scalar_name != NULL && scalar_value != NULL);
 	scalar_write = build_control_write(scalar_write_storage,
-			sizeof(scalar_write_storage), scalar_name, scalar_value);
+			sizeof(scalar_write_storage), scalar_name,
+			scalar_value);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
-			scalar_write) == 0);
+				      scalar_write) == 0);
 	format = enum_one(node, &params, SPA_PARAM_EnumFormat);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_PARAM_Format, 0, format) == 0);
-	spa_assert_se(spa_format_video_raw_parse(format, &video) >= 0);
-	spa_assert_se(video.size.width > 0 && video.size.height > 0);
+				      SPA_PARAM_Format, 0, format) == 0);
+	if (row_blocks) {
+		spa_assert_se(spa_format_ndarray_parse(format, &ndarray) >= 0);
+		spa_assert_se(ndarray.n_dimensions == 2 &&
+				ndarray.shape[0] == 128 &&
+				ndarray.shape[1] > 0);
+	} else {
+		spa_assert_se(spa_format_video_raw_parse(format, &video) >= 0);
+		spa_assert_se(video.size.width > 0 && video.size.height > 0);
+	}
 	buffers_param = enum_one(node, &params, SPA_PARAM_Buffers);
 	spa_assert_se(spa_pod_parse_object(buffers_param,
-			SPA_TYPE_OBJECT_ParamBuffers, NULL,
-			SPA_PARAM_BUFFERS_size, SPA_POD_Int(&payload_size)) >= 0);
+				      SPA_TYPE_OBJECT_ParamBuffers, NULL,
+				      SPA_PARAM_BUFFERS_size,
+				      SPA_POD_Int(&payload_size)) >= 0);
 	spa_assert_se(payload_size > 0);
 	for (i = 0; i < REQUESTED_BUFFERS; i++) {
 		init_buffer(&storage[i], (uint32_t)payload_size);
 		buffers[i] = &storage[i].buffer;
 	}
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_Buffers, &io, sizeof(io)) == 0);
-	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
-			buffers, REQUESTED_BUFFERS) == 0);
+				      SPA_IO_Buffers, &io, sizeof(io)) == 0);
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0,
+				      0, buffers, REQUESTED_BUFFERS) == 0);
 	props = enum_node_one(node, &params, SPA_PARAM_Props);
 	width_value = find_control_value(props, "genicam.Width");
 	spa_assert_se(width_value != NULL);
 	width_write = build_control_write(width_write_storage,
-			sizeof(width_write_storage), "genicam.Width", width_value);
+			sizeof(width_write_storage), "genicam.Width",
+			width_value);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
-			width_write) == -EBUSY);
+				      width_write) == -EBUSY);
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
-			scalar_write) == -EBUSY);
+				      scalar_write) == -EBUSY);
 	deadline = monotonic_nsec() + 5 * SPA_NSEC_PER_SEC;
 	while (frames < REQUESTED_FRAMES) {
 		uint32_t id;
@@ -293,40 +329,66 @@ static int capture(const struct spa_handle_factory *factory,
 		id = io.buffer_id;
 		spa_assert_se(id < REQUESTED_BUFFERS);
 		spa_assert_se(storage[id].chunk.size > 0 &&
-				storage[id].chunk.size <= (uint32_t)payload_size);
+				storage[id].chunk.size <=
+						(uint32_t)payload_size);
 		spa_assert_se(storage[id].header.seq > 0);
-		spa_assert_se(storage[id].header.pts != SPA_TIME_INVALID);
-		if (last_pts != SPA_TIME_INVALID)
+		if (row_blocks) {
+			if (storage[id].header.seq != row_sequence) {
+				spa_assert_se(row_sequence == 0 ||
+						expected_row == 0);
+				spa_assert_se(storage[id].header.offset == 0);
+				row_sequence = storage[id].header.seq;
+			}
+			spa_assert_se(storage[id].header.offset ==
+					expected_row);
+			expected_row += 128;
+			if (SPA_FLAG_IS_SET(storage[id].header.flags,
+					    SPA_META_HEADER_FLAG_MARKER)) {
+				row_markers++;
+				expected_row = 0;
+			}
+		}
+		if (!row_blocks)
+			spa_assert_se(storage[id].header.pts !=
+					SPA_TIME_INVALID);
+		if (storage[id].header.pts != SPA_TIME_INVALID &&
+				last_pts != SPA_TIME_INVALID)
 			spa_assert_se(storage[id].header.pts > last_pts);
-		last_pts = storage[id].header.pts;
-		spa_assert_se(spa_meta_acquisition_is_valid(&storage[id].metas[1]));
+		if (storage[id].header.pts != SPA_TIME_INVALID)
+			last_pts = storage[id].header.pts;
+		spa_assert_se(spa_meta_acquisition_is_valid(
+				&storage[id].metas[1]));
 		io.status = SPA_STATUS_NEED_DATA;
 		frames++;
 	}
+	if (row_blocks)
+		spa_assert_se(row_markers > 0);
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_Buffers, NULL, 0) == 0);
-	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
-			NULL, 0) == 0);
+				      SPA_IO_Buffers, NULL, 0) == 0);
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0,
+				      0, NULL, 0) == 0);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_PARAM_Format, 0, NULL) == 0);
+				      SPA_PARAM_Format, 0, NULL) == 0);
 	props = enum_node_one(node, &params, SPA_PARAM_Props);
 	width_value = find_control_value(props, "genicam.Width");
 	spa_assert_se(width_value != NULL);
 	width_write = build_control_write(width_write_storage,
-			sizeof(width_write_storage), "genicam.Width", width_value);
+			sizeof(width_write_storage), "genicam.Width",
+			width_value);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
-			width_write) == 0);
+				      width_write) == 0);
 	format = enum_one(node, &params, SPA_PARAM_EnumFormat);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_PARAM_Format, 0, format) == 0);
+				      SPA_PARAM_Format, 0, format) == 0);
 	spa_hook_remove(&listener);
 	spa_assert_se(handle->clear(handle) == 0);
 	free(handle);
 	free(params.storage);
 	for (i = 0; i < REQUESTED_BUFFERS; i++)
 		free(storage[i].payload);
-	printf("captured %u Aravis frames\n", frames);
+	printf("captured %u Aravis %s\n", frames,
+			row_blocks ? "row blocks" : "frames");
 	return EXIT_SUCCESS;
 }
 
@@ -338,16 +400,17 @@ int main(int argc, char *argv[])
 	void *library;
 	int res;
 
-	spa_assert_se(argc == 3);
+	spa_assert_se(argc == 3 || argc == 4);
 	library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
 	spa_assert_se(library != NULL);
-	enumerate = (spa_handle_factory_enum_func_t)dlsym(library,
-			SPA_HANDLE_FACTORY_ENUM_FUNC_NAME);
+	enumerate = (spa_handle_factory_enum_func_t)dlsym(
+			library, SPA_HANDLE_FACTORY_ENUM_FUNC_NAME);
 	spa_assert_se(enumerate != NULL);
 	spa_assert_se(enumerate(&factory, &index) == 1);
 	spa_assert_se(factory != NULL &&
 			spa_streq(factory->name, SPA_NAME_API_ARAVIS_SOURCE));
-	res = capture(factory, argv[2]);
+	res = capture(factory, argv[2],
+			argc == 4 && spa_streq(argv[3], "row-block"));
 	spa_assert_se(dlclose(library) == 0);
 	return res;
 }

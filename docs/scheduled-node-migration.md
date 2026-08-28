@@ -26,7 +26,7 @@ the activation flag that permits polling across processes.
 | --- | --- | --- | --- |
 | `api.fits.source` | graph driver | configured `poll` or `timerfd` | complete planes or simulated complete raw row blocks |
 | `api.bgapi2.source` | graph driver | configured `poll` or `eventfd` | complete ordinary output |
-| `api.aravis.source` | comparison graph driver | nonblocking camera probe | complete ordinary output |
+| `api.aravis.source` | comparison graph driver | nonblocking camera probe | complete frames or experimental native-GV raw row blocks |
 | `api.egrabber.source` | graph driver | nonblocking camera or row-readout probe | complete video frames or complete raw row blocks |
 | `api.calculon.pixel-calibration` | follower | graph dependency | complete frame or row-block input and output |
 | `api.calculon.frame-assembly` | follower | graph dependency | complete row blocks in, complete frames out |
