@@ -55,10 +55,11 @@ row-block schema. In block mode it snapshots the selected flat/background pair
 when offset zero arrives and consumes one raw block for each calibrated block.
 All blocks in one sequence therefore use one calibration generation.
 
-`api.calculon.frame-assembly` accepts only the next expected offset for one
-sequence. A gap, overlap, changed sequence, out-of-range block, or invalid
-marker abandons the partial frame. The next complete output carries `DISCONT`.
-No partial frame is published.
+An `api.calculon.frame-assembly` instance configured with this input schema and
+`org.calculon.ao.calibrated-pixels/1` as its output schema accepts only the next
+expected offset for one sequence. A gap, overlap, changed sequence,
+out-of-range block, or invalid marker abandons the partial frame. The next
+complete output carries `DISCONT`. No partial frame is published.
 
 Assembly copies each block once into a preallocated frame. Consumers that
 accept this schema may branch before assembly. Complete-frame algorithms,

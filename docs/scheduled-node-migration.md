@@ -240,7 +240,23 @@ calibrated block per input block.
 `api.calculon.frame-assembly` owns a preallocated frame workspace. It accepts
 only the next offset for one sequence. A gap, overlap, unexpected sequence,
 out-of-range block, or invalid marker abandons the partial frame. Nothing is
-published until a complete frame is assembled.
+published until a complete frame is assembled. The factory accepts any
+prepared rank-two ndarray using a standard fixed-width element type and either
+native layout. It preserves element bytes, layout, and profile while applying
+the configured row-block-to-frame schema mapping, extent, and rate.
+
+For calibrated detector rows, the corresponding factory information is:
+
+```ini
+api.calculon.frame-size = 640x480
+api.calculon.frame-rate = 500/1
+api.calculon.row-block-rows = 8
+api.calculon.row-block-schema = org.calculon.ao.calibrated-pixel-row-block/1
+api.calculon.frame-schema = org.calculon.ao.calibrated-pixels/1
+api.calculon.ndarray-profile = detector-profile-id
+api.calculon.ndarray-element-type = F32_LE
+api.calculon.ndarray-layout = row-major
+```
 
 Telemetry and GUI branches normally attach after assembly. Isolate them with:
 

@@ -23,11 +23,13 @@ it is called from a SPA graph or directly from Rust.
 ## Format and transport negotiation
 
 An ndarray link is compatible only when its complete fixed format agrees:
-`mediaType`, `mediaSubtype`, semantic `schema` and version, `elementType`,
-`shape`, `layout`, interpretation `profile`, and `rate` where the stream is
-clocked. The schema identifies what the values mean; it does not replace the
-structural properties or the deployment profile. In particular, two arrays
-with the same schema but different actuator order profiles are incompatible.
+`mediaType`, `mediaSubtype`, `elementType`, `shape`, and `layout`, plus every
+present semantic `schema`, interpretation `profile`, and clocked `rate` field.
+Absence is also exact: a format without an optional field does not silently
+acquire one. The schema identifies what the values mean; it does not replace
+the structural properties or the deployment profile. In particular, two
+arrays with the same schema but different actuator order profiles are
+incompatible.
 
 PipeWire may encode a fixed negotiated property as a SPA `Choice(None)`. The
 adapter unwraps that representation before parsing but rejects every
@@ -109,10 +111,30 @@ discontinuous.
 
 ## Frame-assembly factory
 
-`api.calculon.frame-assembly` accepts the exact calibrated row-block schema and
-publishes the complete calibrated-pixels schema. Construction uses the same
-detector size, frame rate, profile, and required row-block height as pixel
-calibration. The public artifact contract is documented in
+`api.calculon.frame-assembly` is a structural ndarray transform. It is not
+coupled to calibrated pixels, detector profiles, or `F32_LE`. One prepared
+instance has these exact construction properties:
+
+| Property | Value |
+| --- | --- |
+| `api.calculon.frame-size` | Positive complete `WIDTHxHEIGHT` extent |
+| `api.calculon.frame-rate` | Optional positive complete-frame `NUM/DEN` rate; omit for an unclocked ndarray |
+| `api.calculon.row-block-rows` | Positive block height smaller than and dividing `HEIGHT` |
+| `api.calculon.row-block-schema` | Optional exact input semantic schema |
+| `api.calculon.frame-schema` | Optional exact output semantic schema |
+| `api.calculon.ndarray-profile` | Optional exact interpretation profile preserved on output |
+| `api.calculon.ndarray-element-type` | Any standard fixed-width SPA ndarray element type |
+| `api.calculon.ndarray-layout` | `row-major` or `column-major` |
+
+The input format is `[N,width]` at block rate when a rate is configured. The
+output format is `[height,width]` at frame rate. An unclocked input produces an
+unclocked output. Element type, layout, and every present profile field are
+preserved exactly. Optional schema fields remain absent unless configured.
+The schema properties make any scientific change in artifact granularity
+explicit; they may be equal when the schema is independent of transport
+granularity. The calibrated-pixel deployment maps
+the existing calibrated row-block schema to the complete calibrated-pixels
+schema documented in
 [Calibrated pixel row-block schema](schemas/calibrated-pixel-row-block-1.md).
 
 `SPA_META_Header.seq` is the frame identity, `offset` is the first block row,
@@ -120,8 +142,9 @@ and `MARKER` identifies the final block. The assembler accepts only contiguous
 offsets for one sequence, copies them into one preallocated frame workspace,
 and publishes only after the terminal block. A gap, overlap, unexpected
 sequence, or invalid marker abandons the partial frame. The next valid output
-is marked `DISCONT`; a discontinuity on any earlier block is retained through
-final publication.
+is marked `DISCONT`. Non-marker Header flags from every accepted block are
+combined into the complete frame, so an early `DISCONT` or `CORRUPTED` flag is
+not lost. Processing is byte-preserving and performs no scalar conversion.
 
 ## Fused Shack-Hartmann controller
 

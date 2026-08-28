@@ -1,5 +1,6 @@
 //! Fixed SPA port formats and exact negotiation constraints.
 
+use libspa::param::format::{ElementType, NdArrayLayout};
 use libspa::sys;
 
 /// Positive samples-per-interval rate carried by a negotiated stream format.
@@ -111,14 +112,52 @@ impl Format {
         shape: impl Into<Box<[u32]>>,
         rate: Option<Rate>,
     ) -> Result<Self, i32> {
+        Self::ndarray_with_layout(
+            element_type,
+            schema,
+            profile,
+            shape,
+            sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
+            rate,
+        )
+    }
+
+    /// Constructs an exact scientific ndarray with an explicit storage order.
+    pub fn ndarray_with_layout(
+        element_type: u32,
+        schema: impl Into<Box<str>>,
+        profile: impl Into<Box<str>>,
+        shape: impl Into<Box<[u32]>>,
+        layout: u32,
+        rate: Option<Rate>,
+    ) -> Result<Self, i32> {
+        Self::ndarray_format(
+            element_type,
+            Some(schema.into()),
+            Some(profile.into()),
+            shape,
+            layout,
+            rate,
+        )
+    }
+
+    /// Constructs an exact ndarray with optional semantic identity fields.
+    pub fn ndarray_format(
+        element_type: u32,
+        schema: Option<Box<str>>,
+        profile: Option<Box<str>>,
+        shape: impl Into<Box<[u32]>>,
+        layout: u32,
+        rate: Option<Rate>,
+    ) -> Result<Self, i32> {
         let format = Self {
             class: FormatClass::NdArray,
             element_type,
             shape: shape.into(),
-            layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
+            layout,
             rate,
-            schema: Some(schema.into()),
-            profile: Some(profile.into()),
+            schema,
+            profile,
         };
         format.validate()?;
         Ok(format)
@@ -141,28 +180,36 @@ impl Format {
             .ok_or(-libc::EOVERFLOW)
     }
 
-    /// Returns the packed bytes in one logical row.
+    /// Returns the packed bytes in one physical storage line.
     pub fn packed_stride(&self) -> Result<usize, i32> {
         if self.shape.len() == 1 {
             return self.element_size();
         }
-        (self.shape.last().copied().ok_or(-libc::EINVAL)? as usize)
+        let extent = if self.layout == sys::SPA_NDARRAY_LAYOUT_COLUMN_MAJOR {
+            self.shape.first()
+        } else {
+            self.shape.last()
+        };
+        (extent.copied().ok_or(-libc::EINVAL)? as usize)
             .checked_mul(self.element_size()?)
             .ok_or(-libc::EOVERFLOW)
     }
 
-    /// Returns the number of logical rows represented by the SPA chunk stride.
-    pub fn stride_count(&self) -> Result<usize, i32> {
+    /// Returns the number of physical storage lines represented by the chunk stride.
+    pub fn line_count(&self) -> Result<usize, i32> {
         if self.shape.len() == 1 {
             return Ok(self.shape[0] as usize);
         }
-        self.shape[..self.shape.len().saturating_sub(1)]
-            .iter()
-            .try_fold(1usize, |count, &dimension| {
-                count
-                    .checked_mul(dimension as usize)
-                    .ok_or(-libc::EOVERFLOW)
-            })
+        let dimensions = if self.layout == sys::SPA_NDARRAY_LAYOUT_COLUMN_MAJOR {
+            &self.shape[1..]
+        } else {
+            &self.shape[..self.shape.len().saturating_sub(1)]
+        };
+        dimensions.iter().try_fold(1usize, |count, &dimension| {
+            count
+                .checked_mul(dimension as usize)
+                .ok_or(-libc::EOVERFLOW)
+        })
     }
 
     /// Returns whether image shape and rate are identical.
@@ -178,15 +225,11 @@ impl Format {
         })
     }
 
-    fn element_size(&self) -> Result<usize, i32> {
-        match self.element_type {
-            sys::SPA_ELEMENT_TYPE_U8 => Ok(1),
-            sys::SPA_ELEMENT_TYPE_U16_LE => Ok(2),
-            sys::SPA_ELEMENT_TYPE_U32_LE => Ok(4),
-            sys::SPA_ELEMENT_TYPE_F32_LE => Ok(4),
-            sys::SPA_ELEMENT_TYPE_F64_LE => Ok(8),
-            _ => Err(-libc::EINVAL),
-        }
+    /// Returns the fixed packed size of one ndarray element.
+    pub fn element_size(&self) -> Result<usize, i32> {
+        ElementType::from_raw(self.element_type)
+            .size()
+            .ok_or(-libc::EINVAL)
     }
 
     pub(crate) fn validate(&self) -> Result<(), i32> {
@@ -217,16 +260,13 @@ impl Format {
                 }
             }
             FormatClass::NdArray => {
-                if !matches!(
-                    self.element_type,
-                    sys::SPA_ELEMENT_TYPE_U8
-                        | sys::SPA_ELEMENT_TYPE_U16_LE
-                        | sys::SPA_ELEMENT_TYPE_U32_LE
-                        | sys::SPA_ELEMENT_TYPE_F32_LE
-                        | sys::SPA_ELEMENT_TYPE_F64_LE
-                ) || self.layout != sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR
-                    || self.schema.as_deref().is_none_or(str::is_empty)
-                    || self.profile.as_deref().is_none_or(str::is_empty)
+                if ElementType::from_raw(self.element_type).size().is_none()
+                    || !matches!(
+                        NdArrayLayout::from_raw(self.layout),
+                        NdArrayLayout::RowMajor | NdArrayLayout::ColumnMajor
+                    )
+                    || self.schema.as_deref().is_some_and(str::is_empty)
+                    || self.profile.as_deref().is_some_and(str::is_empty)
                 {
                     return Err(-libc::EINVAL);
                 }

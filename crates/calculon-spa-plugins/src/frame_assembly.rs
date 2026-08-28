@@ -1,20 +1,22 @@
-//! Assembly of calibrated row-block ndarrays into complete detector frames.
+//! Assembly of rank-two row-block ndarrays into complete frames.
 
-use calculon_algorithms::schemas::CALIBRATED_PIXELS_V1;
 use calculon_spa_node::{
     Factory, Format, FormatConstraint, Header, InputFrame, Node, OutputFrame, Port, PortRef, Rate,
     sys,
 };
 
-use crate::CALIBRATED_PIXEL_ROW_BLOCK_V1;
-use crate::config::{parse_positive_usize, parse_rate, parse_size, required_info, valid_profile};
+use crate::config::{optional_info, parse_positive_usize, parse_rate, parse_size, required_info};
 
-/// Factory name of the calibrated row-block frame assembler.
+/// Factory name of the ndarray frame assembler.
 pub const FRAME_ASSEMBLY_FACTORY_NAME: &str = "api.calculon.frame-assembly";
 
-const KEY_SIZE: &[u8] = b"api.calculon.detector-size\0";
-const KEY_RATE: &[u8] = b"api.calculon.detector-rate\0";
-const KEY_PROFILE: &[u8] = b"api.calculon.detector-profile\0";
+const KEY_SIZE: &[u8] = b"api.calculon.frame-size\0";
+const KEY_RATE: &[u8] = b"api.calculon.frame-rate\0";
+const KEY_BLOCK_SCHEMA: &[u8] = b"api.calculon.row-block-schema\0";
+const KEY_FRAME_SCHEMA: &[u8] = b"api.calculon.frame-schema\0";
+const KEY_PROFILE: &[u8] = b"api.calculon.ndarray-profile\0";
+const KEY_ELEMENT_TYPE: &[u8] = b"api.calculon.ndarray-element-type\0";
+const KEY_LAYOUT: &[u8] = b"api.calculon.ndarray-layout\0";
 const KEY_BLOCK_ROWS: &[u8] = b"api.calculon.row-block-rows\0";
 const INPUT: usize = 0;
 const OUTPUT: usize = 1;
@@ -27,18 +29,84 @@ struct FrameAssemblyNode {
     width: usize,
     height: usize,
     block_rows: usize,
-    frame: Box<[f32]>,
+    element_size: usize,
+    layout: u32,
+    frame: Box<[u8]>,
     active_seq: Option<u64>,
     next_row: usize,
     complete_header: Option<Header>,
-    discontinuity: bool,
+    active_flags: u32,
+    next_flags: u32,
 }
 
 impl FrameAssemblyNode {
     fn abandon_frame(&mut self) {
         self.active_seq = None;
         self.next_row = 0;
-        self.discontinuity = true;
+        self.active_flags = 0;
+        self.next_flags |= sys::SPA_META_HEADER_FLAG_DISCONT;
+    }
+
+    fn copy_block(&mut self, source: &InputFrame<'_>, start_row: usize) -> Result<(), i32> {
+        if self.layout == sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR {
+            let line_bytes = self
+                .width
+                .checked_mul(self.element_size)
+                .ok_or(-libc::EOVERFLOW)?;
+            if source.lines() != self.block_rows || source.stride() < line_bytes {
+                return Err(-libc::EINVAL);
+            }
+            for row in 0..self.block_rows {
+                let source_start = row * source.stride();
+                let destination_start = (start_row + row) * line_bytes;
+                self.frame[destination_start..destination_start + line_bytes]
+                    .copy_from_slice(&source.bytes()[source_start..source_start + line_bytes]);
+            }
+        } else {
+            let block_bytes = self
+                .block_rows
+                .checked_mul(self.element_size)
+                .ok_or(-libc::EOVERFLOW)?;
+            let column_bytes = self
+                .height
+                .checked_mul(self.element_size)
+                .ok_or(-libc::EOVERFLOW)?;
+            let row_offset = start_row
+                .checked_mul(self.element_size)
+                .ok_or(-libc::EOVERFLOW)?;
+            if source.lines() != self.width || source.stride() < block_bytes {
+                return Err(-libc::EINVAL);
+            }
+            for column in 0..self.width {
+                let source_start = column * source.stride();
+                let destination_start = column * column_bytes + row_offset;
+                self.frame[destination_start..destination_start + block_bytes]
+                    .copy_from_slice(&source.bytes()[source_start..source_start + block_bytes]);
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_frame(
+        frame: &[u8],
+        output_format: &Format,
+        destination: &mut OutputFrame<'_>,
+    ) -> Result<(), i32> {
+        let line_bytes = output_format.packed_stride()?;
+        let lines = output_format.line_count()?;
+        if destination.lines() != lines
+            || destination.stride() < line_bytes
+            || frame.len() != line_bytes.checked_mul(lines).ok_or(-libc::EOVERFLOW)?
+        {
+            return Err(-libc::EINVAL);
+        }
+        let stride = destination.stride();
+        let bytes = destination.bytes_mut();
+        for line in 0..lines {
+            bytes[line * stride..line * stride + line_bytes]
+                .copy_from_slice(&frame[line * line_bytes..(line + 1) * line_bytes]);
+        }
+        Ok(())
     }
 
     fn publish_complete(&mut self) -> Result<i32, i32> {
@@ -55,16 +123,9 @@ impl FrameAssemblyNode {
         let output_format = output.format().ok_or(-libc::EIO)?;
         let result = (|| unsafe {
             let mut destination = OutputFrame::new(output_buffer, output_format)?;
-            let (values, stride) = destination.f32_mut()?;
-            for row in 0..self.height {
-                values[row * stride..row * stride + self.width]
-                    .copy_from_slice(&self.frame[row * self.width..(row + 1) * self.width]);
-            }
+            Self::copy_frame(&self.frame, output_format, &mut destination)?;
             header.offset = 0;
             header.flags |= sys::SPA_META_HEADER_FLAG_MARKER;
-            if self.discontinuity {
-                header.flags |= sys::SPA_META_HEADER_FLAG_DISCONT;
-            }
             destination.set_header(Some(header));
             destination.commit();
             Ok::<(), i32>(())
@@ -75,7 +136,6 @@ impl FrameAssemblyNode {
         }
         output.publish_output(output_id)?;
         self.complete_header = None;
-        self.discontinuity = false;
         Ok(sys::SPA_STATUS_HAVE_DATA as i32)
     }
 }
@@ -83,40 +143,51 @@ impl FrameAssemblyNode {
 impl Node for FrameAssemblyNode {
     fn new(info: Option<&sys::spa_dict>) -> Result<Self, i32> {
         let (width, height) = parse_size(required_info(info, KEY_SIZE)?)?;
-        let frame_rate = parse_rate(required_info(info, KEY_RATE)?)?;
-        let profile = required_info(info, KEY_PROFILE)?;
+        let frame_rate = optional_nonempty(info, KEY_RATE)?
+            .map(parse_rate)
+            .transpose()?;
+        let block_schema = optional_nonempty(info, KEY_BLOCK_SCHEMA)?.map(Into::into);
+        let frame_schema = optional_nonempty(info, KEY_FRAME_SCHEMA)?.map(Into::into);
+        let profile: Option<Box<str>> = optional_nonempty(info, KEY_PROFILE)?.map(Into::into);
+        let element_type = parse_element_type(required_info(info, KEY_ELEMENT_TYPE)?)?;
+        let layout = parse_layout(required_info(info, KEY_LAYOUT)?)?;
         let block_rows = parse_positive_usize(required_info(info, KEY_BLOCK_ROWS)?)?;
-        if !valid_profile(profile)
-            || block_rows >= height as usize
-            || !(height as usize).is_multiple_of(block_rows)
-        {
+        if block_rows >= height as usize || !(height as usize).is_multiple_of(block_rows) {
             return Err(-libc::EINVAL);
         }
         let blocks = height as usize / block_rows;
-        let block_rate = Rate::new(
-            frame_rate
-                .num
-                .checked_mul(u32::try_from(blocks).map_err(|_| -libc::EOVERFLOW)?)
-                .ok_or(-libc::EOVERFLOW)?,
-            frame_rate.denom,
+        let block_rate = frame_rate
+            .map(|frame_rate| {
+                Rate::new(
+                    frame_rate
+                        .num
+                        .checked_mul(u32::try_from(blocks).map_err(|_| -libc::EOVERFLOW)?)
+                        .ok_or(-libc::EOVERFLOW)?,
+                    frame_rate.denom,
+                )
+            })
+            .transpose()?;
+        let input_format = Format::ndarray_format(
+            element_type,
+            block_schema,
+            profile.clone(),
+            [
+                u32::try_from(block_rows).map_err(|_| -libc::EOVERFLOW)?,
+                width,
+            ],
+            layout,
+            block_rate,
         )?;
-        let input_format = Format::f32_image(
-            CALIBRATED_PIXEL_ROW_BLOCK_V1,
+        let output_format = Format::ndarray_format(
+            element_type,
+            frame_schema,
             profile,
-            width,
-            u32::try_from(block_rows).map_err(|_| -libc::EOVERFLOW)?,
-            Some(block_rate),
+            [height, width],
+            layout,
+            frame_rate,
         )?;
-        let output_format = Format::f32_image(
-            CALIBRATED_PIXELS_V1,
-            profile,
-            width,
-            height,
-            Some(frame_rate),
-        )?;
-        let pixels = (width as usize)
-            .checked_mul(height as usize)
-            .ok_or(-libc::EOVERFLOW)?;
+        let frame_bytes = output_format.packed_bytes()?;
+        let element_size = output_format.element_size()?;
         Ok(Self {
             ports: vec![
                 Port::new(
@@ -141,11 +212,14 @@ impl Node for FrameAssemblyNode {
             width: width as usize,
             height: height as usize,
             block_rows,
-            frame: vec![0.0; pixels].into_boxed_slice(),
+            element_size,
+            layout,
+            frame: vec![0; frame_bytes].into_boxed_slice(),
             active_seq: None,
             next_row: 0,
             complete_header: None,
-            discontinuity: false,
+            active_flags: 0,
+            next_flags: 0,
         })
     }
 
@@ -161,7 +235,8 @@ impl Node for FrameAssemblyNode {
         self.active_seq = None;
         self.next_row = 0;
         self.complete_header = None;
-        self.discontinuity = true;
+        self.active_flags = 0;
+        self.next_flags |= sys::SPA_META_HEADER_FLAG_DISCONT;
     }
 
     fn process(&mut self) -> Result<i32, i32> {
@@ -199,10 +274,6 @@ impl Node for FrameAssemblyNode {
             return Ok(sys::SPA_STATUS_NEED_DATA as i32);
         };
         let marker = header.flags & sys::SPA_META_HEADER_FLAG_MARKER != 0;
-        if header.flags & sys::SPA_META_HEADER_FLAG_DISCONT != 0 {
-            self.discontinuity = true;
-        }
-
         if self.active_seq != Some(header.seq) {
             if self.active_seq.is_some() {
                 self.abandon_frame();
@@ -214,6 +285,11 @@ impl Node for FrameAssemblyNode {
             }
             self.active_seq = Some(header.seq);
             self.next_row = 0;
+            self.active_flags =
+                self.next_flags | (header.flags & !sys::SPA_META_HEADER_FLAG_MARKER);
+            self.next_flags = 0;
+        } else {
+            self.active_flags |= header.flags & !sys::SPA_META_HEADER_FLAG_MARKER;
         }
         if start_row != self.next_row || end_row > self.height || marker != (end_row == self.height)
         {
@@ -222,28 +298,97 @@ impl Node for FrameAssemblyNode {
             return Ok(sys::SPA_STATUS_NEED_DATA as i32);
         }
 
-        let (values, stride) = match source.f32() {
-            Ok(values) => values,
-            Err(_) => {
-                self.ports[INPUT].consume_input()?;
-                self.abandon_frame();
-                return Ok(sys::SPA_STATUS_NEED_DATA as i32);
-            }
-        };
-        for row in 0..self.block_rows {
-            let source_start = row * stride;
-            let destination_start = (start_row + row) * self.width;
-            self.frame[destination_start..destination_start + self.width]
-                .copy_from_slice(&values[source_start..source_start + self.width]);
+        if self.copy_block(&source, start_row).is_err() {
+            self.ports[INPUT].consume_input()?;
+            self.abandon_frame();
+            return Ok(sys::SPA_STATUS_NEED_DATA as i32);
         }
         self.ports[INPUT].consume_input()?;
         self.next_row = end_row;
         if marker {
-            self.complete_header = Some(header);
+            self.complete_header = Some(Header {
+                flags: self.active_flags | sys::SPA_META_HEADER_FLAG_MARKER,
+                offset: 0,
+                ..header
+            });
             self.active_seq = None;
             self.next_row = 0;
+            self.active_flags = 0;
             return self.publish_complete();
         }
         Ok(sys::SPA_STATUS_NEED_DATA as i32)
+    }
+}
+
+fn optional_nonempty<'a>(
+    info: Option<&'a sys::spa_dict>,
+    key: &[u8],
+) -> Result<Option<&'a str>, i32> {
+    match optional_info(info, key)? {
+        Some("") => Err(-libc::EINVAL),
+        value => Ok(value),
+    }
+}
+
+fn parse_layout(value: &str) -> Result<u32, i32> {
+    match value {
+        "row-major" => Ok(sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR),
+        "column-major" => Ok(sys::SPA_NDARRAY_LAYOUT_COLUMN_MAJOR),
+        _ => Err(-libc::EINVAL),
+    }
+}
+
+fn parse_element_type(value: &str) -> Result<u32, i32> {
+    match value {
+        "BOOL8" => Ok(sys::SPA_ELEMENT_TYPE_BOOL8),
+        "I8" => Ok(sys::SPA_ELEMENT_TYPE_I8),
+        "U8" => Ok(sys::SPA_ELEMENT_TYPE_U8),
+        "I16_LE" => Ok(sys::SPA_ELEMENT_TYPE_I16_LE),
+        "U16_LE" => Ok(sys::SPA_ELEMENT_TYPE_U16_LE),
+        "I32_LE" => Ok(sys::SPA_ELEMENT_TYPE_I32_LE),
+        "U32_LE" => Ok(sys::SPA_ELEMENT_TYPE_U32_LE),
+        "I64_LE" => Ok(sys::SPA_ELEMENT_TYPE_I64_LE),
+        "U64_LE" => Ok(sys::SPA_ELEMENT_TYPE_U64_LE),
+        "I128_LE" => Ok(sys::SPA_ELEMENT_TYPE_I128_LE),
+        "U128_LE" => Ok(sys::SPA_ELEMENT_TYPE_U128_LE),
+        "F8_E4M3FN" => Ok(sys::SPA_ELEMENT_TYPE_F8_E4M3FN),
+        "F8_E4M3FNUZ" => Ok(sys::SPA_ELEMENT_TYPE_F8_E4M3FNUZ),
+        "F8_E5M2" => Ok(sys::SPA_ELEMENT_TYPE_F8_E5M2),
+        "F8_E5M2FNUZ" => Ok(sys::SPA_ELEMENT_TYPE_F8_E5M2FNUZ),
+        "F16_LE" => Ok(sys::SPA_ELEMENT_TYPE_F16_LE),
+        "BF16_LE" => Ok(sys::SPA_ELEMENT_TYPE_BF16_LE),
+        "F32_LE" => Ok(sys::SPA_ELEMENT_TYPE_F32_LE),
+        "F64_LE" => Ok(sys::SPA_ELEMENT_TYPE_F64_LE),
+        "F128_LE" => Ok(sys::SPA_ELEMENT_TYPE_F128_LE),
+        "COMPLEX_F16_LE" => Ok(sys::SPA_ELEMENT_TYPE_COMPLEX_F16_LE),
+        "COMPLEX_BF16_LE" => Ok(sys::SPA_ELEMENT_TYPE_COMPLEX_BF16_LE),
+        "COMPLEX_F32_LE" => Ok(sys::SPA_ELEMENT_TYPE_COMPLEX_F32_LE),
+        "COMPLEX_F64_LE" => Ok(sys::SPA_ELEMENT_TYPE_COMPLEX_F64_LE),
+        "COMPLEX_F128_LE" => Ok(sys::SPA_ELEMENT_TYPE_COMPLEX_F128_LE),
+        _ => Err(-libc::EINVAL),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn construction_vocabulary_is_exact() {
+        assert_eq!(
+            parse_layout("row-major"),
+            Ok(sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR)
+        );
+        assert_eq!(
+            parse_layout("column-major"),
+            Ok(sys::SPA_NDARRAY_LAYOUT_COLUMN_MAJOR)
+        );
+        assert_eq!(parse_layout("ROW_MAJOR"), Err(-libc::EINVAL));
+        assert_eq!(
+            parse_element_type("COMPLEX_F128_LE"),
+            Ok(sys::SPA_ELEMENT_TYPE_COMPLEX_F128_LE)
+        );
+        assert_eq!(parse_element_type("f32"), Err(-libc::EINVAL));
+        assert_eq!(parse_element_type("CUSTOM"), Err(-libc::EINVAL));
     }
 }

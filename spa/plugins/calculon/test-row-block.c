@@ -167,6 +167,99 @@ static void destroy(struct instance *instance)
 	free(instance->handle);
 }
 
+static void test_column_major_u16(const struct spa_handle_factory *factory)
+{
+	const struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SIZE, "4x4"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS, "2"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_ELEMENT_TYPE,
+				"U16_LE"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_LAYOUT,
+				"column-major"),
+	};
+	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	const uint16_t first[] = { 1, 5, 2, 6, 3, 7, 4, 8 };
+	const uint16_t second[] = { 9, 13, 10, 14, 11, 15, 12, 16 };
+	const uint16_t expected[] = {
+		1, 5, 9, 13, 2, 6, 10, 14,
+		3, 7, 11, 15, 4, 8, 12, 16,
+	};
+	struct instance assembly;
+	struct buffer block, frame;
+	struct spa_io_buffers block_io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
+	};
+	struct spa_io_buffers frame_io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
+	};
+	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
+
+	make_node(&assembly, factory, &info);
+	configure(&assembly, SPA_DIRECTION_INPUT, 0);
+	configure(&assembly, SPA_DIRECTION_OUTPUT, 0);
+	init_buffer(&block, sizeof(first), BLOCK_ROWS * sizeof(uint16_t));
+	init_buffer(&frame, sizeof(expected), HEIGHT * sizeof(uint16_t));
+	use_buffer(&assembly, SPA_DIRECTION_INPUT, &block);
+	use_buffer(&assembly, SPA_DIRECTION_OUTPUT, &frame);
+	spa_assert_se(spa_node_port_set_io(assembly.node, SPA_DIRECTION_INPUT, 0,
+			SPA_IO_Buffers, &block_io, sizeof(block_io)) == 0);
+	spa_assert_se(spa_node_port_set_io(assembly.node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_IO_Buffers, &frame_io, sizeof(frame_io)) == 0);
+	spa_assert_se(spa_node_send_command(assembly.node, &start) == 0);
+
+	memcpy(block.payload, first, sizeof(first));
+	block.header.seq = 91;
+	block.header.offset = 0;
+	block.header.flags = SPA_META_HEADER_FLAG_CORRUPTED;
+	block_io.buffer_id = 0;
+	block_io.status = SPA_STATUS_HAVE_DATA;
+	spa_assert_se(spa_node_process(assembly.node) == SPA_STATUS_NEED_DATA);
+
+	memcpy(block.payload, second, sizeof(second));
+	block.header.offset = BLOCK_ROWS;
+	block.header.flags = SPA_META_HEADER_FLAG_MARKER;
+	block_io.buffer_id = 0;
+	block_io.status = SPA_STATUS_HAVE_DATA;
+	spa_assert_se(spa_node_process(assembly.node) == SPA_STATUS_HAVE_DATA);
+	spa_assert_se(frame.header.seq == 91 && frame.header.offset == 0);
+	spa_assert_se((frame.header.flags & SPA_META_HEADER_FLAG_MARKER) != 0);
+	spa_assert_se((frame.header.flags & SPA_META_HEADER_FLAG_CORRUPTED) != 0);
+	spa_assert_se(memcmp(frame.payload, expected, sizeof(expected)) == 0);
+
+	/* Pausing a partial sequence abandons it. The next complete frame remains
+	 * usable and reports the discontinuity. */
+	frame_io.status = SPA_STATUS_NEED_DATA;
+	memcpy(block.payload, first, sizeof(first));
+	block.header.seq = 92;
+	block.header.offset = 0;
+	block.header.flags = 0;
+	block_io.buffer_id = 0;
+	block_io.status = SPA_STATUS_HAVE_DATA;
+	spa_assert_se(spa_node_process(assembly.node) == SPA_STATUS_NEED_DATA);
+	spa_assert_se(spa_node_send_command(assembly.node, &pause) == 0);
+	spa_assert_se(spa_node_send_command(assembly.node, &start) == 0);
+
+	block.header.seq = 93;
+	block_io.buffer_id = 0;
+	block_io.status = SPA_STATUS_HAVE_DATA;
+	spa_assert_se(spa_node_process(assembly.node) == SPA_STATUS_NEED_DATA);
+	memcpy(block.payload, second, sizeof(second));
+	block.header.offset = BLOCK_ROWS;
+	block.header.flags = SPA_META_HEADER_FLAG_MARKER;
+	block_io.buffer_id = 0;
+	block_io.status = SPA_STATUS_HAVE_DATA;
+	spa_assert_se(spa_node_process(assembly.node) == SPA_STATUS_HAVE_DATA);
+	spa_assert_se(frame.header.seq == 93);
+	spa_assert_se((frame.header.flags & SPA_META_HEADER_FLAG_DISCONT) != 0);
+	spa_assert_se(memcmp(frame.payload, expected, sizeof(expected)) == 0);
+
+	spa_assert_se(spa_node_send_command(assembly.node, &pause) == 0);
+	destroy(&assembly);
+}
+
 int main(int argc, char **argv)
 {
 	const struct spa_dict_item items[] = {
@@ -176,6 +269,22 @@ int main(int argc, char **argv)
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS, "2"),
 	};
 	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	const struct spa_dict_item assembly_items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SIZE, "4x4"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_RATE, "1000/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS, "2"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_SCHEMA,
+				SPA_CALCULON_SCHEMA_CALIBRATED_PIXEL_ROW_BLOCK),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SCHEMA,
+				"org.calculon.ao.calibrated-pixels/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_PROFILE, profile),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_ELEMENT_TYPE,
+				"F32_LE"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_LAYOUT,
+				"row-major"),
+	};
+	const struct spa_dict assembly_info = SPA_DICT_INIT(assembly_items,
+			SPA_N_ELEMENTS(assembly_items));
 	spa_handle_factory_enum_func_t enumerate;
 	const struct spa_handle_factory *pixel_factory, *assembly_factory;
 	struct instance pixel, assembly;
@@ -211,7 +320,7 @@ int main(int argc, char **argv)
 			SPA_NAME_API_CALCULON_FRAME_ASSEMBLY);
 	spa_assert_se(pixel_factory != NULL && assembly_factory != NULL);
 	make_node(&pixel, pixel_factory, &info);
-	make_node(&assembly, assembly_factory, &info);
+	make_node(&assembly, assembly_factory, &assembly_info);
 	/* The second exact input alternative is the raw U16 row-block ndarray. */
 	configure(&pixel, SPA_DIRECTION_INPUT, 1);
 	negotiate(&pixel, &assembly);
@@ -307,6 +416,7 @@ int main(int argc, char **argv)
 	spa_assert_se(spa_node_send_command(assembly.node, &pause) == 0);
 	destroy(&assembly);
 	destroy(&pixel);
+	test_column_major_u16(assembly_factory);
 	spa_assert_se(dlclose(library) == 0);
 	return 0;
 }

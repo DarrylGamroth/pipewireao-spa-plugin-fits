@@ -206,8 +206,11 @@ Complete-frame operation uses standard `SPA_IO_Buffers`. With
 `api.calculon.row-block-rows=N`, its raw port accepts complete U16
 `[N,width]` ndarray blocks and publishes complete F32 `[N,width]` blocks.
 `api.calculon.frame-assembly` reconstructs complete frames for the remaining
-algorithms and observers. Both factories perform no steady-state heap
-allocation in `process`.
+algorithms and observers. Frame assembly is schema-configured and byte
+preserving: it accepts any prepared rank-two ndarray with a standard
+fixed-width element type in row-major or column-major layout, including
+unclocked arrays with no semantic schema or interpretation profile. Both
+factories perform no steady-state heap allocation in `process`.
 
 The adapter and algorithm are Rust. The exported shared object is nevertheless
 an ordinary C SPA plugin. See the architecture document for port formats,

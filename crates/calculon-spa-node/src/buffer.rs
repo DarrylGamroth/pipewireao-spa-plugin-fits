@@ -49,7 +49,7 @@ impl From<Header> for sys::spa_meta_header {
 pub struct InputFrame<'a> {
     bytes: &'a [u8],
     stride: usize,
-    rows: usize,
+    lines: usize,
     header: Option<Header>,
 }
 
@@ -70,10 +70,10 @@ impl<'a> InputFrame<'a> {
         if data.type_ != sys::SPA_DATA_MemPtr || data.data.is_null() || data.maxsize == 0 {
             return Err(-libc::EINVAL);
         }
-        let row_bytes = format.packed_stride()?;
-        let rows = format.stride_count()?;
-        let stride = read_stride(chunk.stride, row_bytes)?;
-        let span = frame_span(row_bytes, stride, rows)?;
+        let line_bytes = format.packed_stride()?;
+        let lines = format.line_count()?;
+        let stride = read_stride(chunk.stride, line_bytes)?;
+        let span = frame_span(line_bytes, stride, lines)?;
         let offset = chunk.offset as usize % data.maxsize as usize;
         if (chunk.size as usize) < span
             || offset
@@ -87,24 +87,24 @@ impl<'a> InputFrame<'a> {
         Ok(Self {
             bytes,
             stride,
-            rows,
+            lines,
             header,
         })
     }
 
-    /// Returns the complete byte span, including inter-row padding.
+    /// Returns the complete byte span, including inter-line padding.
     pub const fn bytes(&self) -> &[u8] {
         self.bytes
     }
 
-    /// Returns the physical byte distance between logical rows.
+    /// Returns the physical byte distance between storage lines.
     pub const fn stride(&self) -> usize {
         self.stride
     }
 
-    /// Returns the logical row count.
-    pub const fn rows(&self) -> usize {
-        self.rows
+    /// Returns the physical storage-line count.
+    pub const fn lines(&self) -> usize {
+        self.lines
     }
 
     /// Returns copied header metadata when the buffer carries it.
@@ -112,12 +112,12 @@ impl<'a> InputFrame<'a> {
         self.header
     }
 
-    /// Borrows aligned `u16` storage, including row padding before the final row.
+    /// Borrows aligned `u16` storage, including line padding before the final line.
     pub fn u16(&self) -> Result<(&[u16], usize), i32> {
         self.cast_with_stride()
     }
 
-    /// Borrows aligned `u32` storage, including row padding before the final row.
+    /// Borrows aligned `u32` storage, including line padding before the final line.
     pub fn u32(&self) -> Result<(&[u32], usize), i32> {
         self.cast_with_stride()
     }
@@ -127,12 +127,12 @@ impl<'a> InputFrame<'a> {
         (self.bytes, self.stride)
     }
 
-    /// Borrows aligned `f32` storage, including row padding before the final row.
+    /// Borrows aligned `f32` storage, including line padding before the final line.
     pub fn f32(&self) -> Result<(&[f32], usize), i32> {
         self.cast_with_stride()
     }
 
-    /// Borrows aligned `f64` storage, including row padding before the final row.
+    /// Borrows aligned `f64` storage, including line padding before the final line.
     pub fn f64(&self) -> Result<(&[f64], usize), i32> {
         self.cast_with_stride()
     }
@@ -158,7 +158,7 @@ impl<'a> InputFrame<'a> {
 pub struct OutputFrame<'a> {
     bytes: &'a mut [u8],
     stride: usize,
-    rows: usize,
+    lines: usize,
     chunk: &'a mut sys::spa_chunk,
     header: Option<&'a mut sys::spa_meta_header>,
 }
@@ -180,10 +180,10 @@ impl<'a> OutputFrame<'a> {
         if data.type_ != sys::SPA_DATA_MemPtr || data.data.is_null() {
             return Err(-libc::EINVAL);
         }
-        let row_bytes = format.packed_stride()?;
-        let rows = format.stride_count()?;
-        let stride = write_stride(chunk.stride, row_bytes);
-        let span = frame_span(row_bytes, stride, rows)?;
+        let line_bytes = format.packed_stride()?;
+        let lines = format.line_count()?;
+        let stride = write_stride(chunk.stride, line_bytes);
+        let span = frame_span(line_bytes, stride, lines)?;
         if span > data.maxsize as usize || span > u32::MAX as usize {
             return Err(-libc::ENOSPC);
         }
@@ -192,25 +192,25 @@ impl<'a> OutputFrame<'a> {
         Ok(Self {
             bytes,
             stride,
-            rows,
+            lines,
             chunk,
             header,
         })
     }
 
-    /// Returns the complete mutable byte span, including inter-row padding.
+    /// Returns the complete mutable byte span, including inter-line padding.
     pub fn bytes_mut(&mut self) -> &mut [u8] {
         self.bytes
     }
 
-    /// Returns the physical byte distance between logical rows.
+    /// Returns the physical byte distance between storage lines.
     pub const fn stride(&self) -> usize {
         self.stride
     }
 
-    /// Returns the logical row count.
-    pub const fn rows(&self) -> usize {
-        self.rows
+    /// Returns the physical storage-line count.
+    pub const fn lines(&self) -> usize {
+        self.lines
     }
 
     /// Copies input header metadata when this output has standard Header meta.
@@ -303,13 +303,13 @@ fn write_stride(stride: i32, packed: usize) -> usize {
     }
 }
 
-fn frame_span(row_bytes: usize, stride: usize, rows: usize) -> Result<usize, i32> {
-    if rows == 0 {
+fn frame_span(line_bytes: usize, stride: usize, lines: usize) -> Result<usize, i32> {
+    if lines == 0 {
         return Err(-libc::EINVAL);
     }
     stride
-        .checked_mul(rows - 1)
-        .and_then(|prefix| prefix.checked_add(row_bytes))
+        .checked_mul(lines - 1)
+        .and_then(|prefix| prefix.checked_add(line_bytes))
         .ok_or(-libc::EOVERFLOW)
 }
 

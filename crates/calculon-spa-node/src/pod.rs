@@ -123,19 +123,23 @@ fn format_value(format: &Format, object_id: u32) -> Value {
             let mut properties = NdArrayFormat::new(
                 ElementType::from_raw(format.element_type),
                 format.shape.to_vec(),
-                NdArrayLayout::RowMajor,
+                NdArrayLayout::from_raw(format.layout),
                 format.rate.map(rate_fraction),
             )
             .expect("validated ndarray format")
             .properties();
-            properties.push(property(
-                sys::SPA_FORMAT_NDARRAY_schema,
-                Value::String(format.schema.as_deref().expect("validated schema").into()),
-            ));
-            properties.push(property(
-                sys::SPA_FORMAT_NDARRAY_profile,
-                Value::String(format.profile.as_deref().expect("validated profile").into()),
-            ));
+            if let Some(schema) = &format.schema {
+                properties.push(property(
+                    sys::SPA_FORMAT_NDARRAY_schema,
+                    Value::String(schema.to_string()),
+                ));
+            }
+            if let Some(profile) = &format.profile {
+                properties.push(property(
+                    sys::SPA_FORMAT_NDARRAY_profile,
+                    Value::String(profile.to_string()),
+                ));
+            }
             object(sys::SPA_TYPE_OBJECT_Format, object_id, properties)
         }
     }
@@ -251,21 +255,23 @@ fn parse_gray(properties: &[Property]) -> Result<Format, i32> {
 fn parse_ndarray(properties: &[Property]) -> Result<Format, i32> {
     let native = NdArrayFormat::from_properties(properties).map_err(|_| -libc::EINVAL)?;
     let schema = match unique(properties, sys::SPA_FORMAT_NDARRAY_schema)? {
-        Some(Value::String(schema)) if !schema.is_empty() => schema.clone().into_boxed_str(),
+        Some(Value::String(schema)) if !schema.is_empty() => Some(schema.clone().into_boxed_str()),
+        None => None,
         _ => return Err(-libc::EINVAL),
     };
     let profile = match unique(properties, sys::SPA_FORMAT_NDARRAY_profile)? {
-        Some(Value::String(profile)) if !profile.is_empty() => profile.clone().into_boxed_str(),
+        Some(Value::String(profile)) if !profile.is_empty() => {
+            Some(profile.clone().into_boxed_str())
+        }
+        None => None,
         _ => return Err(-libc::EINVAL),
     };
-    if native.layout() != NdArrayLayout::RowMajor {
-        return Err(-libc::EINVAL);
-    }
-    Format::ndarray(
+    Format::ndarray_format(
         native.element_type().as_raw(),
         schema,
         profile,
         native.shape().to_vec(),
+        native.layout().as_raw(),
         native.rate().map(|rate| Rate {
             num: rate.num,
             denom: rate.denom,
@@ -377,7 +383,7 @@ mod tests {
         .unwrap();
         assert_eq!(format.packed_bytes(), Ok(64));
         assert_eq!(format.packed_stride(), Ok(8));
-        assert_eq!(format.stride_count(), Ok(8));
+        assert_eq!(format.line_count(), Ok(8));
         let constraint = FormatConstraint::exact(format.clone());
         let value = format_value(&format, sys::SPA_PARAM_Format);
         let parsed = unsafe {
@@ -388,6 +394,59 @@ mod tests {
             .unwrap()
         };
         assert_eq!(parsed, format);
+    }
+
+    #[test]
+    fn every_standard_fixed_width_element_type_is_admitted() {
+        let element_types = [
+            ElementType::Bool8,
+            ElementType::I8,
+            ElementType::U8,
+            ElementType::I16Le,
+            ElementType::U16Le,
+            ElementType::I32Le,
+            ElementType::U32Le,
+            ElementType::I64Le,
+            ElementType::U64Le,
+            ElementType::I128Le,
+            ElementType::U128Le,
+            ElementType::F8E4M3Fn,
+            ElementType::F8E4M3Fnuz,
+            ElementType::F8E5M2,
+            ElementType::F8E5M2Fnuz,
+            ElementType::F16Le,
+            ElementType::Bf16Le,
+            ElementType::F32Le,
+            ElementType::F64Le,
+            ElementType::F128Le,
+            ElementType::ComplexF16Le,
+            ElementType::ComplexBf16Le,
+            ElementType::ComplexF32Le,
+            ElementType::ComplexF64Le,
+            ElementType::ComplexF128Le,
+        ];
+        for element_type in element_types {
+            let format = Format::ndarray_with_layout(
+                element_type.as_raw(),
+                "org.pipewireao.test.matrix/1",
+                "test-basis",
+                [3, 5],
+                NdArrayLayout::ColumnMajor.as_raw(),
+                Some(Rate::new(30, 1).unwrap()),
+            )
+            .unwrap();
+            assert_eq!(
+                format.packed_stride(),
+                element_type
+                    .size()
+                    .map(|size| 3 * size)
+                    .ok_or(-libc::EINVAL)
+            );
+            assert_eq!(format.line_count(), Ok(5));
+            let constraint = FormatConstraint::exact(format.clone());
+            let value = format_value(&format, sys::SPA_PARAM_Format);
+            assert_eq!(parse_format(value, &[constraint]), Ok(format));
+        }
     }
 
     #[test]
@@ -443,18 +502,32 @@ mod tests {
     }
 
     #[test]
-    fn missing_schema_is_rejected() {
+    fn optional_schema_and_profile_may_be_absent() {
         let format = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
-        let constraint = FormatConstraint::exact(format.clone());
         let Value::Object(mut object) = format_value(&format, sys::SPA_PARAM_Format) else {
             unreachable!();
         };
-        object
-            .properties
-            .retain(|property| property.key != sys::SPA_FORMAT_NDARRAY_schema);
+        object.properties.retain(|property| {
+            !matches!(
+                property.key,
+                sys::SPA_FORMAT_NDARRAY_schema | sys::SPA_FORMAT_NDARRAY_profile
+            )
+        });
+        let expected = Format::ndarray_format(
+            sys::SPA_ELEMENT_TYPE_F32_LE,
+            None,
+            None,
+            [3, 4],
+            sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
+            None,
+        )
+        .unwrap();
         assert_eq!(
-            parse_format(Value::Object(object), &[constraint]),
-            Err(-libc::EINVAL)
+            parse_format(
+                Value::Object(object),
+                &[FormatConstraint::exact(expected.clone())]
+            ),
+            Ok(expected)
         );
     }
 
