@@ -262,7 +262,7 @@ public:
         std::lock_guard process_lock(process_mutex_);
         {
             std::lock_guard lock(mutex_);
-            if (!started_) return false;
+            if (!stream_started_) return false;
         }
         return grabber_.process_event();
     }
@@ -430,23 +430,6 @@ public:
         buffer.push(grabber_);
     }
 
-    void discard_buffers() {
-        std::lock_guard lock(mutex_);
-        grabber_.flushBuffers(gc::ACQ_QUEUE_ALL_DISCARD);
-        grabber_.flushEvent<Euresys::All>();
-    }
-
-    void reset_queue(const BufferIndexRange &range) {
-        std::lock_guard lock(mutex_);
-        grabber_.resetBufferQueue(range);
-        grabber_.flushEvent<Euresys::All>();
-    }
-
-    void queue(const BufferIndexRange &range) {
-        std::lock_guard lock(mutex_);
-        grabber_.queue(range);
-    }
-
     void release(const std::vector<BufferIndexRange> &ranges) {
         std::lock_guard lock(mutex_);
         std::exception_ptr first_error;
@@ -463,7 +446,7 @@ public:
 
     void start() {
         std::lock_guard lock(mutex_);
-        if (started_) return;
+        if (acquiring_) return;
         if (!buffer_event_enabled_) {
             grabber_.enableEvent<NewBufferData>();
             buffer_event_enabled_ = true;
@@ -480,16 +463,35 @@ public:
                 remote_device_event_enabled_ = true;
             } catch (...) {}
         }
-        grabber_.start();
-        started_ = true;
+        if (!stream_started_) {
+            grabber_.start(GENTL_INFINITE, false);
+            stream_started_ = true;
+        }
+        grabber_.execute<RemoteModule>("AcquisitionStart");
+        acquiring_ = true;
+    }
+
+    void pause() {
+        std::lock_guard process_lock(process_mutex_);
+        std::lock_guard lock(mutex_);
+        if (!acquiring_) return;
+        grabber_.execute<RemoteModule>("AcquisitionStop");
+        acquiring_ = false;
     }
 
     void stop() {
         std::lock_guard process_lock(process_mutex_);
         std::lock_guard lock(mutex_);
-        if (!started_) return;
-        grabber_.stop();
-        started_ = false;
+        if (!stream_started_) return;
+        std::exception_ptr first_error;
+        if (acquiring_)
+            collect_cleanup_error(first_error, [&] {
+                grabber_.execute<RemoteModule>("AcquisitionStop");
+            });
+        collect_cleanup_error(first_error, [&] { grabber_.stop(); });
+        acquiring_ = false;
+        stream_started_ = false;
+        if (first_error) std::rethrow_exception(first_error);
     }
 
     void disable_events() {
@@ -651,7 +653,7 @@ public:
         if (feature.kind != FeatureKind::command)
             throw std::runtime_error(feature.name + " is not a command");
         std::lock_guard lock(mutex_);
-        if (started_)
+        if (acquiring_)
             throw std::runtime_error("GenICam commands can only execute while acquisition is stopped");
         if (!control_->writeable(feature))
             throw std::runtime_error(feature.name + " is not currently executable");
@@ -927,7 +929,8 @@ private:
     QuerySupport incomplete_support_ = QuerySupport::unknown;
     std::mutex mutex_;
     std::mutex process_mutex_;
-    bool started_ = false;
+    bool stream_started_ = false;
+    bool acquiring_ = false;
     bool buffer_event_enabled_ = false;
     bool data_stream_event_enabled_ = false;
     bool device_error_event_enabled_ = false;
@@ -975,11 +978,9 @@ std::optional<double> Camera::frame_rate() { return impl_->frame_rate(); }
 std::optional<std::pair<double, double>> Camera::frame_rate_range() { return impl_->frame_rate_range(); }
 bool Camera::negotiate_frame_rate(double fps) { return impl_->negotiate_frame_rate(fps); }
 void Camera::recycle(Euresys::Buffer &buffer) { impl_->recycle(buffer); }
-void Camera::discard_buffers() { impl_->discard_buffers(); }
-void Camera::reset_queue(const Euresys::BufferIndexRange &range) { impl_->reset_queue(range); }
-void Camera::queue(const Euresys::BufferIndexRange &range) { impl_->queue(range); }
 void Camera::release(const std::vector<Euresys::BufferIndexRange> &ranges) { impl_->release(ranges); }
 void Camera::start() { impl_->start(); }
+void Camera::pause() { impl_->pause(); }
 void Camera::stop() { impl_->stop(); }
 void Camera::disable_events() { impl_->disable_events(); }
 void Camera::set_feature(const Feature &feature, const spa_pod *value,

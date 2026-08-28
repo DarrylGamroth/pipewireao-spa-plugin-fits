@@ -335,7 +335,7 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 		spa_assert_se(spa_meta_acquisition_is_valid(&storage[id].metas[1]));
 		io.status = SPA_STATUS_NEED_DATA;
 		frames++;
-		if (frames == requested_frames / 2u) {
+		if (frames <= 6u && frames % 2u == 0u) {
 			spa_assert_se(spa_node_send_command(node, &pause) == 0);
 			spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
 			spa_assert_se(spa_node_send_command(node, &start) == 0);

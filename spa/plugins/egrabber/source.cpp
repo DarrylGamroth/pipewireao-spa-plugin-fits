@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <numeric>
 #include <optional>
@@ -104,7 +105,6 @@ struct buffer_slot {
 	bool readout_observed = false;
 	bool frame_discontinuity = false;
 	bool recycle_pending = false;
-	bool needs_queue = false;
 	bool row_terminal_ready = false;
 	bool row_terminal_valid = false;
 	bool row_drop = false;
@@ -222,6 +222,7 @@ struct impl {
 	FrameSequence frame_sequence;
 	TimestampMapper timestamp_mapper;
 	AcquisitionKeySequence acquisition_keys;
+	std::mutex process_gate;
 	std::optional<egrabber_pipewire::TransportEvent> pending_readout;
 	buffer_slot *row_slot = nullptr;
 	spa_fraction frame_rate = SPA_FRACTION(0, 1);
@@ -1112,6 +1113,7 @@ int release_buffers(impl *self)
 				res = -EIO;
 		}
 	};
+	cleanup([&] { self->camera->stop(); });
 	cleanup([&] { self->camera->clear_frame_callback(); });
 	cleanup([&] { self->camera->set_transport_event_callback({}); });
 	cleanup([&] { self->camera->disable_events(); });
@@ -1124,7 +1126,6 @@ int release_buffers(impl *self)
 	for (auto &slot : self->slots) {
 		slot.output = nullptr;
 		slot.recycle_pending = false;
-		slot.needs_queue = false;
 		slot.dma_point = 0;
 #ifdef HAVE_EGRABBER_DRM
 		slot.dma_sync = {};
@@ -1432,7 +1433,6 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 			slot.output = nullptr;
 			slot.completed.reset();
 			slot.recycle_pending = false;
-			slot.needs_queue = false;
 			slot.dma_point = 0;
 #ifdef HAVE_EGRABBER_DRM
 			slot.dma_sync = {};
@@ -1481,51 +1481,12 @@ int recycle_slot(impl *self, buffer_slot &slot)
 #endif
 	slot.recycle_pending = false;
 	reset_observation(slot);
-	if (slot.needs_queue) {
-		if (slot.completed)
-			return -EPROTO;
-		self->camera->queue(slot.range);
-		self->submissions.submit(slot);
-		slot.needs_queue = false;
-		return 1;
-	}
 	auto completed = std::move(slot.completed);
 	if (!completed)
 		return -EPROTO;
 	self->camera->recycle(*completed);
 	self->submissions.submit(slot);
 	return 1;
-}
-
-void prepare_stopped_buffers(impl *self)
-{
-	self->submissions.clear();
-	self->pending_readout.reset();
-	self->row_slot = nullptr;
-	self->row_discontinuity = true;
-	const bool row_blocks = self->options.output_mode ==
-			egrabber_pipewire::OutputMode::row_block;
-	bool queue_reset = false;
-	for (size_t index = 0; index < self->ranges.size(); index++) {
-		auto &slot = self->slots[index];
-		slot.completed.reset();
-		slot.recycle_pending = false;
-		slot.needs_queue = true;
-		reset_observation(slot);
-		if (!row_blocks && (slot.output == nullptr ||
-				slot.output->state != output_buffer_state::producer))
-			continue;
-		if (!queue_reset) {
-			self->camera->reset_queue(slot.range);
-			queue_reset = true;
-		} else {
-			self->camera->queue(slot.range);
-		}
-		self->submissions.submit(slot);
-		slot.needs_queue = false;
-	}
-	if (!queue_reset)
-		self->camera->discard_buffers();
 }
 
 int recycle_buffers(impl *self)
@@ -1546,8 +1507,7 @@ int recycle_buffers(impl *self)
 		return reclaimed;
 	if (output != nullptr) {
 		auto &slot = self->slots[output->id];
-		if (slot.output != output || slot.recycle_pending ||
-				(!slot.completed && !slot.needs_queue))
+		if (slot.output != output || !slot.completed || slot.recycle_pending)
 			return -EPROTO;
 		slot.recycle_pending = true;
 		const int recycled = recycle_slot(self, slot);
@@ -1574,6 +1534,9 @@ int process(void *object)
 	auto *self = static_cast<impl *>(object);
 
 	spa_return_val_if_fail(self != nullptr, -EINVAL);
+	std::unique_lock process_lock(self->process_gate, std::try_to_lock);
+	if (!process_lock.owns_lock())
+		return SPA_STATUS_OK;
 	try {
 		if (!self->started)
 			return SPA_STATUS_OK;
@@ -1614,7 +1577,8 @@ int send_command(void *object, const struct spa_command *command)
 	spa_return_val_if_fail(command != nullptr, -EINVAL);
 	try {
 		switch (SPA_NODE_COMMAND_ID(command)) {
-		case SPA_NODE_COMMAND_Start:
+		case SPA_NODE_COMMAND_Start: {
+			std::lock_guard process_lock(self->process_gate);
 			if (!self->output.have_format || self->output.n_buffers == 0 ||
 					self->output.io == nullptr)
 				return -EIO;
@@ -1628,15 +1592,16 @@ int send_command(void *object, const struct spa_command *command)
 			self->camera->start();
 			self->started = true;
 			return 0;
+		}
 		case SPA_NODE_COMMAND_Pause:
-		case SPA_NODE_COMMAND_Suspend:
-			if (!self->started)
+		case SPA_NODE_COMMAND_Suspend: {
+			if (!self->started.exchange(false))
 				return 0;
-			self->started = false;
-			self->camera->stop();
-			prepare_stopped_buffers(self);
+			std::lock_guard process_lock(self->process_gate);
+			self->camera->pause();
 			self->pending_readout.reset();
 			return 0;
+		}
 		default:
 			return -ENOTSUP;
 		}
@@ -1687,18 +1652,20 @@ int clear(struct spa_handle *handle)
 	int res = 0;
 
 	spa_return_val_if_fail(handle != nullptr, -EINVAL);
-	if (self->started) {
-		self->started = false;
-		try {
-			self->camera->stop();
-		} catch (...) {
-			res = -EIO;
+	self->started = false;
+	{
+		std::lock_guard process_lock(self->process_gate);
+		if (self->output.n_buffers != 0) {
+			const int released = release_buffers(self);
+			if (res == 0)
+				res = released;
+		} else {
+			try {
+				self->camera->stop();
+			} catch (...) {
+				res = -EIO;
+			}
 		}
-	}
-	if (self->output.n_buffers != 0) {
-		const int released = release_buffers(self);
-		if (res == 0)
-			res = released;
 	}
 	self->~impl();
 	return res;

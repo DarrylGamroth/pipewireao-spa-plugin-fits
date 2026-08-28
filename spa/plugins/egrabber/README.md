@@ -164,9 +164,11 @@ require a paused node with its output pool released; afterward the host must
 renegotiate Format and Buffers.
 
 `Start` resets sequence and timestamp state, installs callbacks, announces
-buffers, and starts acquisition. `Pause` or `Suspend` first removes the node
-from its polling loop, then stops the camera. Buffer release and source
-destruction synchronously stop acquisition and recycle or free all slots.
+buffers, and starts acquisition. `Pause` or `Suspend` removes the node from its
+polling loop and issues the camera's `AcquisitionStop`, while leaving the GenTL
+stream and negotiated buffer pool intact. A later `Start` issues
+`AcquisitionStart` against that same pool. Buffer release and source destruction
+synchronously stop the GenTL stream before recycling or freeing any slot.
 
 The source polling loop is the sole owner of event dispatch, completion,
 filled-size observation, publication, and recycling. Control and pool mutation
