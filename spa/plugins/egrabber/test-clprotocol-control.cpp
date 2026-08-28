@@ -152,7 +152,7 @@ int main(int argc, char **argv) {
     assert(feature(*backend, "DeviceSerialNumber").property_name ==
            "genicam.DeviceSerialNumber");
     assert(feature(*backend, "DeviceSerialNumber").group == "DeviceControl");
-    assert(feature(*backend, "DeviceSerialNumber").visibility == "Beginner");
+    assert(feature(*backend, "DeviceSerialNumber").visibility == "Expert");
     assert(feature(*backend, "AcquisitionFrameRate").group == "AcquisitionControl");
     assert(backend->get_float(feature(*backend, "AcquisitionFrameRate")) == 120.0);
     const auto rate_range = backend->float_range(feature(*backend, "AcquisitionFrameRate"));
