@@ -1,7 +1,7 @@
 [wrap-git]
 directory = aravis
 url = https://github.com/DarrylGamroth/aravis.git
-revision = b12f8bb7ae2cb11fbe051a5a2cd448ab7edfa7ec
+revision = 07dda2fe4a3d6926ef98b1226104931f9e6ee065
 depth = 1
 
 [provide]
