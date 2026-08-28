@@ -236,7 +236,21 @@ if get_option('andor3').allowed()
 endif
 subdir('spa/plugins/andor3')
 
-aravis_dep = dependency('aravis-0.10', required: get_option('aravis'))
+aravis_dep = dependency(
+  'aravis-0.10',
+  required: get_option('aravis'),
+  fallback: ['aravis', 'aravis_library_dependencies'],
+  default_options: [
+    'c_std=gnu11',
+    'tests=false',
+    'viewer=disabled',
+    'gst-plugin=disabled',
+    'documentation=disabled',
+    'introspection=disabled',
+    'gentl-producer=false',
+    'v4l2=disabled',
+  ],
+)
 aravis_found = aravis_dep.found()
 if aravis_found
   subdir('spa/plugins/aravis')

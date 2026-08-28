@@ -61,6 +61,28 @@ meson compile -C build-aravis
 meson test -C build-aravis spa-aravis-factory --print-errorlogs
 ```
 
+If `aravis-0.10` is not installed, Meson falls back to the Aravis fork pinned
+in `subprojects/aravis.wrap`. To guarantee that the plugin and its tests use
+that revision even when a system Aravis is installed, force the fallback:
+
+```console
+meson setup build-aravis-fork \
+  -Daravis=enabled \
+  --wrap-mode=forcefallback
+meson compile -C build-aravis-fork
+meson test -C build-aravis-fork spa-aravis-factory --print-errorlogs
+```
+
+The pinned fork contains the native GV buffer-progress API required by
+`row-block` mode and the instrumented `TPACKET_V3` receiver. Update the wrap
+revision deliberately when those interfaces change; do not follow the fork's
+moving `main` branch during a build.
+
+Aravis is a C/Meson project rather than a Cargo package, so it cannot be used
+as a normal Cargo `git` dependency. Cargo remains responsible for the Rust SPA
+crates in this repository; Meson owns C dependency resolution and linking. A
+Cargo task that ran Git and Meson would only wrap this same fallback build.
+
 ## Isolated fake-camera tests
 
 Do not run the Aravis fake GigE Vision camera directly on a development host
