@@ -938,35 +938,43 @@ static void test_observer_reconnect(const char *storage)
 {
 	struct fixture fixture;
 	struct pw_impl_node *playback_node, *observer_node;
+	char observer_name[64];
+	uint32_t sequence = 1;
 
 	fixture_init(&fixture, "drop-oldest", storage);
-	trigger_producer(&fixture, 1);
+	trigger_producer(&fixture, sequence);
 	trigger_observer(&fixture, 1);
 	CHECK(fixture.observer.held != NULL);
-	/* Destroy the slow subscriber without returning its retained buffer. Link
-	 * teardown must complete the module output lease and permit a new observer
-	 * to attach without disturbing the producer-side queue. */
-	fixture.playback_link = NULL;
-	pw_stream_destroy(fixture.observer.endpoint.stream);
-	fixture.observer.endpoint.stream = NULL;
-	fixture.observer.held = NULL;
-	fixture.observer.held_sequence = 0;
-	atomic_store_explicit(&fixture.observer.deliveries, 0,
-			memory_order_relaxed);
-	atomic_store_explicit(&fixture.observer.hold, 1, memory_order_relaxed);
-	for (uint32_t i = 0; i < 4; i++)
-		iterate_main_loop(&fixture);
-	playback_node = wait_for_node(&fixture, "test.queue-output");
-	create_endpoint_stream(&fixture, "test.queue-observer-reattached",
-			PW_DIRECTION_INPUT, &observer_events,
-			&fixture.observer.endpoint);
-	observer_node = wait_for_node(&fixture, "test.queue-observer-reattached");
-	fixture.playback_link = link_nodes(&fixture, playback_node, observer_node);
-	wait_for_link(&fixture, fixture.playback_link);
-	wait_for_streaming(&fixture, &fixture.observer.endpoint);
-	trigger_producer(&fixture, 2);
-	trigger_observer(&fixture, 1);
-	CHECK(fixture.observer.sequence[0] == 2);
+	for (uint32_t cycle = 0; cycle < 8; cycle++) {
+		/* Destroy the slow subscriber without returning its retained buffer.
+		 * This models an undocked viewport being destroyed and recreated. Link
+		 * teardown must complete the output lease without allowing capture-side
+		 * ownership reset to overlap an in-flight process callback. */
+		fixture.playback_link = NULL;
+		pw_stream_destroy(fixture.observer.endpoint.stream);
+		fixture.observer.endpoint.stream = NULL;
+		fixture.observer.held = NULL;
+		fixture.observer.held_sequence = 0;
+		atomic_store_explicit(&fixture.observer.deliveries, 0,
+				memory_order_relaxed);
+		atomic_store_explicit(&fixture.observer.hold, 1,
+				memory_order_relaxed);
+		for (uint32_t i = 0; i < 4; i++)
+			iterate_main_loop(&fixture);
+		playback_node = wait_for_node(&fixture, "test.queue-output");
+		CHECK(snprintf(observer_name, sizeof(observer_name),
+				"test.queue-observer-reattached-%u", cycle) > 0);
+		create_endpoint_stream(&fixture, observer_name, PW_DIRECTION_INPUT,
+				&observer_events, &fixture.observer.endpoint);
+		observer_node = wait_for_node(&fixture, observer_name);
+		fixture.playback_link = link_nodes(&fixture, playback_node,
+				observer_node);
+		wait_for_link(&fixture, fixture.playback_link);
+		wait_for_streaming(&fixture, &fixture.observer.endpoint);
+		trigger_producer(&fixture, ++sequence);
+		trigger_observer(&fixture, 1);
+		CHECK(fixture.observer.sequence[0] == sequence);
+	}
 	atomic_store_explicit(&fixture.observer.hold, 0, memory_order_release);
 	release_observer(&fixture);
 	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);

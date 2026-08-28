@@ -611,6 +611,38 @@ static void release_all_quiescent(struct impl *impl)
 	reset_ownership_quiescent(impl, true);
 }
 
+static int release_all_locked(struct spa_loop *loop, bool async,
+		uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct impl *impl = user_data;
+
+	(void)loop;
+	(void)async;
+	(void)seq;
+	(void)data;
+	(void)size;
+	release_all_quiescent(impl);
+	return 0;
+}
+
+/* Ownership reset is a control-plane operation, but capture_process runs on
+ * the stream data loop. A paused state notification does not itself hold that
+ * loop's lock. Execute the reset under the data-loop lock so a callback that
+ * was already dispatched cannot publish a stale pending entry after its
+ * buffer has been returned upstream. Playback must be inactive and flushed
+ * before the caller enters this function. */
+static int release_all_synchronized(struct impl *impl)
+{
+	struct pw_loop *loop;
+
+	if (impl->capture == NULL)
+		return 0;
+	loop = pw_stream_get_data_loop(impl->capture);
+	if (loop == NULL)
+		return -EIO;
+	return pw_loop_locked(loop, release_all_locked, 1, NULL, 0, impl);
+}
+
 static int validate_capture_pool(struct impl *impl)
 {
 	struct spa_buffer *sample;
@@ -963,7 +995,10 @@ static void capture_param_changed(void *data, uint32_t id,
 			pw_stream_destroy(impl->playback);
 			impl->playback = NULL;
 		}
-		release_all_quiescent(impl);
+		if ((result = release_all_synchronized(impl)) < 0)
+			(void)pw_stream_set_error(impl->capture, result,
+					"queue input ownership reset failed: %s",
+					spa_strerror(result));
 		free(impl->format);
 		impl->format = NULL;
 		return;
@@ -1007,7 +1042,11 @@ static void stream_state_changed(void *data, enum pw_stream_state old,
 			(void)pw_stream_set_active(impl->playback, false);
 			(void)pw_stream_flush(impl->playback, false);
 		}
-		release_all_quiescent(impl);
+		result = release_all_synchronized(impl);
+		if (result < 0)
+			(void)pw_stream_set_error(impl->capture, result,
+					"queue input ownership reset failed: %s",
+					spa_strerror(result));
 		return;
 	}
 	if (state == PW_STREAM_STATE_STREAMING && impl->playback != NULL) {
@@ -1197,7 +1236,7 @@ static void impl_destroy(struct impl *impl)
 		impl->playback = NULL;
 	}
 	if (impl->capture != NULL)
-		release_all_quiescent(impl);
+		(void)release_all_synchronized(impl);
 	if (impl->capture != NULL) {
 		pw_stream_destroy(impl->capture);
 		impl->capture = NULL;
