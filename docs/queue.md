@@ -336,6 +336,22 @@ initialization and then once per second:
 | `queue.stats.pool-exhaustions` | Output cycles without a reusable copy buffer. |
 | `queue.stats.protocol-errors` | Ownership or layout invariant failures. |
 
+The module preserves the first ownership failure in diagnostic properties before
+putting its streams into the error state. The daemon also logs the same record so
+the failure remains available after the fail-fast module teardown.
+
+| Property | Meaning |
+| --- | --- |
+| `queue.error.operation` | Stable name of the ownership operation that failed, or `none`. |
+| `queue.error.source-line` | Source line at which that operation reported the failure. |
+| `queue.error.slot` | Affected queue slot, or `n/a` when no slot was involved. |
+| `queue.error.expected-state` | Required slot ownership state. |
+| `queue.error.observed-state` | Slot ownership state actually observed. |
+| `queue.error.pending-depth` | Pending-ring depth captured at the first failure. |
+| `queue.error.completion-depth` | Completion-ring depth captured at the first failure. |
+| `queue.error.blocked-slot` | Backpressured input slot at the first failure, or `n/a`. |
+| `queue.error.result` | Negative errno-style result associated with the failure. |
+
 Counters are monotonic for the module lifetime. Pause and restart clear queued
 ownership but do not reset them.
 

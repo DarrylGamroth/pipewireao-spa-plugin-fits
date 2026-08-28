@@ -135,6 +135,24 @@ int main(int argc, char **argv)
 			"queue.stats.pool-exhaustions"), "0") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.stats.protocol-errors"),
 			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.operation"),
+			"none") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.source-line"),
+			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.slot"),
+			"n/a") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.expected-state"),
+			"n/a") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.observed-state"),
+			"n/a") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.pending-depth"),
+			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.completion-depth"),
+			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.blocked-slot"),
+			"n/a") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.result"),
+			"0") == 0);
 	for (i = 0; i < 64 && !node_check.capture_found; i++) {
 		struct pw_loop *pw_loop = pw_main_loop_get_loop(loop);
 
