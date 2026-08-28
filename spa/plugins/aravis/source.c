@@ -92,6 +92,7 @@ struct impl {
 	char transport_name[16];
 	char output_mode_name[16];
 	char row_block_rows_text[16];
+	char usb_transfer_size_text[16];
 	char detector_profile[256];
 	struct port port;
 	struct aravis_camera *camera;
@@ -105,6 +106,7 @@ struct impl {
 	enum aravis_transport transport;
 	enum output_mode output_mode;
 	uint32_t row_block_rows;
+	uint32_t usb_transfer_size;
 	uint32_t video_format;
 	uint32_t bytes_per_pixel;
 	struct spa_fraction frame_rate;
@@ -151,6 +153,8 @@ static int parse_transport(const char *value, enum aravis_transport *transport)
 		*transport = ARAVIS_TRANSPORT_GENTL;
 	else if (spa_streq(value, "native-gv"))
 		*transport = ARAVIS_TRANSPORT_NATIVE_GV;
+	else if (spa_streq(value, "native-uv"))
+		*transport = ARAVIS_TRANSPORT_NATIVE_UV;
 	else
 		return -EINVAL;
 	return 0;
@@ -163,6 +167,8 @@ static const char *transport_name(enum aravis_transport transport)
 		return "gentl";
 	case ARAVIS_TRANSPORT_NATIVE_GV:
 		return "native-gv";
+	case ARAVIS_TRANSPORT_NATIVE_UV:
+		return "native-uv";
 	case ARAVIS_TRANSPORT_AUTO:
 		return "auto";
 	}
@@ -1536,6 +1542,9 @@ static void configure_props(
 								   : "frame");
 	snprintf(this->row_block_rows_text, sizeof(this->row_block_rows_text),
 			"%u", this->row_block_rows);
+	snprintf(this->usb_transfer_size_text,
+			sizeof(this->usb_transfer_size_text), "%u",
+			this->usb_transfer_size);
 #define ADD_ITEM(key, value)                                                   \
 	this->prop_items[n_items++] = SPA_DICT_ITEM_INIT((key), (value))
 	ADD_ITEM(SPA_KEY_DEVICE_API, "aravis");
@@ -1549,6 +1558,9 @@ static void configure_props(
 	ADD_ITEM(SPA_KEY_API_ARAVIS_DEVICE, this->device_id);
 	ADD_ITEM(SPA_KEY_API_ARAVIS_TRANSPORT, this->transport_name);
 	ADD_ITEM(SPA_KEY_API_ARAVIS_OUTPUT_MODE, this->output_mode_name);
+	if (this->usb_transfer_size != 0)
+		ADD_ITEM(SPA_KEY_API_ARAVIS_USB_TRANSFER_SIZE,
+				this->usb_transfer_size_text);
 	if (this->output_mode == OUTPUT_MODE_ROW_BLOCK) {
 		ADD_ITEM(SPA_KEY_API_ARAVIS_ROW_BLOCK_ROWS,
 				this->row_block_rows_text);
@@ -1582,6 +1594,18 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 			: spa_dict_lookup(info, SPA_KEY_API_ARAVIS_TRANSPORT);
 	if ((res = parse_transport(value, &options.transport)) < 0)
 		return res;
+	value = info == NULL
+			? NULL
+			: spa_dict_lookup(
+					info,
+					SPA_KEY_API_ARAVIS_USB_TRANSFER_SIZE);
+	if (value != NULL &&
+			((res = parse_positive_u32(
+					  value, &this->usb_transfer_size)) < 0 ||
+				 this->usb_transfer_size < 1024 ||
+				 this->usb_transfer_size > (UINT32_C(1) << 30)))
+		return res < 0 ? res : -ERANGE;
+	options.usb_transfer_size = this->usb_transfer_size;
 	value = info == NULL
 			? NULL
 			: spa_dict_lookup(info, SPA_KEY_API_ARAVIS_OUTPUT_MODE);
@@ -1631,7 +1655,8 @@ static int impl_init(const struct spa_handle_factory *factory SPA_UNUSED,
 		this->frame_rate = SPA_FRACTION(0, 1);
 	this->transport = aravis_camera_get_transport(this->camera);
 	if (this->output_mode == OUTPUT_MODE_ROW_BLOCK &&
-			(this->transport != ARAVIS_TRANSPORT_NATIVE_GV ||
+			((this->transport != ARAVIS_TRANSPORT_NATIVE_GV &&
+			  this->transport != ARAVIS_TRANSPORT_NATIVE_UV) ||
 					this->row_block_rows >=
 							this->camera_info
 									.height ||

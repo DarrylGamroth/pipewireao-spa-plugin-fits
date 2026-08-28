@@ -12,11 +12,13 @@ enum aravis_transport {
 	ARAVIS_TRANSPORT_AUTO,
 	ARAVIS_TRANSPORT_GENTL,
 	ARAVIS_TRANSPORT_NATIVE_GV,
+	ARAVIS_TRANSPORT_NATIVE_UV,
 };
 
 struct aravis_camera_options {
 	const char *device_id;
 	enum aravis_transport transport;
+	uint32_t usb_transfer_size;
 };
 
 struct aravis_camera_info {

@@ -11,6 +11,7 @@
 #define SPA_KEY_API_ARAVIS_OUTPUT_MODE "api.aravis.output-mode"
 #define SPA_KEY_API_ARAVIS_ROW_BLOCK_ROWS "api.aravis.row-block-rows"
 #define SPA_KEY_API_ARAVIS_DETECTOR_PROFILE "api.aravis.detector-profile"
+#define SPA_KEY_API_ARAVIS_USB_TRANSFER_SIZE "api.aravis.usb-transfer-size"
 
 extern const struct spa_handle_factory spa_aravis_source_factory;
 

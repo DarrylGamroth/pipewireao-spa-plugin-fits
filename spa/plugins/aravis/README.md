@@ -1,10 +1,10 @@
 # Aravis camera source
 
-`api.aravis.source` can use either an Aravis GenTL stream or the native Aravis
-GigE Vision stream. It remains an experimental backend and is not yet part of
-the qualified PipeWireAO RTC camera set. Measurements with the Euresys
-Gigelink GenTL producer showed substantially higher completion-poll cost than
-the direct eGrabber and BGAPI2 integrations; those measurements do not apply
+`api.aravis.source` can use an Aravis GenTL stream or the native Aravis GigE
+Vision and USB3 Vision streams. It remains an experimental backend and is not
+yet part of the qualified PipeWireAO RTC camera set. Measurements with the
+Euresys Gigelink GenTL producer showed substantially higher completion-poll
+cost than the direct eGrabber and BGAPI2 integrations; those measurements do not apply
 to the native receiver.
 
 Select the stream implementation with `api.aravis.transport`:
@@ -12,9 +12,10 @@ Select the stream implementation with `api.aravis.transport`:
 - `auto` opens the device through Aravis' normal interface selection.
 - `gentl` opens it specifically through the Aravis GenTL interface.
 - `native-gv` opens it specifically through the Aravis GigE Vision interface.
+- `native-uv` opens it specifically through the Aravis USB3 Vision interface.
 
-Complete-frame mode remains the default. Native GV also supports copied,
-complete row-block ndarray output:
+Complete-frame mode remains the default. Native GV and native UV also support
+copied, complete row-block ndarray output:
 
 ```text
 api.aravis.transport = native-gv
@@ -23,12 +24,29 @@ api.aravis.row-block-rows = 8
 api.aravis.detector-profile = detector-profile-id
 ```
 
+For a USB3 Vision camera, select `native-uv`. The optional transfer size sets
+the progress-publication granularity and must be at least 1024 bytes:
+
+```text
+api.aravis.transport = native-uv
+api.aravis.output-mode = row-block
+api.aravis.row-block-rows = 8
+api.aravis.detector-profile = detector-profile-id
+api.aravis.usb-transfer-size = 65536
+```
+
+Smaller USB transfers can expose complete rows sooner, at the cost of more
+libusb submissions and callbacks. Aravis's default asynchronous USB mode is
+used; the underlying progress API also supports its synchronous mode.
+
 Row-block mode requires a positive block height smaller than and dividing the
 camera height. It currently accepts only packed `Mono8` or unpacked
 little-endian `Mono10`/`Mono12`/`Mono14`/`Mono16` image payloads with no
 padding, chunks, or multipart layout. The Aravis receive thread publishes a
-contiguous committed payload prefix only after copying packet data. The SPA
-node copies complete rows from its private camera allocation into ordinary
+contiguous committed payload prefix only after network packet copies or USB
+bulk transfers complete. Asynchronous USB completion order is tracked, so a
+later transfer cannot make an earlier hole visible. The SPA node copies
+complete rows from its private camera allocation into ordinary
 immutable `org.calculon.ao.raw-pixel-row-block/1` buffers. The receive thread
 does no image processing.
 
@@ -36,7 +54,8 @@ The progressive implementation was derived from the existing Aravis packet
 tracker, buffer ownership, fake camera, and tests. It does not depend on EMVA
 specification text. Native GV row-block operation is functionally tested with
 the Aravis fake camera but is not yet qualified on an iPORT or under packet
-loss.
+loss. Native UV builds and shares the same generic progress-reader path, but it
+has not yet been exercised with a USB3 Vision camera.
 
 ## Pleora iPORT serial control boundary
 
@@ -73,7 +92,7 @@ meson compile -C build-aravis-fork
 meson test -C build-aravis-fork spa-aravis-factory --print-errorlogs
 ```
 
-The pinned fork contains the native GV buffer-progress API required by
+The pinned fork contains the native GV/UV buffer-progress API required by
 `row-block` mode and the instrumented `TPACKET_V3` receiver. Update the wrap
 revision deliberately when those interfaces change; do not follow the fork's
 moving `main` branch during a build.
@@ -112,9 +131,16 @@ device identifier and GenTL producer environment are site-specific:
 GENICAM_GENTL64_PATH=/path/to/cti-directory \
   build-aravis/spa/plugins/aravis/spa-aravis-camera-test DEVICE-ID
 
+build-aravis/spa/plugins/aravis/spa-aravis-camera-test \
+  USB3-DEVICE-ID native-uv
+
 GENICAM_GENTL64_PATH=/path/to/cti-directory \
   build-aravis/spa/plugins/aravis/spa-aravis-capture-test \
   build-aravis/spa/plugins/aravis/libspa-aravis.so DEVICE-ID
+
+build-aravis/spa/plugins/aravis/spa-aravis-capture-test \
+  build-aravis/spa/plugins/aravis/libspa-aravis.so \
+  USB3-DEVICE-ID row-block-uv
 ```
 
 `spa-aravis-completion-benchmark` remains available for controlled comparison

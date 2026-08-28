@@ -52,15 +52,39 @@ static int capture_frames(struct aravis_camera *camera, uint32_t requested,
 	return 0;
 }
 
+static enum aravis_transport parse_transport(const char *name)
+{
+	if (name == NULL)
+		return ARAVIS_TRANSPORT_AUTO;
+	if (strcmp(name, "gentl") == 0)
+		return ARAVIS_TRANSPORT_GENTL;
+	if (strcmp(name, "native-gv") == 0)
+		return ARAVIS_TRANSPORT_NATIVE_GV;
+	if (strcmp(name, "native-uv") == 0)
+		return ARAVIS_TRANSPORT_NATIVE_UV;
+	return ARAVIS_TRANSPORT_AUTO;
+}
+
+static const char *transport_name(enum aravis_transport transport)
+{
+	switch (transport) {
+	case ARAVIS_TRANSPORT_GENTL:
+		return "GenTL";
+	case ARAVIS_TRANSPORT_NATIVE_GV:
+		return "native GV";
+	case ARAVIS_TRANSPORT_NATIVE_UV:
+		return "native UV";
+	case ARAVIS_TRANSPORT_AUTO:
+		return "auto";
+	}
+	return "unknown";
+}
+
 int main(int argc, char **argv)
 {
 	struct aravis_camera_options options = {
 		.device_id = argc > 1 ? argv[1] : NULL,
-		.transport = argc > 2 && strcmp(argv[2], "gentl") == 0
-				? ARAVIS_TRANSPORT_GENTL
-				: argc > 2 && strcmp(argv[2], "native-gv") == 0
-						? ARAVIS_TRANSPORT_NATIVE_GV
-						: ARAVIS_TRANSPORT_AUTO,
+		.transport = parse_transport(argc > 2 ? argv[2] : NULL),
 	};
 	struct test_buffer buffers[N_BUFFERS] = { 0 };
 	struct aravis_camera *camera = NULL;
@@ -111,10 +135,7 @@ out:
 	aravis_camera_close(camera);
 	if (res == EXIT_SUCCESS)
 		printf("Received %u %s frames after %" PRIu64 " empty polls\n",
-				N_FRAMES + 1,
-				transport == ARAVIS_TRANSPORT_GENTL
-						? "GenTL"
-						: "native GV",
+				N_FRAMES + 1, transport_name(transport),
 				empty_polls);
 	return res;
 }

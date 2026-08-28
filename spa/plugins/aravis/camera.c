@@ -34,9 +34,19 @@ static ArvCamera *open_camera(
 
 	if (options->transport == ARAVIS_TRANSPORT_AUTO)
 		return arv_camera_new(options->device_id, error);
-	interface_id = options->transport == ARAVIS_TRANSPORT_GENTL
-			? "GenTL"
-			: "GigEVision";
+	switch (options->transport) {
+	case ARAVIS_TRANSPORT_GENTL:
+		interface_id = "GenTL";
+		break;
+	case ARAVIS_TRANSPORT_NATIVE_GV:
+		interface_id = "GigEVision";
+		break;
+	case ARAVIS_TRANSPORT_NATIVE_UV:
+		interface_id = "USB3Vision";
+		break;
+	case ARAVIS_TRANSPORT_AUTO:
+		return NULL;
+	}
 	interface = arv_get_interface_by_id(interface_id);
 	if (interface == NULL)
 		return NULL;
@@ -234,14 +244,29 @@ int aravis_camera_open(struct aravis_camera **camera_ptr,
 
 	if (options->transport != ARAVIS_TRANSPORT_AUTO &&
 			options->transport != ARAVIS_TRANSPORT_GENTL &&
-			options->transport != ARAVIS_TRANSPORT_NATIVE_GV) {
+			options->transport != ARAVIS_TRANSPORT_NATIVE_GV &&
+			options->transport != ARAVIS_TRANSPORT_NATIVE_UV) {
 		res = -EINVAL;
+		goto error;
+	}
+	if (options->usb_transfer_size != 0 &&
+			(options->usb_transfer_size < 1024 ||
+			 options->usb_transfer_size > (UINT32_C(1) << 30))) {
+		res = -ERANGE;
 		goto error;
 	}
 	camera->camera = open_camera(options, &error);
 	if (camera->camera == NULL) {
 		res = clear_error(&error, -ENODEV);
 		goto error;
+	}
+	if (options->usb_transfer_size != 0) {
+		if (!arv_camera_is_uv_device(camera->camera)) {
+			res = -EINVAL;
+			goto error;
+		}
+		arv_camera_uv_set_maximum_transfer_size(
+				camera->camera, options->usb_transfer_size);
 	}
 	camera->stream = arv_camera_create_stream(
 			camera->camera, NULL, NULL, NULL, &error);
@@ -253,6 +278,8 @@ int aravis_camera_open(struct aravis_camera **camera_ptr,
 		camera->transport = ARAVIS_TRANSPORT_GENTL;
 	} else if (ARV_IS_GV_STREAM(camera->stream)) {
 		camera->transport = ARAVIS_TRANSPORT_NATIVE_GV;
+	} else if (ARV_IS_UV_STREAM(camera->stream)) {
+		camera->transport = ARAVIS_TRANSPORT_NATIVE_UV;
 	} else {
 		res = -ENOTSUP;
 		goto error;
@@ -657,7 +684,7 @@ int aravis_camera_stop(struct aravis_camera *camera)
 		return 0;
 	if (!arv_camera_stop_acquisition(camera->camera, &error))
 		return clear_error(&error, -EIO);
-	if (camera->transport == ARAVIS_TRANSPORT_NATIVE_GV)
+	if (camera->transport != ARAVIS_TRANSPORT_GENTL)
 		(void)arv_stream_delete_buffers(camera->stream);
 	camera->started = false;
 	return 0;
@@ -712,7 +739,7 @@ int aravis_camera_try_get_completion(struct aravis_camera *camera,
 				arv_buffer_get_timestamp(buffer);
 		completion->frame.incomplete = true;
 		completion->result = -EIO;
-		if (camera->transport == ARAVIS_TRANSPORT_NATIVE_GV)
+		if (camera->transport != ARAVIS_TRANSPORT_GENTL)
 			g_object_unref(buffer);
 		return 1;
 	}
@@ -727,7 +754,7 @@ int aravis_camera_try_get_completion(struct aravis_camera *camera,
 			y_padding < 0 ||
 			(uintptr_t)image - (uintptr_t)base > UINT32_MAX ||
 			image_size > UINT32_MAX) {
-		if (camera->transport == ARAVIS_TRANSPORT_NATIVE_GV)
+		if (camera->transport != ARAVIS_TRANSPORT_GENTL)
 			g_object_unref(buffer);
 		return -EPROTO;
 	}
@@ -750,7 +777,7 @@ int aravis_camera_try_get_completion(struct aravis_camera *camera,
 				ARV_BUFFER_STATUS_SUCCESS,
 	};
 	completion->result = 0;
-	if (camera->transport == ARAVIS_TRANSPORT_NATIVE_GV)
+	if (camera->transport != ARAVIS_TRANSPORT_GENTL)
 		g_object_unref(buffer);
 	return 1;
 }
@@ -758,14 +785,14 @@ int aravis_camera_try_get_completion(struct aravis_camera *camera,
 int aravis_camera_get_buffer_progress(struct aravis_camera *camera,
 		ArvBuffer *buffer, struct aravis_buffer_progress *progress)
 {
-	ArvGvStreamBufferProgress snapshot;
+	ArvStreamBufferProgress snapshot;
 
 	if (camera == NULL || buffer == NULL || progress == NULL)
 		return -EINVAL;
-	if (camera->transport != ARAVIS_TRANSPORT_NATIVE_GV)
+	if (camera->transport != ARAVIS_TRANSPORT_NATIVE_GV &&
+			camera->transport != ARAVIS_TRANSPORT_NATIVE_UV)
 		return -ENOTSUP;
-	if (!arv_gv_stream_get_buffer_progress(
-			    ARV_GV_STREAM(camera->stream), buffer, &snapshot))
+	if (!arv_stream_get_buffer_progress(camera->stream, buffer, &snapshot))
 		return -EAGAIN;
 	*progress = (struct aravis_buffer_progress){
 		.frame_id = snapshot.frame_id,

@@ -193,12 +193,13 @@ static uint64_t monotonic_nsec(void)
 }
 
 static int capture(const struct spa_handle_factory *factory,
-		const char *device_id, bool row_blocks)
+		const char *device_id, bool row_blocks, bool native_uv)
 {
 	const struct spa_dict_item items[] = {
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_DEVICE, device_id),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_TRANSPORT,
-				row_blocks ? "native-gv" : "auto"),
+				native_uv ? "native-uv"
+					  : row_blocks ? "native-gv" : "auto"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_OUTPUT_MODE,
 				row_blocks ? "row-block" : "frame"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_ARAVIS_ROW_BLOCK_ROWS, "128"),
@@ -410,7 +411,10 @@ int main(int argc, char *argv[])
 	spa_assert_se(factory != NULL &&
 			spa_streq(factory->name, SPA_NAME_API_ARAVIS_SOURCE));
 	res = capture(factory, argv[2],
-			argc == 4 && spa_streq(argv[3], "row-block"));
+			argc == 4 &&
+					(spa_streq(argv[3], "row-block") ||
+					 spa_streq(argv[3], "row-block-uv")),
+			argc == 4 && spa_streq(argv[3], "row-block-uv"));
 	spa_assert_se(dlclose(library) == 0);
 	return res;
 }
