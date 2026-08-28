@@ -350,6 +350,8 @@ the failure remains available after the fail-fast module teardown.
 | `queue.error.pending-depth` | Pending-ring depth captured at the first failure. |
 | `queue.error.completion-depth` | Completion-ring depth captured at the first failure. |
 | `queue.error.blocked-slot` | Backpressured input slot at the first failure, or `n/a`. |
+| `queue.error.slot-acquisitions` | Successful acquisitions of the affected slot in its current pool. |
+| `queue.error.slot-returns` | Successful upstream returns of the affected slot in its current pool. |
 | `queue.error.result` | Negative errno-style result associated with the failure. |
 
 Counters are monotonic for the module lifetime. Pause and restart clear queued

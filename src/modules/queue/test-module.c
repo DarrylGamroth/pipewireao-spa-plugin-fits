@@ -151,6 +151,10 @@ int main(int argc, char **argv)
 			"0") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.error.blocked-slot"),
 			"n/a") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.slot-acquisitions"),
+			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.slot-returns"),
+			"0") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.error.result"),
 			"0") == 0);
 	for (i = 0; i < 64 && !node_check.capture_found; i++) {

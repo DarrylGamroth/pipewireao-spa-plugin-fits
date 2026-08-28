@@ -62,6 +62,8 @@ struct protocol_failure {
 	uint32_t pending_depth;
 	uint32_t completion_depth;
 	uint32_t blocked_slot;
+	uint64_t slot_acquisitions;
+	uint64_t slot_returns;
 	int result;
 };
 
@@ -70,6 +72,8 @@ struct queue_slot {
 	struct pw_buffer *capture;
 	struct pw_buffer *playback;
 	_Atomic uint32_t state;
+	_Atomic uint64_t acquisitions;
+	_Atomic uint64_t returns;
 	bool output_available;
 	bool output_in_flight;
 	uint32_t delivered_input;
@@ -188,6 +192,12 @@ static void mark_protocol_error(struct impl *impl, const char *operation,
 	impl->failure.completion_depth = pwao_queue_ring_size(&impl->completions);
 	impl->failure.blocked_slot = atomic_load_explicit(&impl->blocked_input,
 			memory_order_relaxed);
+	if (slot < impl->n_capture_buffers) {
+		impl->failure.slot_acquisitions = atomic_load_explicit(
+				&impl->slots[slot].acquisitions, memory_order_relaxed);
+		impl->failure.slot_returns = atomic_load_explicit(
+				&impl->slots[slot].returns, memory_order_relaxed);
+	}
 	impl->failure.result = result;
 	atomic_store_explicit(&impl->fatal_error, FAILURE_READY,
 			memory_order_release);
@@ -205,6 +215,7 @@ static struct queue_slot *slot_from_buffer(struct pw_buffer *buffer)
 static int return_capture_buffer(struct impl *impl, uint32_t index)
 {
 	struct queue_slot *slot;
+	int result;
 
 	if (index >= impl->n_capture_buffers)
 		return -EINVAL;
@@ -212,7 +223,10 @@ static int return_capture_buffer(struct impl *impl, uint32_t index)
 	atomic_store_explicit(&slot->state, SLOT_FREE, memory_order_release);
 	if (slot->capture == NULL)
 		return -EIO;
-	return pw_stream_queue_buffer(impl->capture, slot->capture);
+	result = pw_stream_queue_buffer(impl->capture, slot->capture);
+	if (result >= 0)
+		atomic_fetch_add_explicit(&slot->returns, 1, memory_order_relaxed);
+	return result;
 }
 
 static void drain_completions(struct impl *impl)
@@ -321,6 +335,8 @@ static void capture_process(void *data)
 					SLOT_FREE, expected, -EPROTO);
 			return;
 		}
+		atomic_fetch_add_explicit(&slot->acquisitions, 1,
+				memory_order_relaxed);
 		atomic_fetch_add_explicit(&impl->input_stats.publications, 1,
 				memory_order_relaxed);
 		result = pwao_queue_ring_admit(&impl->pending, slot->index,
@@ -573,8 +589,10 @@ static void reset_ownership_quiescent(struct impl *impl,
 		uint32_t state = atomic_exchange_explicit(&slot->state,
 				SLOT_FREE, memory_order_acq_rel);
 
-		if (return_capture && state != SLOT_FREE && slot->capture != NULL)
-			(void)pw_stream_queue_buffer(impl->capture, slot->capture);
+		if (return_capture && state != SLOT_FREE && slot->capture != NULL &&
+				pw_stream_queue_buffer(impl->capture, slot->capture) >= 0)
+			atomic_fetch_add_explicit(&slot->returns, 1,
+					memory_order_relaxed);
 	}
 	pwao_queue_ring_reset(&impl->pending);
 	pwao_queue_ring_reset(&impl->completions);
@@ -670,6 +688,8 @@ static void capture_add_buffer(void *data, struct pw_buffer *buffer)
 	slot->capture = buffer;
 	slot->delivered_input = UINT32_MAX;
 	atomic_store_explicit(&slot->state, SLOT_FREE, memory_order_relaxed);
+	atomic_store_explicit(&slot->acquisitions, 0, memory_order_relaxed);
+	atomic_store_explicit(&slot->returns, 0, memory_order_relaxed);
 	buffer->user_data = slot;
 	impl->n_capture_present++;
 	impl->n_capture_buffers = SPA_MAX(impl->n_capture_buffers, index + 1u);
@@ -1046,8 +1066,8 @@ static const struct pw_core_events core_events = {
 static void update_stats(void *data, uint64_t expirations)
 {
 	struct impl *impl = data;
-	struct spa_dict_item items[17];
-	char values[17][32];
+	struct spa_dict_item items[19];
+	char values[19][32];
 	char message[512];
 	char slot[32] = "n/a";
 	char blocked_slot[32] = "n/a";
@@ -1114,6 +1134,17 @@ static void update_stats(void *data, uint64_t expirations)
 				impl->failure.blocked_slot);
 	items[count++] = SPA_DICT_ITEM_INIT("queue.error.blocked-slot",
 			blocked_slot);
+	(void)snprintf(values[count], sizeof(values[count]), "%" PRIu64,
+			failure_state == FAILURE_READY ?
+			impl->failure.slot_acquisitions : 0);
+	items[count] = SPA_DICT_ITEM_INIT("queue.error.slot-acquisitions",
+			values[count]);
+	count++;
+	(void)snprintf(values[count], sizeof(values[count]), "%" PRIu64,
+			failure_state == FAILURE_READY ? impl->failure.slot_returns : 0);
+	items[count] = SPA_DICT_ITEM_INIT("queue.error.slot-returns",
+			values[count]);
+	count++;
 	(void)snprintf(values[count], sizeof(values[count]), "%d",
 			failure_state == FAILURE_READY ? impl->failure.result : 0);
 	items[count] = SPA_DICT_ITEM_INIT("queue.error.result", values[count]);
@@ -1126,10 +1157,13 @@ static void update_stats(void *data, uint64_t expirations)
 				"queue ownership protocol failed: operation=%s "
 				"source-line=%u slot=%s expected-state=%s "
 				"observed-state=%s pending-depth=%u completion-depth=%u "
-				"blocked-slot=%s result=%d (%s)",
+				"blocked-slot=%s slot-acquisitions=%" PRIu64 " "
+				"slot-returns=%" PRIu64 " result=%d (%s)",
 				operation, impl->failure.source_line, slot,
 				expected_state, observed_state, impl->failure.pending_depth,
 				impl->failure.completion_depth, blocked_slot,
+				impl->failure.slot_acquisitions,
+				impl->failure.slot_returns,
 				impl->failure.result,
 				spa_strerror(impl->failure.result));
 		pw_log_log(SPA_LOG_LEVEL_ERROR, __FILE__, __LINE__, __func__,
