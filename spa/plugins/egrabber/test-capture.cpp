@@ -342,6 +342,18 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 		}
 	}
 
+	/* Downstream clients can disappear without first pausing the source. Buffer
+	 * withdrawal must synchronously stop acquisition before their memory is
+	 * returned to PipeWire. The source must remain reusable afterwards. */
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			nullptr, 0) == 0);
+	spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
+	io.status = SPA_STATUS_NEED_DATA;
+	io.buffer_id = SPA_ID_INVALID;
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			buffers.data(), buffers.size()) == 0);
+	spa_assert_se(spa_node_send_command(node, &start) == 0);
+
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, nullptr, 0) == 0);

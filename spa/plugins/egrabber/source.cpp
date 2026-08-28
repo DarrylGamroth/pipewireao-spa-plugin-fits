@@ -1154,10 +1154,17 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 	spa_return_val_if_fail(self != nullptr, -EINVAL);
 	spa_return_val_if_fail(direction == SPA_DIRECTION_OUTPUT && port_id == 0,
 			-EINVAL);
+	if (n_buffers == 0) {
+		/* PipeWire can withdraw buffers while tearing down a failed downstream
+		 * link. Stop new processing before waiting for an in-flight process call,
+		 * then synchronously stop the transport before revoking camera memory. */
+		self->started = false;
+		std::lock_guard process_lock(self->process_gate);
+		return release_buffers(self);
+	}
+	std::lock_guard process_lock(self->process_gate);
 	if (self->started)
 		return -EBUSY;
-	if (n_buffers == 0)
-		return release_buffers(self);
 	if (self->output.n_buffers != 0 && (res = release_buffers(self)) < 0)
 		return res;
 	const bool row_blocks = self->options.output_mode ==
