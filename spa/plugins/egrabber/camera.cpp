@@ -121,20 +121,19 @@ public:
     bool process_event() {
         event_processed_ = false;
         callback_error_ = {};
+        if (getPendingEventCountFilter(event_filter()) == 0)
+            return false;
         try {
-            processEventFilter(event_filter());
+            processEventFilter(event_filter(), 0);
         } catch (const Euresys::gentl_error &error) {
-            if (error.gc_err == gc::GC_ERR_ABORT)
+            if (error.gc_err == gc::GC_ERR_TIMEOUT ||
+                error.gc_err == gc::GC_ERR_ABORT)
                 return false;
             throw;
         }
         if (callback_error_)
             std::rethrow_exception(callback_error_);
         return event_processed_;
-    }
-
-    void cancel_event() {
-        cancelEventFilter(event_filter());
     }
 
 protected:
@@ -261,6 +260,10 @@ public:
 
     bool process_event() {
         std::lock_guard process_lock(process_mutex_);
+        {
+            std::lock_guard lock(mutex_);
+            if (!started_) return false;
+        }
         return grabber_.process_event();
     }
 
@@ -482,16 +485,7 @@ public:
     }
 
     void stop() {
-        {
-            std::lock_guard lock(mutex_);
-            if (!started_) return;
-        }
-        grabber_.cancel_event();
-        // Do not stop or reset the stream until the cancelled callback has
-        // completely left the processing thread.
-        {
-            std::lock_guard process_lock(process_mutex_);
-        }
+        std::lock_guard process_lock(process_mutex_);
         std::lock_guard lock(mutex_);
         if (!started_) return;
         grabber_.stop();

@@ -7,13 +7,11 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <new>
 #include <numeric>
 #include <optional>
@@ -226,13 +224,9 @@ struct impl {
 	AcquisitionKeySequence acquisition_keys;
 	std::optional<egrabber_pipewire::TransportEvent> pending_readout;
 	buffer_slot *row_slot = nullptr;
-	std::mutex lifecycle_mutex;
-	std::condition_variable lifecycle_changed;
-	std::mutex process_call_mutex;
 	spa_fraction frame_rate = SPA_FRACTION(0, 1);
 	uint32_t video_format = SPA_VIDEO_FORMAT_UNKNOWN;
 	std::atomic_bool started = false;
-	std::atomic_bool shutting_down = false;
 	bool dma_buf_offered = false;
 	bool direct_dma_buf = false;
 	bool graph_ready = false;
@@ -1580,40 +1574,29 @@ int process(void *object)
 	auto *self = static_cast<impl *>(object);
 
 	spa_return_val_if_fail(self != nullptr, -EINVAL);
-	std::lock_guard process_call_lock(self->process_call_mutex);
 	try {
-		for (;;) {
-			if (!self->started) {
-				std::unique_lock lifecycle_lock(self->lifecycle_mutex);
-				self->lifecycle_changed.wait(lifecycle_lock, [self] {
-					return self->started.load() || self->shutting_down.load();
-				});
-				if (self->shutting_down)
-					return SPA_STATUS_OK;
-			}
-			self->graph_ready = false;
-			if (self->options.output_mode ==
-					egrabber_pipewire::OutputMode::row_block) {
-				const int res = recycle_row_output(self);
-				if (res < 0)
-					return res;
-				if (!self->camera->process_event())
-					continue;
-				(void) poll_readout(self);
-				(void) publish_row_block(self);
-				return self->graph_ready ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
-			}
-			int res = recycle_buffers(self);
+		if (!self->started)
+			return SPA_STATUS_OK;
+		self->graph_ready = false;
+		if (self->options.output_mode ==
+				egrabber_pipewire::OutputMode::row_block) {
+			const int res = recycle_row_output(self);
 			if (res < 0)
 				return res;
-			if (!self->camera->process_event())
-				continue;
+			(void) self->camera->process_event();
 			(void) poll_readout(self);
-			res = recycle_buffers(self);
-			if (res < 0)
-				return res;
+			(void) publish_row_block(self);
 			return self->graph_ready ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
 		}
+		int res = recycle_buffers(self);
+		if (res < 0)
+			return res;
+		(void) self->camera->process_event();
+		(void) poll_readout(self);
+		res = recycle_buffers(self);
+		if (res < 0)
+			return res;
+		return self->graph_ready ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
 	} catch (const std::exception &error) {
 		spa_log_error(self->log, "eGrabber processing failed: %s", error.what());
 		return -EIO;
@@ -1644,7 +1627,6 @@ int send_command(void *object, const struct spa_command *command)
 			self->row_discontinuity = false;
 			self->camera->start();
 			self->started = true;
-			self->lifecycle_changed.notify_all();
 			return 0;
 		case SPA_NODE_COMMAND_Pause:
 		case SPA_NODE_COMMAND_Suspend:
@@ -1712,11 +1694,6 @@ int clear(struct spa_handle *handle)
 		} catch (...) {
 			res = -EIO;
 		}
-	}
-	self->shutting_down = true;
-	self->lifecycle_changed.notify_all();
-	{
-		std::lock_guard process_call_lock(self->process_call_mutex);
 	}
 	if (self->output.n_buffers != 0) {
 		const int released = release_buffers(self);

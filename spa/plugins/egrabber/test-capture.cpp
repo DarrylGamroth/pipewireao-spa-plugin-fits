@@ -337,6 +337,7 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 		frames++;
 		if (frames == requested_frames / 2u) {
 			spa_assert_se(spa_node_send_command(node, &pause) == 0);
+			spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
 			spa_assert_se(spa_node_send_command(node, &start) == 0);
 		}
 	}
