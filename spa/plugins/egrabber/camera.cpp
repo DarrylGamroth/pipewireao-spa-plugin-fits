@@ -121,10 +121,20 @@ public:
     bool process_event() {
         event_processed_ = false;
         callback_error_ = {};
-        processEventFilter(event_filter());
+        try {
+            processEventFilter(event_filter());
+        } catch (const Euresys::gentl_error &error) {
+            if (error.gc_err == gc::GC_ERR_ABORT)
+                return false;
+            throw;
+        }
         if (callback_error_)
             std::rethrow_exception(callback_error_);
         return event_processed_;
+    }
+
+    void cancel_event() {
+        cancelEventFilter(event_filter());
     }
 
 protected:
@@ -250,6 +260,7 @@ public:
     }
 
     bool process_event() {
+        std::lock_guard process_lock(process_mutex_);
         return grabber_.process_event();
     }
 
@@ -416,6 +427,23 @@ public:
         buffer.push(grabber_);
     }
 
+    void discard_buffers() {
+        std::lock_guard lock(mutex_);
+        grabber_.flushBuffers(gc::ACQ_QUEUE_ALL_DISCARD);
+        grabber_.flushEvent<Euresys::All>();
+    }
+
+    void reset_queue(const BufferIndexRange &range) {
+        std::lock_guard lock(mutex_);
+        grabber_.resetBufferQueue(range);
+        grabber_.flushEvent<Euresys::All>();
+    }
+
+    void queue(const BufferIndexRange &range) {
+        std::lock_guard lock(mutex_);
+        grabber_.queue(range);
+    }
+
     void release(const std::vector<BufferIndexRange> &ranges) {
         std::lock_guard lock(mutex_);
         std::exception_ptr first_error;
@@ -454,6 +482,16 @@ public:
     }
 
     void stop() {
+        {
+            std::lock_guard lock(mutex_);
+            if (!started_) return;
+        }
+        grabber_.cancel_event();
+        // Do not stop or reset the stream until the cancelled callback has
+        // completely left the processing thread.
+        {
+            std::lock_guard process_lock(process_mutex_);
+        }
         std::lock_guard lock(mutex_);
         if (!started_) return;
         grabber_.stop();
@@ -894,6 +932,7 @@ private:
     QuerySupport data_larger_support_ = QuerySupport::unknown;
     QuerySupport incomplete_support_ = QuerySupport::unknown;
     std::mutex mutex_;
+    std::mutex process_mutex_;
     bool started_ = false;
     bool buffer_event_enabled_ = false;
     bool data_stream_event_enabled_ = false;
@@ -942,6 +981,9 @@ std::optional<double> Camera::frame_rate() { return impl_->frame_rate(); }
 std::optional<std::pair<double, double>> Camera::frame_rate_range() { return impl_->frame_rate_range(); }
 bool Camera::negotiate_frame_rate(double fps) { return impl_->negotiate_frame_rate(fps); }
 void Camera::recycle(Euresys::Buffer &buffer) { impl_->recycle(buffer); }
+void Camera::discard_buffers() { impl_->discard_buffers(); }
+void Camera::reset_queue(const Euresys::BufferIndexRange &range) { impl_->reset_queue(range); }
+void Camera::queue(const Euresys::BufferIndexRange &range) { impl_->queue(range); }
 void Camera::release(const std::vector<Euresys::BufferIndexRange> &ranges) { impl_->release(ranges); }
 void Camera::start() { impl_->start(); }
 void Camera::stop() { impl_->stop(); }

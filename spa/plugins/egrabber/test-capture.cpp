@@ -302,6 +302,7 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 				layout_write) == -EBUSY);
 	}
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0,
 			scalar_write) == 0);
@@ -334,9 +335,12 @@ int capture(const struct spa_handle_factory *factory, const char *producer)
 		spa_assert_se(spa_meta_acquisition_is_valid(&storage[id].metas[1]));
 		io.status = SPA_STATUS_NEED_DATA;
 		frames++;
+		if (frames == requested_frames / 2u) {
+			spa_assert_se(spa_node_send_command(node, &pause) == 0);
+			spa_assert_se(spa_node_send_command(node, &start) == 0);
+		}
 	}
 
-	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, nullptr, 0) == 0);

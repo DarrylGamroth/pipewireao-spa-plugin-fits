@@ -4,13 +4,16 @@
 
 #include <cerrno>
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <numeric>
 #include <optional>
@@ -103,6 +106,7 @@ struct buffer_slot {
 	bool readout_observed = false;
 	bool frame_discontinuity = false;
 	bool recycle_pending = false;
+	bool needs_queue = false;
 	bool row_terminal_ready = false;
 	bool row_terminal_valid = false;
 	bool row_drop = false;
@@ -222,9 +226,13 @@ struct impl {
 	AcquisitionKeySequence acquisition_keys;
 	std::optional<egrabber_pipewire::TransportEvent> pending_readout;
 	buffer_slot *row_slot = nullptr;
+	std::mutex lifecycle_mutex;
+	std::condition_variable lifecycle_changed;
+	std::mutex process_call_mutex;
 	spa_fraction frame_rate = SPA_FRACTION(0, 1);
 	uint32_t video_format = SPA_VIDEO_FORMAT_UNKNOWN;
-	bool started = false;
+	std::atomic_bool started = false;
+	std::atomic_bool shutting_down = false;
 	bool dma_buf_offered = false;
 	bool direct_dma_buf = false;
 	bool graph_ready = false;
@@ -1122,6 +1130,7 @@ int release_buffers(impl *self)
 	for (auto &slot : self->slots) {
 		slot.output = nullptr;
 		slot.recycle_pending = false;
+		slot.needs_queue = false;
 		slot.dma_point = 0;
 #ifdef HAVE_EGRABBER_DRM
 		slot.dma_sync = {};
@@ -1316,6 +1325,12 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 			if (layout && layout->line_pitch >
 					static_cast<size_t>(std::numeric_limits<int32_t>::max()))
 				throw std::runtime_error("eGrabber line pitch exceeds SPA stride");
+			if (!row_blocks && layout && layout->data_size == 0) {
+				reset_observation(*slot);
+				self->camera->recycle(completed);
+				self->submissions.submit(*slot);
+				return;
+			}
 			if (!slot->readout_observed && self->pending_readout) {
 				const egrabber_pipewire::BufferProgress observation = {
 					.size_filled = metadata.size_filled.value_or(0),
@@ -1423,6 +1438,7 @@ int port_use_buffers(void *object, enum spa_direction direction, uint32_t,
 			slot.output = nullptr;
 			slot.completed.reset();
 			slot.recycle_pending = false;
+			slot.needs_queue = false;
 			slot.dma_point = 0;
 #ifdef HAVE_EGRABBER_DRM
 			slot.dma_sync = {};
@@ -1469,14 +1485,53 @@ int recycle_slot(impl *self, buffer_slot &slot)
 	if (self->direct_dma_buf && !slot.dma_sync.release_ready())
 		return 0;
 #endif
+	slot.recycle_pending = false;
+	reset_observation(slot);
+	if (slot.needs_queue) {
+		if (slot.completed)
+			return -EPROTO;
+		self->camera->queue(slot.range);
+		self->submissions.submit(slot);
+		slot.needs_queue = false;
+		return 1;
+	}
 	auto completed = std::move(slot.completed);
 	if (!completed)
 		return -EPROTO;
-	slot.recycle_pending = false;
-	reset_observation(slot);
 	self->camera->recycle(*completed);
 	self->submissions.submit(slot);
 	return 1;
+}
+
+void prepare_stopped_buffers(impl *self)
+{
+	self->submissions.clear();
+	self->pending_readout.reset();
+	self->row_slot = nullptr;
+	self->row_discontinuity = true;
+	const bool row_blocks = self->options.output_mode ==
+			egrabber_pipewire::OutputMode::row_block;
+	bool queue_reset = false;
+	for (size_t index = 0; index < self->ranges.size(); index++) {
+		auto &slot = self->slots[index];
+		slot.completed.reset();
+		slot.recycle_pending = false;
+		slot.needs_queue = true;
+		reset_observation(slot);
+		if (!row_blocks && (slot.output == nullptr ||
+				slot.output->state != output_buffer_state::producer))
+			continue;
+		if (!queue_reset) {
+			self->camera->reset_queue(slot.range);
+			queue_reset = true;
+		} else {
+			self->camera->queue(slot.range);
+		}
+		self->submissions.submit(slot);
+		slot.needs_queue = false;
+	}
+	if (!queue_reset)
+		self->camera->discard_buffers();
 }
 
 int recycle_buffers(impl *self)
@@ -1497,7 +1552,8 @@ int recycle_buffers(impl *self)
 		return reclaimed;
 	if (output != nullptr) {
 		auto &slot = self->slots[output->id];
-		if (slot.output != output || !slot.completed || slot.recycle_pending)
+		if (slot.output != output || slot.recycle_pending ||
+				(!slot.completed && !slot.needs_queue))
 			return -EPROTO;
 		slot.recycle_pending = true;
 		const int recycled = recycle_slot(self, slot);
@@ -1524,30 +1580,45 @@ int process(void *object)
 	auto *self = static_cast<impl *>(object);
 
 	spa_return_val_if_fail(self != nullptr, -EINVAL);
-	if (!self->started)
-		return SPA_STATUS_OK;
+	std::lock_guard process_call_lock(self->process_call_mutex);
 	try {
-		self->graph_ready = false;
-		if (self->options.output_mode ==
-				egrabber_pipewire::OutputMode::row_block) {
-			const int res = recycle_row_output(self);
+		for (;;) {
+			if (!self->started) {
+				std::unique_lock lifecycle_lock(self->lifecycle_mutex);
+				self->lifecycle_changed.wait(lifecycle_lock, [self] {
+					return self->started.load() || self->shutting_down.load();
+				});
+				if (self->shutting_down)
+					return SPA_STATUS_OK;
+			}
+			self->graph_ready = false;
+			if (self->options.output_mode ==
+					egrabber_pipewire::OutputMode::row_block) {
+				const int res = recycle_row_output(self);
+				if (res < 0)
+					return res;
+				if (!self->camera->process_event())
+					continue;
+				(void) poll_readout(self);
+				(void) publish_row_block(self);
+				return self->graph_ready ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
+			}
+			int res = recycle_buffers(self);
 			if (res < 0)
 				return res;
-			(void) self->camera->process_event();
+			if (!self->camera->process_event())
+				continue;
 			(void) poll_readout(self);
-			(void) publish_row_block(self);
+			res = recycle_buffers(self);
+			if (res < 0)
+				return res;
 			return self->graph_ready ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
 		}
-		int res = recycle_buffers(self);
-		if (res < 0)
-			return res;
-		(void) self->camera->process_event();
-		(void) poll_readout(self);
-		res = recycle_buffers(self);
-		if (res < 0)
-			return res;
-		return self->graph_ready ? SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
+	} catch (const std::exception &error) {
+		spa_log_error(self->log, "eGrabber processing failed: %s", error.what());
+		return -EIO;
 	} catch (...) {
+		spa_log_error(self->log, "eGrabber processing failed: unknown exception");
 		return -EIO;
 	}
 }
@@ -1566,26 +1637,33 @@ int send_command(void *object, const struct spa_command *command)
 				return -EIO;
 			if (self->started)
 				return 0;
-			self->started = true;
 			self->frame_sequence.reset();
 			self->timestamp_mapper.request_reset();
 			self->pending_readout.reset();
 			self->row_slot = nullptr;
 			self->row_discontinuity = false;
 			self->camera->start();
+			self->started = true;
+			self->lifecycle_changed.notify_all();
 			return 0;
 		case SPA_NODE_COMMAND_Pause:
 		case SPA_NODE_COMMAND_Suspend:
 			if (!self->started)
 				return 0;
-			self->camera->stop();
 			self->started = false;
+			self->camera->stop();
+			prepare_stopped_buffers(self);
 			self->pending_readout.reset();
 			return 0;
 		default:
 			return -ENOTSUP;
 		}
+	} catch (const std::exception &error) {
+		spa_log_error(self->log, "eGrabber command failed: %s", error.what());
+		self->started = false;
+		return -EIO;
 	} catch (...) {
+		spa_log_error(self->log, "eGrabber command failed: unknown exception");
 		self->started = false;
 		return -EIO;
 	}
@@ -1628,12 +1706,17 @@ int clear(struct spa_handle *handle)
 
 	spa_return_val_if_fail(handle != nullptr, -EINVAL);
 	if (self->started) {
+		self->started = false;
 		try {
 			self->camera->stop();
 		} catch (...) {
 			res = -EIO;
 		}
-		self->started = false;
+	}
+	self->shutting_down = true;
+	self->lifecycle_changed.notify_all();
+	{
+		std::lock_guard process_call_lock(self->process_call_mutex);
 	}
 	if (self->output.n_buffers != 0) {
 		const int released = release_buffers(self);

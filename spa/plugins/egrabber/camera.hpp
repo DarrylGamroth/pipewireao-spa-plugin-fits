@@ -115,6 +115,9 @@ public:
     std::optional<std::pair<double, double>> frame_rate_range();
     bool negotiate_frame_rate(double frames_per_second);
     void recycle(Euresys::Buffer &buffer);
+    void discard_buffers();
+    void reset_queue(const Euresys::BufferIndexRange &range);
+    void queue(const Euresys::BufferIndexRange &range);
     void release(const std::vector<Euresys::BufferIndexRange> &ranges);
     void start();
     void stop();
