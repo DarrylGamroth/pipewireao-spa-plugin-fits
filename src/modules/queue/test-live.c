@@ -1,6 +1,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2026 PipeWireAO contributors */
 /* SPDX-License-Identifier: MIT */
 
+#include "queue.h"
+
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -691,6 +693,7 @@ static void fixture_init_format(struct fixture *fixture, const char *overflow,
 		const char *storage, bool video_format)
 {
 	char args[512];
+	const char *capture_queue_id, *playback_queue_id;
 	int length;
 	struct pw_impl_node *producer_node, *capture_node, *playback_node,
 			*observer_node;
@@ -740,6 +743,15 @@ static void fixture_init_format(struct fixture *fixture, const char *overflow,
 	fixture->capture_link = link_nodes(fixture, producer_node, capture_node);
 	wait_for_link(fixture, fixture->capture_link);
 	playback_node = wait_for_node(fixture, "test.queue-output");
+	capture_queue_id = pw_properties_get(
+			pw_impl_node_get_properties(capture_node),
+			PWAO_QUEUE_ID_PROPERTY);
+	playback_queue_id = pw_properties_get(
+			pw_impl_node_get_properties(playback_node),
+			PWAO_QUEUE_ID_PROPERTY);
+	CHECK(capture_queue_id != NULL);
+	CHECK(playback_queue_id != NULL);
+	CHECK(strcmp(capture_queue_id, playback_queue_id) == 0);
 	create_endpoint_stream(fixture, "test.queue-observer", PW_DIRECTION_INPUT,
 			&observer_events, &fixture->observer.endpoint);
 	observer_node = wait_for_node(fixture, "test.queue-observer");

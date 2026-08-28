@@ -33,6 +33,12 @@
 #define MAX_METAS PWAO_QUEUE_MAX_METAS
 #define PARAM_BUFFER_SIZE 16384u
 #define STATS_INTERVAL_NSEC SPA_NSEC_PER_SEC
+#define SLOT_TOKEN_BITS 6u
+#define SLOT_TOKEN_MASK ((UINT64_C(1) << SLOT_TOKEN_BITS) - 1u)
+#define SLOT_TOKEN_NONE UINT64_MAX
+
+_Static_assert(MAX_POOL_BUFFERS == (1u << SLOT_TOKEN_BITS),
+		"slot token must encode every pool slot");
 
 enum storage_mode {
 	STORAGE_COPY,
@@ -61,9 +67,11 @@ struct protocol_failure {
 	uint32_t observed_state;
 	uint32_t pending_depth;
 	uint32_t completion_depth;
-	uint32_t blocked_slot;
+	uint64_t blocked_token;
 	uint64_t slot_acquisitions;
 	uint64_t slot_returns;
+	uint64_t expected_token;
+	uint64_t observed_token;
 	int result;
 };
 
@@ -72,11 +80,12 @@ struct queue_slot {
 	struct pw_buffer *capture;
 	struct pw_buffer *playback;
 	_Atomic uint32_t state;
+	_Atomic uint64_t token;
 	_Atomic uint64_t acquisitions;
 	_Atomic uint64_t returns;
 	bool output_available;
 	bool output_in_flight;
-	uint32_t delivered_input;
+	uint64_t delivered_input;
 	int owned_fds[MAX_DATA_BLOCKS];
 };
 
@@ -121,7 +130,8 @@ struct impl {
 	uint32_t n_capture_present;
 	uint32_t n_playback_buffers;
 	uint32_t n_playback_present;
-	_Atomic uint32_t blocked_input;
+	_Atomic uint64_t blocked_input;
+	_Atomic uint64_t next_token;
 	uint32_t active_outputs;
 	uint32_t max_buffers;
 	enum pwao_queue_overflow overflow;
@@ -134,6 +144,7 @@ struct impl {
 	_Alignas(SPA_CACHE_LINE_SIZE) _Atomic uint32_t fatal_error;
 	struct protocol_failure failure;
 	bool failure_reported;
+	_Atomic bool destroy_scheduled;
 	bool destroying;
 };
 
@@ -150,6 +161,17 @@ static const struct spa_dict_item module_props[] = {
 		"( playback.props=<properties> )" },
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
+
+static void schedule_destroy(struct impl *impl)
+{
+	bool expected = false;
+
+	if (impl->destroying)
+		return;
+	if (atomic_compare_exchange_strong_explicit(&impl->destroy_scheduled,
+			&expected, true, memory_order_acq_rel, memory_order_relaxed))
+		pw_impl_module_schedule_destroy(impl->module);
+}
 
 static const char *slot_state_name(uint32_t state)
 {
@@ -171,9 +193,25 @@ static const char *slot_state_name(uint32_t state)
 	}
 }
 
+static uint32_t slot_token_index(uint64_t token)
+{
+	return (uint32_t)(token & SLOT_TOKEN_MASK);
+}
+
+static uint64_t acquire_slot_token(struct impl *impl, uint32_t index)
+{
+	uint64_t sequence = atomic_fetch_add_explicit(&impl->next_token, 1,
+			memory_order_relaxed);
+
+	if (sequence >= (UINT64_MAX >> SLOT_TOKEN_BITS))
+		return SLOT_TOKEN_NONE;
+	return (sequence << SLOT_TOKEN_BITS) | index;
+}
+
 static void mark_protocol_error(struct impl *impl, const char *operation,
 		uint32_t source_line, uint32_t slot, uint32_t expected_state,
-		uint32_t observed_state, int result)
+		uint32_t observed_state, uint64_t expected_token,
+		uint64_t observed_token, int result)
 {
 	uint32_t expected = FAILURE_NONE;
 
@@ -190,14 +228,19 @@ static void mark_protocol_error(struct impl *impl, const char *operation,
 	impl->failure.observed_state = observed_state;
 	impl->failure.pending_depth = pwao_queue_ring_size(&impl->pending);
 	impl->failure.completion_depth = pwao_queue_ring_size(&impl->completions);
-	impl->failure.blocked_slot = atomic_load_explicit(&impl->blocked_input,
+	impl->failure.blocked_token = atomic_load_explicit(&impl->blocked_input,
 			memory_order_relaxed);
 	if (slot < impl->n_capture_buffers) {
 		impl->failure.slot_acquisitions = atomic_load_explicit(
 				&impl->slots[slot].acquisitions, memory_order_relaxed);
 		impl->failure.slot_returns = atomic_load_explicit(
 				&impl->slots[slot].returns, memory_order_relaxed);
+		if (observed_token == SLOT_TOKEN_NONE)
+			observed_token = atomic_load_explicit(&impl->slots[slot].token,
+					memory_order_relaxed);
 	}
+	impl->failure.expected_token = expected_token;
+	impl->failure.observed_token = observed_token;
 	impl->failure.result = result;
 	atomic_store_explicit(&impl->fatal_error, FAILURE_READY,
 			memory_order_release);
@@ -205,22 +248,41 @@ static void mark_protocol_error(struct impl *impl, const char *operation,
 
 #define MARK_PROTOCOL_ERROR(impl, operation, slot, expected, observed, result) \
 	mark_protocol_error((impl), (operation), __LINE__, (slot), (expected), \
-			(observed), (result))
+			(observed), SLOT_TOKEN_NONE, SLOT_TOKEN_NONE, (result))
+
+#define MARK_TOKEN_PROTOCOL_ERROR(impl, operation, slot, expected, observed, \
+		expected_token, observed_token, result) \
+	mark_protocol_error((impl), (operation), __LINE__, (slot), (expected), \
+			(observed), (expected_token), (observed_token), (result))
 
 static struct queue_slot *slot_from_buffer(struct pw_buffer *buffer)
 {
 	return buffer == NULL ? NULL : buffer->user_data;
 }
 
-static int return_capture_buffer(struct impl *impl, uint32_t index)
+static int return_capture_buffer(struct impl *impl, uint64_t token,
+		uint32_t expected_state)
 {
 	struct queue_slot *slot;
+	uint32_t expected;
+	uint32_t index;
+	uint64_t current_token;
 	int result;
 
+	if (token == SLOT_TOKEN_NONE)
+		return -EINVAL;
+	index = slot_token_index(token);
 	if (index >= impl->n_capture_buffers)
 		return -EINVAL;
 	slot = &impl->slots[index];
-	atomic_store_explicit(&slot->state, SLOT_FREE, memory_order_release);
+	current_token = atomic_load_explicit(&slot->token, memory_order_acquire);
+	if (current_token != token)
+		return -ESTALE;
+	expected = expected_state;
+	if (!atomic_compare_exchange_strong_explicit(&slot->state, &expected,
+			SLOT_FREE, memory_order_acq_rel, memory_order_relaxed))
+		return -EPROTO;
+	atomic_store_explicit(&slot->token, SLOT_TOKEN_NONE, memory_order_release);
 	if (slot->capture == NULL)
 		return -EIO;
 	result = pw_stream_queue_buffer(impl->capture, slot->capture);
@@ -234,8 +296,9 @@ static void drain_completions(struct impl *impl)
 	uint32_t count;
 
 	for (count = 0; count < impl->n_capture_buffers; count++) {
-		uint32_t index;
-		int result = pwao_queue_ring_try_pop(&impl->completions, &index);
+		uint64_t token;
+		uint32_t index = UINT32_MAX;
+		int result = pwao_queue_ring_try_pop(&impl->completions, &token);
 
 		if (result == 0)
 			break;
@@ -244,7 +307,8 @@ static void drain_completions(struct impl *impl)
 					UINT32_MAX, UINT32_MAX, result);
 			break;
 		}
-		if (index >= impl->n_capture_buffers) {
+		if (token == SLOT_TOKEN_NONE ||
+				(index = slot_token_index(token)) >= impl->n_capture_buffers) {
 			MARK_PROTOCOL_ERROR(impl, "completion.invalid-slot", index,
 					UINT32_MAX, UINT32_MAX, -EINVAL);
 			break;
@@ -256,28 +320,38 @@ static void drain_completions(struct impl *impl)
 					SLOT_COMPLETING, state, -EPROTO);
 			break;
 		}
-		result = return_capture_buffer(impl, index);
+		result = return_capture_buffer(impl, token, SLOT_COMPLETING);
 		if (result < 0) {
-			MARK_PROTOCOL_ERROR(impl, "completion.return-input", index,
-					SLOT_COMPLETING, SLOT_FREE, result);
+			uint32_t observed = atomic_load_explicit(&impl->slots[index].state,
+					memory_order_acquire);
+			uint64_t observed_token = atomic_load_explicit(
+					&impl->slots[index].token, memory_order_acquire);
+			MARK_TOKEN_PROTOCOL_ERROR(impl, "completion.return-input", index,
+					SLOT_COMPLETING, observed, token, observed_token, result);
 			break;
 		}
 	}
 }
 
-static int publish_completion(struct impl *impl, uint32_t index)
+static int publish_completion(struct impl *impl, uint64_t token)
 {
 	struct queue_slot *slot;
 	uint32_t expected = SLOT_ACTIVE;
+	uint32_t index;
 
+	if (token == SLOT_TOKEN_NONE)
+		return -EINVAL;
+	index = slot_token_index(token);
 	if (index >= impl->n_capture_buffers)
 		return -EINVAL;
 	slot = &impl->slots[index];
+	if (atomic_load_explicit(&slot->token, memory_order_acquire) != token)
+		return -ESTALE;
 	if (!atomic_compare_exchange_strong_explicit(&slot->state, &expected,
 			SLOT_COMPLETING, memory_order_acq_rel,
 			memory_order_relaxed))
 		return -EPROTO;
-	if (pwao_queue_ring_try_push(&impl->completions, index) != 1)
+	if (pwao_queue_ring_try_push(&impl->completions, token) != 1)
 		return -ENOSPC;
 	atomic_fetch_add_explicit(&impl->output_stats.completions, 1,
 			memory_order_relaxed);
@@ -288,7 +362,7 @@ static void capture_process(void *data)
 {
 	struct impl *impl = data;
 	uint32_t count;
-	uint32_t blocked_input;
+	uint64_t blocked_input;
 
 	drain_completions(impl);
 	if (atomic_load_explicit(&impl->fatal_error, memory_order_acquire) != 0)
@@ -296,15 +370,26 @@ static void capture_process(void *data)
 
 	blocked_input = atomic_load_explicit(&impl->blocked_input,
 			memory_order_relaxed);
-	if (blocked_input != UINT32_MAX) {
-		struct queue_slot *slot = &impl->slots[blocked_input];
+	if (blocked_input != SLOT_TOKEN_NONE) {
+		uint32_t index = slot_token_index(blocked_input);
+		struct queue_slot *slot = &impl->slots[index];
+		uint32_t expected = SLOT_BLOCKED;
 
-		if (pwao_queue_ring_try_push(&impl->pending,
-				blocked_input) != 1)
+		if (index >= impl->n_capture_buffers ||
+				atomic_load_explicit(&slot->token,
+					memory_order_acquire) != blocked_input ||
+				!atomic_compare_exchange_strong_explicit(&slot->state, &expected,
+					SLOT_PENDING, memory_order_acq_rel,
+					memory_order_relaxed))
 			return;
-		atomic_store_explicit(&slot->state, SLOT_PENDING,
-				memory_order_release);
-		atomic_store_explicit(&impl->blocked_input, UINT32_MAX,
+		if (pwao_queue_ring_try_push(&impl->pending, blocked_input) != 1) {
+			expected = SLOT_PENDING;
+			(void)atomic_compare_exchange_strong_explicit(&slot->state, &expected,
+					SLOT_BLOCKED, memory_order_acq_rel,
+					memory_order_relaxed);
+			return;
+		}
+		atomic_store_explicit(&impl->blocked_input, SLOT_TOKEN_NONE,
 				memory_order_release);
 	}
 
@@ -312,7 +397,7 @@ static void capture_process(void *data)
 		struct pw_buffer *buffer = pw_stream_dequeue_buffer(impl->capture);
 		struct queue_slot *slot;
 		uint32_t expected = SLOT_FREE;
-		uint32_t released;
+		uint64_t token, released;
 		int result;
 
 		if (buffer == NULL)
@@ -335,40 +420,64 @@ static void capture_process(void *data)
 					SLOT_FREE, expected, -EPROTO);
 			return;
 		}
+		token = acquire_slot_token(impl, slot->index);
+		if (token == SLOT_TOKEN_NONE) {
+			atomic_store_explicit(&slot->state, SLOT_FREE, memory_order_release);
+			MARK_PROTOCOL_ERROR(impl, "capture.token-overflow", slot->index,
+					SLOT_FREE, SLOT_FREE, -EOVERFLOW);
+			return;
+		}
+		atomic_store_explicit(&slot->token, token, memory_order_release);
 		atomic_fetch_add_explicit(&slot->acquisitions, 1,
 				memory_order_relaxed);
 		atomic_fetch_add_explicit(&impl->input_stats.publications, 1,
 				memory_order_relaxed);
-		result = pwao_queue_ring_admit(&impl->pending, slot->index,
+		result = pwao_queue_ring_admit(&impl->pending, token,
 				impl->overflow, &released);
 		switch (result) {
 		case PWAO_QUEUE_ADMIT_QUEUED:
 			break;
 		case PWAO_QUEUE_ADMIT_REPLACED:
-			if (released >= impl->n_capture_buffers) {
+			if (released == SLOT_TOKEN_NONE ||
+					slot_token_index(released) >= impl->n_capture_buffers) {
 				MARK_PROTOCOL_ERROR(impl, "capture.replace-invalid-slot",
-						released, UINT32_MAX, UINT32_MAX, -EINVAL);
+						slot_token_index(released), UINT32_MAX,
+						UINT32_MAX, -EINVAL);
 				return;
 			}
-			result = return_capture_buffer(impl, released);
+			result = return_capture_buffer(impl, released, SLOT_PENDING);
 			if (result < 0) {
-				MARK_PROTOCOL_ERROR(impl, "capture.replace-return-input",
-						released, SLOT_PENDING, SLOT_FREE, result);
+				uint32_t released_index = slot_token_index(released);
+				uint32_t observed = atomic_load_explicit(
+						&impl->slots[released_index].state,
+						memory_order_acquire);
+				uint64_t observed_token = atomic_load_explicit(
+						&impl->slots[released_index].token,
+						memory_order_acquire);
+				MARK_TOKEN_PROTOCOL_ERROR(impl,
+						"capture.replace-return-input", released_index,
+						SLOT_PENDING, observed, released, observed_token, result);
 				return;
 			}
 			atomic_fetch_add_explicit(&impl->input_stats.replacements, 1,
 					memory_order_relaxed);
 			break;
 		case PWAO_QUEUE_ADMIT_DROPPED:
-			if (released != slot->index) {
+			if (released != token) {
 				MARK_PROTOCOL_ERROR(impl, "capture.drop-wrong-slot",
-						released, UINT32_MAX, UINT32_MAX, -EPROTO);
+						slot_token_index(released), UINT32_MAX, UINT32_MAX,
+						-EPROTO);
 				return;
 			}
-			result = return_capture_buffer(impl, slot->index);
+			result = return_capture_buffer(impl, token, SLOT_PENDING);
 			if (result < 0) {
-				MARK_PROTOCOL_ERROR(impl, "capture.drop-return-input",
-						slot->index, SLOT_PENDING, SLOT_FREE, result);
+				uint32_t observed = atomic_load_explicit(&slot->state,
+						memory_order_acquire);
+				uint64_t observed_token = atomic_load_explicit(&slot->token,
+						memory_order_acquire);
+				MARK_TOKEN_PROTOCOL_ERROR(impl, "capture.drop-return-input",
+						slot->index, SLOT_PENDING, observed, token,
+						observed_token, result);
 				return;
 			}
 			atomic_fetch_add_explicit(
@@ -376,9 +485,17 @@ static void capture_process(void *data)
 					memory_order_relaxed);
 			break;
 		case PWAO_QUEUE_ADMIT_BACKPRESSURE:
-			atomic_store_explicit(&slot->state, SLOT_BLOCKED,
-					memory_order_release);
-			atomic_store_explicit(&impl->blocked_input, slot->index,
+			expected = SLOT_PENDING;
+			if (!atomic_compare_exchange_strong_explicit(&slot->state, &expected,
+					SLOT_BLOCKED, memory_order_acq_rel,
+					memory_order_relaxed)) {
+				MARK_TOKEN_PROTOCOL_ERROR(impl, "capture.block", slot->index,
+						SLOT_PENDING, expected, token,
+						atomic_load_explicit(&slot->token,
+							memory_order_acquire), -EPROTO);
+				return;
+			}
+			atomic_store_explicit(&impl->blocked_input, token,
 					memory_order_release);
 			atomic_fetch_add_explicit(&impl->input_stats.backpressure,
 					1, memory_order_relaxed);
@@ -419,7 +536,7 @@ static int recover_backpressure(struct spa_loop *loop, bool async,
 		uint32_t seq, const void *data, size_t size, void *user_data)
 {
 	struct impl *impl = user_data;
-	uint32_t blocked_input;
+	uint64_t blocked_input;
 
 	(void)loop;
 	(void)async;
@@ -431,12 +548,26 @@ static int recover_backpressure(struct spa_loop *loop, bool async,
 		return 0;
 	blocked_input = atomic_load_explicit(&impl->blocked_input,
 			memory_order_relaxed);
-	if (blocked_input != UINT32_MAX &&
-			pwao_queue_ring_try_push(&impl->pending, blocked_input) == 1) {
-		atomic_store_explicit(&impl->slots[blocked_input].state,
-				SLOT_PENDING, memory_order_release);
-		atomic_store_explicit(&impl->blocked_input, UINT32_MAX,
-				memory_order_release);
+	if (blocked_input != SLOT_TOKEN_NONE) {
+		uint32_t index = slot_token_index(blocked_input);
+		uint32_t expected = SLOT_BLOCKED;
+
+		if (index >= impl->n_capture_buffers ||
+				atomic_load_explicit(&impl->slots[index].token,
+					memory_order_acquire) != blocked_input ||
+				!atomic_compare_exchange_strong_explicit(
+					&impl->slots[index].state, &expected, SLOT_PENDING,
+					memory_order_acq_rel, memory_order_relaxed))
+			return 0;
+		if (pwao_queue_ring_try_push(&impl->pending, blocked_input) == 1)
+			atomic_store_explicit(&impl->blocked_input, SLOT_TOKEN_NONE,
+					memory_order_release);
+		else {
+			expected = SLOT_PENDING;
+			(void)atomic_compare_exchange_strong_explicit(
+					&impl->slots[index].state, &expected, SLOT_BLOCKED,
+					memory_order_acq_rel, memory_order_relaxed);
+		}
 	}
 	return 0;
 }
@@ -444,19 +575,20 @@ static int recover_backpressure(struct spa_loop *loop, bool async,
 static void request_backpressure_recovery(struct impl *impl)
 {
 	struct pw_loop *loop;
-	uint32_t blocked_input;
+	uint64_t blocked_input;
 	int result;
 
 	if (impl->overflow != PWAO_QUEUE_OVERFLOW_BACKPRESSURE ||
 			impl->capture == NULL ||
 			(blocked_input = atomic_load_explicit(&impl->blocked_input,
-				memory_order_acquire)) == UINT32_MAX)
+					memory_order_acquire)) == SLOT_TOKEN_NONE)
 		return;
 	loop = pw_stream_get_data_loop(impl->capture);
 	result = loop == NULL ? -EIO : pw_loop_invoke(loop,
 			recover_backpressure, 1, NULL, 0, false, impl);
 	if (result < 0)
-		MARK_PROTOCOL_ERROR(impl, "backpressure.schedule", blocked_input,
+		MARK_PROTOCOL_ERROR(impl, "backpressure.schedule",
+				slot_token_index(blocked_input),
 				SLOT_BLOCKED, SLOT_BLOCKED, result);
 }
 
@@ -465,7 +597,8 @@ static void playback_process(void *data)
 	struct impl *impl = data;
 	struct pw_buffer *buffer;
 	struct queue_slot *output_slot;
-	uint32_t input_index;
+	uint64_t input_token;
+	uint32_t input_index = UINT32_MAX;
 	int result;
 
 	while ((buffer = pw_stream_dequeue_buffer(impl->playback)) != NULL) {
@@ -485,18 +618,20 @@ static void playback_process(void *data)
 			if (impl->storage == STORAGE_LEASE) {
 				result = publish_completion(impl, slot->delivered_input);
 				if (result < 0) {
-					uint32_t state = slot->delivered_input <
-							impl->n_capture_buffers ?
+					uint32_t delivered_index = slot_token_index(
+							slot->delivered_input);
+					uint32_t state = slot->delivered_input != SLOT_TOKEN_NONE &&
+							delivered_index < impl->n_capture_buffers ?
 							atomic_load_explicit(
-								&impl->slots[slot->delivered_input].state,
+								&impl->slots[delivered_index].state,
 								memory_order_acquire) : UINT32_MAX;
 					MARK_PROTOCOL_ERROR(impl, "playback.complete-lease",
-							slot->delivered_input, SLOT_ACTIVE, state, result);
+							delivered_index, SLOT_ACTIVE, state, result);
 					return;
 				}
 			}
 			slot->output_in_flight = false;
-			slot->delivered_input = UINT32_MAX;
+			slot->delivered_input = SLOT_TOKEN_NONE;
 			if (impl->active_outputs == 0) {
 				MARK_PROTOCOL_ERROR(impl, "playback.active-underflow",
 						slot->index, UINT32_MAX, UINT32_MAX, -EPROTO);
@@ -521,7 +656,7 @@ static void playback_process(void *data)
 		output_slot = NULL;
 	}
 
-	result = pwao_queue_ring_try_pop(&impl->pending, &input_index);
+	result = pwao_queue_ring_try_pop(&impl->pending, &input_token);
 	if (result == 0)
 		return;
 	if (result < 0) {
@@ -530,16 +665,22 @@ static void playback_process(void *data)
 		return;
 	}
 	request_backpressure_recovery(impl);
-	if (input_index >= impl->n_capture_buffers) {
+	if (input_token == SLOT_TOKEN_NONE ||
+			(input_index = slot_token_index(input_token)) >=
+				impl->n_capture_buffers) {
 		MARK_PROTOCOL_ERROR(impl, "playback.pending-invalid-slot", input_index,
 				UINT32_MAX, UINT32_MAX, -EINVAL);
 		return;
 	}
-	uint32_t state = atomic_exchange_explicit(&impl->slots[input_index].state,
-			SLOT_ACTIVE, memory_order_acq_rel);
-	if (state != SLOT_PENDING) {
-		MARK_PROTOCOL_ERROR(impl, "playback.acquire-pending", input_index,
-				SLOT_PENDING, state, -EPROTO);
+	uint64_t observed_token = atomic_load_explicit(
+			&impl->slots[input_index].token, memory_order_acquire);
+	uint32_t state = SLOT_PENDING;
+	if (observed_token != input_token ||
+			!atomic_compare_exchange_strong_explicit(
+				&impl->slots[input_index].state, &state, SLOT_ACTIVE,
+				memory_order_acq_rel, memory_order_relaxed)) {
+		MARK_TOKEN_PROTOCOL_ERROR(impl, "playback.acquire-pending", input_index,
+				SLOT_PENDING, state, input_token, observed_token, -EPROTO);
 		return;
 	}
 	if (impl->storage == STORAGE_LEASE) {
@@ -557,7 +698,7 @@ static void playback_process(void *data)
 		return;
 	}
 	if (impl->storage == STORAGE_COPY) {
-		result = publish_completion(impl, input_index);
+		result = publish_completion(impl, input_token);
 		if (result < 0) {
 			state = atomic_load_explicit(&impl->slots[input_index].state,
 					memory_order_acquire);
@@ -569,7 +710,7 @@ static void playback_process(void *data)
 	output_slot->output_available = false;
 	output_slot->output_in_flight = true;
 	output_slot->delivered_input = impl->storage == STORAGE_LEASE ?
-			input_index : UINT32_MAX;
+			input_token : SLOT_TOKEN_NONE;
 	impl->active_outputs++;
 	atomic_fetch_add_explicit(&impl->output_stats.deliveries, 1,
 			memory_order_relaxed);
@@ -588,6 +729,8 @@ static void reset_ownership_quiescent(struct impl *impl,
 		struct queue_slot *slot = &impl->slots[i];
 		uint32_t state = atomic_exchange_explicit(&slot->state,
 				SLOT_FREE, memory_order_acq_rel);
+		atomic_store_explicit(&slot->token, SLOT_TOKEN_NONE,
+				memory_order_release);
 
 		if (return_capture && state != SLOT_FREE && slot->capture != NULL &&
 				pw_stream_queue_buffer(impl->capture, slot->capture) >= 0)
@@ -596,13 +739,13 @@ static void reset_ownership_quiescent(struct impl *impl,
 	}
 	pwao_queue_ring_reset(&impl->pending);
 	pwao_queue_ring_reset(&impl->completions);
-	atomic_store_explicit(&impl->blocked_input, UINT32_MAX,
+	atomic_store_explicit(&impl->blocked_input, SLOT_TOKEN_NONE,
 			memory_order_relaxed);
 	impl->active_outputs = 0;
 	for (i = 0; i < impl->n_playback_buffers; i++) {
 		impl->slots[i].output_available = false;
 		impl->slots[i].output_in_flight = false;
-		impl->slots[i].delivered_input = UINT32_MAX;
+		impl->slots[i].delivered_input = SLOT_TOKEN_NONE;
 	}
 }
 
@@ -625,22 +768,61 @@ static int release_all_locked(struct spa_loop *loop, bool async,
 	return 0;
 }
 
-/* Ownership reset is a control-plane operation, but capture_process runs on
- * the stream data loop. A paused state notification does not itself hold that
- * loop's lock. Execute the reset under the data-loop lock so a callback that
- * was already dispatched cannot publish a stale pending entry after its
- * buffer has been returned upstream. Playback must be inactive and flushed
- * before the caller enters this function. */
+struct release_lock_context {
+	struct impl *impl;
+	struct pw_loop *second;
+};
+
+static int release_all_first_locked(struct spa_loop *loop, bool async,
+		uint32_t seq, const void *data, size_t size, void *user_data)
+{
+	struct release_lock_context *context = user_data;
+
+	(void)loop;
+	(void)async;
+	(void)seq;
+	(void)data;
+	(void)size;
+	if (context->second == NULL)
+		return release_all_locked(NULL, false, 0, NULL, 0, context->impl);
+	return pw_loop_locked(context->second, release_all_locked, 1, NULL, 0,
+			context->impl);
+}
+
+/* Ownership reset is a control-plane operation, while capture_process and
+ * playback_process can run on different graph data loops. A state notification
+ * does not itself hold either lock. Playback is made inactive and flushed by
+ * the caller; lock both endpoints as a final barrier so neither an already
+ * dispatched callback nor a graph migration can publish an entry across the
+ * reset. A stable address order avoids lock inversion. */
 static int release_all_synchronized(struct impl *impl)
 {
-	struct pw_loop *loop;
+	struct pw_loop *capture_loop, *playback_loop = NULL, *first, *second;
+	struct release_lock_context context;
 
 	if (impl->capture == NULL)
 		return 0;
-	loop = pw_stream_get_data_loop(impl->capture);
-	if (loop == NULL)
+	capture_loop = pw_stream_get_data_loop(impl->capture);
+	if (capture_loop == NULL)
 		return -EIO;
-	return pw_loop_locked(loop, release_all_locked, 1, NULL, 0, impl);
+	if (impl->playback != NULL)
+		playback_loop = pw_stream_get_data_loop(impl->playback);
+	if (playback_loop == capture_loop)
+		playback_loop = NULL;
+	first = capture_loop;
+	second = playback_loop;
+	if (second != NULL && (uintptr_t)second < (uintptr_t)first) {
+		struct pw_loop *swap = first;
+
+		first = second;
+		second = swap;
+	}
+	context = (struct release_lock_context) {
+		.impl = impl,
+		.second = second,
+	};
+	return pw_loop_locked(first, release_all_first_locked, 1, NULL, 0,
+			&context);
 }
 
 static int validate_capture_pool(struct impl *impl)
@@ -718,8 +900,9 @@ static void capture_add_buffer(void *data, struct pw_buffer *buffer)
 	slot = &impl->slots[index];
 	slot->index = index;
 	slot->capture = buffer;
-	slot->delivered_input = UINT32_MAX;
+	slot->delivered_input = SLOT_TOKEN_NONE;
 	atomic_store_explicit(&slot->state, SLOT_FREE, memory_order_relaxed);
+	atomic_store_explicit(&slot->token, SLOT_TOKEN_NONE, memory_order_relaxed);
 	atomic_store_explicit(&slot->acquisitions, 0, memory_order_relaxed);
 	atomic_store_explicit(&slot->returns, 0, memory_order_relaxed);
 	buffer->user_data = slot;
@@ -741,12 +924,17 @@ static void capture_remove_buffer(void *data, struct pw_buffer *buffer)
 
 	if (slot == NULL)
 		return;
-	/* PipeWire can withdraw the capture pool before it emits Format=NULL.
-	 * At this point the stream is already quiescent and the buffers are being
-	 * revoked, so invalidate all queued ownership without trying to queue a
-	 * buffer back into the pool that is currently being removed. The following
-	 * format callback destroys playback and its aliases before a new pool is
-	 * accepted. */
+	/* PipeWire can withdraw the capture pool before it emits Format=NULL. Stop
+	 * and destroy playback on the first withdrawal so its data loop and any
+	 * lease aliases are gone before capture memory is revoked. The capture stream
+	 * invokes remove_buffer only after its own processing is quiescent, so reset
+	 * without attempting to queue a buffer into the pool being removed. */
+	if (impl->playback != NULL) {
+		(void)pw_stream_set_active(impl->playback, false);
+		(void)pw_stream_flush(impl->playback, false);
+		pw_stream_destroy(impl->playback);
+		impl->playback = NULL;
+	}
 	reset_ownership_quiescent(impl, false);
 	slot->capture = NULL;
 	buffer->user_data = NULL;
@@ -779,7 +967,7 @@ static void playback_add_buffer(void *data, struct pw_buffer *buffer)
 	slot->playback = buffer;
 	slot->output_available = false;
 	slot->output_in_flight = false;
-	slot->delivered_input = UINT32_MAX;
+	slot->delivered_input = SLOT_TOKEN_NONE;
 	buffer->user_data = slot;
 	impl->n_playback_present++;
 	impl->n_playback_buffers = SPA_MAX(impl->n_playback_buffers, index + 1u);
@@ -811,13 +999,15 @@ static void playback_remove_buffer(void *data, struct pw_buffer *buffer)
 			int result = publish_completion(impl, slot->delivered_input);
 
 			if (result < 0) {
-				uint32_t state = slot->delivered_input <
-						impl->n_capture_buffers ?
+				uint32_t delivered_index = slot_token_index(
+						slot->delivered_input);
+				uint32_t state = slot->delivered_input != SLOT_TOKEN_NONE &&
+						delivered_index < impl->n_capture_buffers ?
 						atomic_load_explicit(
-							&impl->slots[slot->delivered_input].state,
+							&impl->slots[delivered_index].state,
 							memory_order_acquire) : UINT32_MAX;
 				MARK_PROTOCOL_ERROR(impl, "playback.remove-complete-lease",
-						slot->delivered_input, SLOT_ACTIVE, state, result);
+						delivered_index, SLOT_ACTIVE, state, result);
 			}
 		}
 		if (impl->active_outputs == 0)
@@ -831,7 +1021,7 @@ static void playback_remove_buffer(void *data, struct pw_buffer *buffer)
 	slot->playback = NULL;
 	slot->output_available = false;
 	slot->output_in_flight = false;
-	slot->delivered_input = UINT32_MAX;
+	slot->delivered_input = SLOT_TOKEN_NONE;
 	buffer->user_data = NULL;
 	if (impl->n_playback_present == 0) {
 		MARK_PROTOCOL_ERROR(impl, "playback.remove-underflow", slot->index,
@@ -882,8 +1072,8 @@ static void playback_state_changed(void *data, enum pw_stream_state old,
 
 	(void)old;
 	(void)error;
-	if (state == PW_STREAM_STATE_ERROR && !impl->destroying)
-		pw_impl_module_schedule_destroy(impl->module);
+	if (state == PW_STREAM_STATE_ERROR)
+		schedule_destroy(impl);
 }
 
 static const struct pw_stream_events playback_events = {
@@ -1033,8 +1223,7 @@ static void stream_state_changed(void *data, enum pw_stream_state old,
 	(void)error;
 	if (state == PW_STREAM_STATE_ERROR ||
 			state == PW_STREAM_STATE_UNCONNECTED) {
-		if (!impl->destroying)
-			pw_impl_module_schedule_destroy(impl->module);
+		schedule_destroy(impl);
 		return;
 	}
 	if (state == PW_STREAM_STATE_PAUSED && old == PW_STREAM_STATE_STREAMING) {
@@ -1078,8 +1267,7 @@ static void core_destroy(void *data)
 
 	spa_hook_remove(&impl->core_listener);
 	impl->core = NULL;
-	if (!impl->destroying)
-		pw_impl_module_schedule_destroy(impl->module);
+	schedule_destroy(impl);
 }
 
 static const struct pw_proxy_events core_proxy_events = {
@@ -1093,8 +1281,8 @@ static void core_error(void *data, uint32_t id, int seq, int result,
 
 	(void)seq;
 	(void)message;
-	if (id == PW_ID_CORE && result == -EPIPE && !impl->destroying)
-		pw_impl_module_schedule_destroy(impl->module);
+	if (id == PW_ID_CORE && result == -EPIPE)
+		schedule_destroy(impl);
 }
 
 static const struct pw_core_events core_events = {
@@ -1105,11 +1293,13 @@ static const struct pw_core_events core_events = {
 static void update_stats(void *data, uint64_t expirations)
 {
 	struct impl *impl = data;
-	struct spa_dict_item items[19];
-	char values[19][32];
-	char message[512];
+	struct spa_dict_item items[21];
+	char values[21][32];
+	char message[640];
 	char slot[32] = "n/a";
 	char blocked_slot[32] = "n/a";
+	char expected_token[32] = "n/a";
+	char observed_token[32] = "n/a";
 	const char *operation = "none";
 	const char *expected_state = "n/a";
 	const char *observed_state = "n/a";
@@ -1168,9 +1358,9 @@ static void update_stats(void *data, uint64_t expirations)
 			values[count]);
 	count++;
 	if (failure_state == FAILURE_READY &&
-			impl->failure.blocked_slot != UINT32_MAX)
+			impl->failure.blocked_token != SLOT_TOKEN_NONE)
 		(void)snprintf(blocked_slot, sizeof(blocked_slot), "%u",
-				impl->failure.blocked_slot);
+				slot_token_index(impl->failure.blocked_token));
 	items[count++] = SPA_DICT_ITEM_INIT("queue.error.blocked-slot",
 			blocked_slot);
 	(void)snprintf(values[count], sizeof(values[count]), "%" PRIu64,
@@ -1184,6 +1374,18 @@ static void update_stats(void *data, uint64_t expirations)
 	items[count] = SPA_DICT_ITEM_INIT("queue.error.slot-returns",
 			values[count]);
 	count++;
+	if (failure_state == FAILURE_READY &&
+			impl->failure.expected_token != SLOT_TOKEN_NONE)
+		(void)snprintf(expected_token, sizeof(expected_token), "%" PRIu64,
+				impl->failure.expected_token);
+	if (failure_state == FAILURE_READY &&
+			impl->failure.observed_token != SLOT_TOKEN_NONE)
+		(void)snprintf(observed_token, sizeof(observed_token), "%" PRIu64,
+				impl->failure.observed_token);
+	items[count++] = SPA_DICT_ITEM_INIT("queue.error.expected-token",
+			expected_token);
+	items[count++] = SPA_DICT_ITEM_INIT("queue.error.observed-token",
+			observed_token);
 	(void)snprintf(values[count], sizeof(values[count]), "%d",
 			failure_state == FAILURE_READY ? impl->failure.result : 0);
 	items[count] = SPA_DICT_ITEM_INIT("queue.error.result", values[count]);
@@ -1197,12 +1399,14 @@ static void update_stats(void *data, uint64_t expirations)
 				"source-line=%u slot=%s expected-state=%s "
 				"observed-state=%s pending-depth=%u completion-depth=%u "
 				"blocked-slot=%s slot-acquisitions=%" PRIu64 " "
-				"slot-returns=%" PRIu64 " result=%d (%s)",
+				"slot-returns=%" PRIu64 " expected-token=%s "
+				"observed-token=%s result=%d (%s)",
 				operation, impl->failure.source_line, slot,
 				expected_state, observed_state, impl->failure.pending_depth,
 				impl->failure.completion_depth, blocked_slot,
 				impl->failure.slot_acquisitions,
 				impl->failure.slot_returns,
+				expected_token, observed_token,
 				impl->failure.result,
 				spa_strerror(impl->failure.result));
 		pw_log_log(SPA_LOG_LEVEL_ERROR, __FILE__, __LINE__, __func__,
@@ -1221,6 +1425,8 @@ static void impl_destroy(struct impl *impl)
 	uint32_t i;
 
 	impl->destroying = true;
+	atomic_store_explicit(&impl->destroy_scheduled, true,
+			memory_order_release);
 	if (impl->stats_timer != NULL) {
 		pw_loop_destroy_source(pw_context_get_main_loop(impl->context),
 				impl->stats_timer);
@@ -1335,6 +1541,10 @@ static int setup_properties(struct impl *impl, struct pw_properties *props,
 	if (pw_properties_get(impl->playback_props, PW_KEY_NODE_NAME) == NULL)
 		pw_properties_setf(impl->playback_props, PW_KEY_NODE_NAME,
 				"output.%s-%u-%u", name, pid, id);
+	pw_properties_setf(impl->capture_props, PWAO_QUEUE_ID_PROPERTY,
+			"%u-%u", pid, id);
+	pw_properties_setf(impl->playback_props, PWAO_QUEUE_ID_PROPERTY,
+			"%u-%u", pid, id);
 	if (pw_properties_get(impl->capture_props, PW_KEY_NODE_GROUP) == NULL)
 		pw_properties_setf(impl->capture_props, PW_KEY_NODE_GROUP,
 				"queue.capture-%u-%u", pid, id);
@@ -1403,10 +1613,25 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	memset(impl, 0, sizeof(*impl));
 	impl->context = context;
 	impl->module = module;
-	atomic_init(&impl->blocked_input, UINT32_MAX);
+	atomic_init(&impl->blocked_input, SLOT_TOKEN_NONE);
+	atomic_init(&impl->next_token, 0);
+	atomic_init(&impl->fatal_error, FAILURE_NONE);
+	atomic_init(&impl->destroy_scheduled, false);
+	atomic_init(&impl->input_stats.publications, 0);
+	atomic_init(&impl->input_stats.replacements, 0);
+	atomic_init(&impl->input_stats.dropped_arrivals, 0);
+	atomic_init(&impl->input_stats.backpressure, 0);
+	atomic_init(&impl->output_stats.deliveries, 0);
+	atomic_init(&impl->output_stats.completions, 0);
+	atomic_init(&impl->output_stats.pool_exhaustions, 0);
+	atomic_init(&impl->output_stats.protocol_errors, 0);
 	for (i = 0; i < MAX_POOL_BUFFERS; i++) {
 		impl->slots[i].index = i;
-		impl->slots[i].delivered_input = UINT32_MAX;
+		atomic_init(&impl->slots[i].state, SLOT_FREE);
+		atomic_init(&impl->slots[i].token, SLOT_TOKEN_NONE);
+		atomic_init(&impl->slots[i].acquisitions, 0);
+		atomic_init(&impl->slots[i].returns, 0);
+		impl->slots[i].delivered_input = SLOT_TOKEN_NONE;
 		for (j = 0; j < MAX_DATA_BLOCKS; j++)
 			impl->slots[i].owned_fds[j] = -1;
 	}

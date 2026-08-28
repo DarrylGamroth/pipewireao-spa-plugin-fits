@@ -107,6 +107,12 @@ The input and output are ordinary PipeWire nodes and must be linked by the
 deployment or session manager. The output node is created only after the input
 has negotiated its exact ndarray format and buffer pool.
 
+The module publishes the same opaque `pipewireao.queue.id` property on both
+endpoint nodes. Graph clients MUST use that identity when they need to relate
+the output endpoint to its input endpoint; client identity, media name, node
+group, and link group are not unique queue identities. The value is owned by
+the module instance and is not a configuration property.
+
 ## Boundary and execution model
 
 ```mermaid

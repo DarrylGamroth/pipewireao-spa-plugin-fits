@@ -17,15 +17,15 @@ int pwao_queue_ring_init(struct pwao_queue_ring *ring, uint32_t capacity)
 	atomic_init(&ring->read_index, 0);
 	atomic_init(&ring->write_index, 0);
 	for (i = 0; i < PWAO_QUEUE_RING_MAX_SLOTS; i++)
-		atomic_init(&ring->slots[i], UINT32_MAX);
+		atomic_init(&ring->slots[i], UINT64_MAX);
 	return 0;
 }
 
-int pwao_queue_ring_try_push(struct pwao_queue_ring *ring, uint32_t value)
+int pwao_queue_ring_try_push(struct pwao_queue_ring *ring, uint64_t value)
 {
 	uint32_t read_index, write_index;
 
-	if (ring == NULL || ring->capacity == 0 || value == UINT32_MAX)
+	if (ring == NULL || ring->capacity == 0 || value == UINT64_MAX)
 		return -EINVAL;
 	write_index = atomic_load_explicit(&ring->write_index,
 			memory_order_relaxed);
@@ -40,19 +40,20 @@ int pwao_queue_ring_try_push(struct pwao_queue_ring *ring, uint32_t value)
 	return 1;
 }
 
-int pwao_queue_ring_try_pop(struct pwao_queue_ring *ring, uint32_t *value)
+int pwao_queue_ring_try_pop(struct pwao_queue_ring *ring, uint64_t *value)
 {
 	uint32_t attempt;
 
 	if (ring == NULL || value == NULL || ring->capacity == 0)
 		return -EINVAL;
-	*value = UINT32_MAX;
+	*value = UINT64_MAX;
 	for (attempt = 0; attempt < 2; attempt++) {
 		uint32_t read_index = atomic_load_explicit(&ring->read_index,
 				memory_order_relaxed);
 		const uint32_t write_index = atomic_load_explicit(
 				&ring->write_index, memory_order_acquire);
-		uint32_t expected, candidate;
+		uint32_t expected;
+		uint64_t candidate;
 
 		if (read_index == write_index)
 			return 0;
@@ -71,20 +72,20 @@ int pwao_queue_ring_try_pop(struct pwao_queue_ring *ring, uint32_t *value)
 }
 
 int pwao_queue_ring_drop_oldest_push(struct pwao_queue_ring *ring,
-		uint32_t value, uint32_t *dropped_value)
+		uint64_t value, uint64_t *dropped_value)
 {
 	uint32_t read_index, write_index;
 
 	if (ring == NULL || dropped_value == NULL || ring->capacity == 0 ||
-			value == UINT32_MAX)
+			value == UINT64_MAX)
 		return -EINVAL;
-	*dropped_value = UINT32_MAX;
+	*dropped_value = UINT64_MAX;
 	write_index = atomic_load_explicit(&ring->write_index,
 			memory_order_relaxed);
 	read_index = atomic_load_explicit(&ring->read_index,
 			memory_order_acquire);
 	if (write_index - read_index >= ring->capacity) {
-		const uint32_t candidate = atomic_load_explicit(
+		const uint64_t candidate = atomic_load_explicit(
 				&ring->slots[read_index % ring->capacity],
 				memory_order_relaxed);
 		uint32_t expected = read_index;
@@ -101,8 +102,8 @@ int pwao_queue_ring_drop_oldest_push(struct pwao_queue_ring *ring,
 	return 1;
 }
 
-int pwao_queue_ring_admit(struct pwao_queue_ring *ring, uint32_t value,
-		enum pwao_queue_overflow overflow, uint32_t *released_value)
+int pwao_queue_ring_admit(struct pwao_queue_ring *ring, uint64_t value,
+		enum pwao_queue_overflow overflow, uint64_t *released_value)
 {
 	int result;
 
@@ -112,7 +113,7 @@ int pwao_queue_ring_admit(struct pwao_queue_ring *ring, uint32_t value,
 			overflow != PWAO_QUEUE_OVERFLOW_DROP_OLDEST &&
 			overflow != PWAO_QUEUE_OVERFLOW_DROP_NEWEST)
 		return -EINVAL;
-	*released_value = UINT32_MAX;
+	*released_value = UINT64_MAX;
 	result = pwao_queue_ring_try_push(ring, value);
 	if (result != 0)
 		return result < 0 ? result : PWAO_QUEUE_ADMIT_QUEUED;
@@ -126,7 +127,7 @@ int pwao_queue_ring_admit(struct pwao_queue_ring *ring, uint32_t value,
 		if (pwao_queue_ring_drop_oldest_push(ring, value,
 				released_value) < 0)
 			return -EINVAL;
-		return *released_value == UINT32_MAX ?
+		return *released_value == UINT64_MAX ?
 				PWAO_QUEUE_ADMIT_QUEUED : PWAO_QUEUE_ADMIT_REPLACED;
 	default:
 		return -EINVAL;
@@ -154,7 +155,7 @@ void pwao_queue_ring_reset(struct pwao_queue_ring *ring)
 	if (ring == NULL)
 		return;
 	for (i = 0; i < PWAO_QUEUE_RING_MAX_SLOTS; i++)
-		atomic_store_explicit(&ring->slots[i], UINT32_MAX,
+		atomic_store_explicit(&ring->slots[i], UINT64_MAX,
 				memory_order_relaxed);
 	atomic_store_explicit(&ring->read_index, 0, memory_order_relaxed);
 	atomic_store_explicit(&ring->write_index, 0, memory_order_relaxed);

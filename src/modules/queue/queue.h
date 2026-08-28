@@ -11,13 +11,14 @@
 #include <spa/utils/defs.h>
 
 #define PWAO_QUEUE_RING_MAX_SLOTS 64u
+#define PWAO_QUEUE_ID_PROPERTY "pipewireao.queue.id"
 
 struct pwao_queue_ring {
 	_Alignas(SPA_CACHE_LINE_SIZE) uint32_t capacity;
 	_Alignas(SPA_CACHE_LINE_SIZE) _Atomic uint32_t read_index;
 	_Alignas(SPA_CACHE_LINE_SIZE) _Atomic uint32_t write_index;
 	_Alignas(SPA_CACHE_LINE_SIZE)
-	_Atomic uint32_t slots[PWAO_QUEUE_RING_MAX_SLOTS];
+	_Atomic uint64_t slots[PWAO_QUEUE_RING_MAX_SLOTS];
 };
 
 _Static_assert(offsetof(struct pwao_queue_ring, read_index) %
@@ -45,23 +46,23 @@ enum pwao_queue_admit_result {
 int pwao_queue_ring_init(struct pwao_queue_ring *ring, uint32_t capacity);
 
 /* These functions are valid only for one producer and one consumer. */
-int pwao_queue_ring_try_push(struct pwao_queue_ring *ring, uint32_t value);
-int pwao_queue_ring_try_pop(struct pwao_queue_ring *ring, uint32_t *value);
+int pwao_queue_ring_try_push(struct pwao_queue_ring *ring, uint64_t value);
+int pwao_queue_ring_try_pop(struct pwao_queue_ring *ring, uint64_t *value);
 
 /*
  * Admit value even at capacity. The producer and consumer race for ownership
- * of the oldest slot. dropped_value is UINT32_MAX when the consumer won and
+ * of the oldest slot. dropped_value is UINT64_MAX when the consumer won and
  * no queued value was dropped by this call.
  */
 int pwao_queue_ring_drop_oldest_push(struct pwao_queue_ring *ring,
-		uint32_t value, uint32_t *dropped_value);
+		uint64_t value, uint64_t *dropped_value);
 
 /*
  * Apply one overflow policy without waiting. released_value identifies the
- * displaced queued value or dropped arriving value, otherwise UINT32_MAX.
+ * displaced queued value or dropped arriving value, otherwise UINT64_MAX.
  */
-int pwao_queue_ring_admit(struct pwao_queue_ring *ring, uint32_t value,
-		enum pwao_queue_overflow overflow, uint32_t *released_value);
+int pwao_queue_ring_admit(struct pwao_queue_ring *ring, uint64_t value,
+		enum pwao_queue_overflow overflow, uint64_t *released_value);
 
 uint32_t pwao_queue_ring_size(const struct pwao_queue_ring *ring);
 
