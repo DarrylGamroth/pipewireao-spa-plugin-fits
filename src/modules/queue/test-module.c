@@ -149,6 +149,16 @@ int main(int argc, char **argv)
 			"false") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.state.input-format"),
 			"none") == 0);
+	CHECK(strcmp(pw_properties_get(properties,
+			"queue.state.ownership-transition"), "idle") == 0);
+	CHECK(strcmp(pw_properties_get(properties,
+			"queue.state.output-generation"), "none") == 0);
+	CHECK(strcmp(pw_properties_get(properties,
+			"queue.state.capture-generation"), "0") == 0);
+	CHECK(strcmp(pw_properties_get(properties,
+			"queue.state.requested-generation"), "0") == 0);
+	CHECK(strcmp(pw_properties_get(properties,
+			"queue.state.installed-generation"), "0") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.error.operation"),
 			"none") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.error.source-line"),

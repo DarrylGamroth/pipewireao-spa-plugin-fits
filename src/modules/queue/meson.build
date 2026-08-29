@@ -81,22 +81,22 @@ if get_option('tests').allowed()
   )
   shell = find_program('sh')
   if pipewire_daemon.found()
-    queue_remote_registry_test = executable(
-      'pipewireao-queue-remote-registry-test',
+    queue_remote_test = executable(
+      'pipewireao-queue-remote-test',
       'test-remote-registry.c',
       dependencies: [spa_dep, pipewire_dep],
     )
     test(
-      'pipewireao-queue-remote-registry',
+      'pipewireao-queue-remote',
       shell,
       args: [
         files('test-remote.sh'),
-        queue_remote_registry_test.full_path(),
+        queue_remote_test.full_path(),
         pipewire_daemon.full_path(),
         meson.current_source_dir() / 'test-remote.conf',
         meson.current_build_dir(),
       ],
-      depends: [queue_module, queue_remote_registry_test],
+      depends: [queue_module, queue_remote_test],
       env: queue_module_test_env,
       timeout: 15,
     )

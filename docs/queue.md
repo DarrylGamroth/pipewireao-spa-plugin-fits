@@ -5,7 +5,7 @@ remains open
 
 Decision: PWAO-PLUGIN-003
 
-Baseline: `pipewireao-spa-plugins` `main` at `344d763`
+Baseline: `pipewireao-spa-plugins` `main` at `c6b7633`
 
 Applicable profiles: complete-buffer `application/ndarray` and `video/raw`
 streams on Linux
@@ -107,8 +107,10 @@ The input and output are ordinary PipeWire nodes and must be linked by the
 deployment or session manager. Both endpoint nodes exist for the lifetime of
 the module. Before the first input negotiation, the output advertises no
 usable complete-buffer format. During a later input-pool transition it retains
-the last exact contract but publishes no frame; the next prepared input pool
-replaces that contract in place.
+the last exact contract but publishes no frame. Once the next input pool is
+prepared, PipeWire replaces the output buffer pool in place without replacing
+the output endpoint or its compatible link. An installed output buffer's data
+descriptors remain immutable for that buffer-pool generation.
 
 The module publishes the same opaque `pipewireao.queue.id` property on both
 endpoint nodes. Graph clients MUST use that identity when they need to relate
@@ -269,8 +271,10 @@ this requirement does not extend the lifetime of an application-held
 Verification intent (informative): stop and destroy at empty, queued,
 in-flight, completing, and backpressured states; retain a lease across input
 pool withdrawal while the output pool remains current; verify the retained
-bytes remain valid; return it before downstream pool renegotiation; then restart
-with a new pool generation without stale ownership or descriptors.
+bytes remain valid; cover both returning it before downstream pool
+renegotiation and reconnecting the input while it remains held; in the latter
+case verify that downstream observes output-pool revocation before the new
+generation is delivered, then restart without stale ownership or descriptors.
 
 ### QUEUE-008 — Observability
 
@@ -357,6 +361,22 @@ buffer to PipeWire. This module treats the input lease as immutable. Copy
 storage creates an observer-owned mutable copy before output publication;
 lease storage preserves immutability until downstream release.
 
+The control path assigns lease descriptors only from the output stream's
+`add_buffer` callback. It publishes a generation as ready only after every
+output buffer has been installed and validated against the current input pool.
+An input-generation change clears readiness before the data loops are
+quiesced. Returned old-generation buffers remain unavailable until PipeWire
+removes that pool; neither process callback closes, duplicates, or changes an
+installed data descriptor.
+
+Pause and pool-withdrawal transitions set an atomic publication gate, then
+enqueue non-blocking stages in playback-loop, capture-loop, and main-loop
+order. Each stage therefore follows any callback already executing on its own
+loop without acquiring or waiting for another loop's lock. Process callbacks
+return while the gate or a requested transition is present. The final main-loop
+stage either starts a stronger pending transition or reopens publication and
+prepares a complete replacement pool.
+
 The pending read index, pending write index, queue storage, input counters,
 output counters, and fatal-error flag occupy separate cache-line-aligned
 regions. Module state is allocated at the same alignment. This layout avoids
@@ -401,6 +421,11 @@ diagnostic gauges, not cumulative counters:
 | `queue.state.playback-buffers` | Current output-pool buffer count. |
 | `queue.state.configured` | Whether the current input pool has prepared the output contract. |
 | `queue.state.input-format` | `negotiated` or `none`. |
+| `queue.state.ownership-transition` | Ownership lifecycle phase: `idle`, `pause`, `withdraw`, or `finishing`. |
+| `queue.state.output-generation` | Output-pool phase: `none`, `waiting`, or `ready`. |
+| `queue.state.capture-generation` | Current input-pool generation, or zero before the first pool. |
+| `queue.state.requested-generation` | Input generation requested from output negotiation, or zero when none is pending. |
+| `queue.state.installed-generation` | Generation of the complete usable output pool, or zero while it is unavailable. |
 
 The module preserves the first ownership failure in diagnostic properties
 before putting its streams into the error state. The daemon also logs the same
@@ -444,15 +469,22 @@ multi-slot FIFO/overflow behavior, recovery after deterministic backpressure,
 a 200,000-publication concurrent `drop-oldest` stress run, multi-block payload
 and application-metadata copying, link-local Busy metadata, MemFd lease
 identity, module loading, initial counters, and capture-node default grouping.
-AddressSanitizer/UndefinedBehaviorSanitizer and ThreadSanitizer pass both the
-queue engine and live graph tests.
+The complete 27-test Meson configuration passes normally, with
+AddressSanitizer/UndefinedBehaviorSanitizer, and with ThreadSanitizer. The
+remote native-protocol lifecycle case also passes a 200-repetition concurrent
+ThreadSanitizer stress run.
 
 The live test uses an exact ndarray format and two independently triggered
-PipeWire graph components. A separate real-daemon registry test verifies that
+PipeWire graph components. A separate real-daemon lifecycle test verifies that
 both initial endpoints are remotely visible and publish the same queue
-identity. Observer-first cases create the downstream link while the queue has
-no input format, then verify that the same link becomes active and delivers
-after the producer negotiates. The live test also holds an observer buffer
+identity, then transfers MemFd-backed ndarray buffers through native protocol
+clients. It retains an old-generation observer lease across input withdrawal,
+reconnects the input before return, observes output-pool revocation, and checks
+that the replacement generation has a different backing inode while producer
+and observer still share the same new inode. Observer-first cases create the
+downstream link while the queue has no input format, then verify that the same
+link becomes active and delivers after the producer negotiates. The live test
+also holds an observer buffer
 while continuing to drive the producer, then checks the delivered sequence,
 payload, Header, backing-storage identity, recovery, and counter history for
 this matrix:
@@ -528,8 +560,8 @@ empty, queued, in-flight/completing, and backpressured; retained-observer
 destruction and reattachment; stable output identity and downstream-link
 retention across input-format/pool replacement; downstream linking before the
 first input format; MemFd lease validity after input-pool withdrawal; and
-initial endpoint discovery through a separate daemon and registry client.
-Direct pause-transition, incompatible-format recovery, remote-daemon restart
-lifecycle, fixed-arrival latency distributions, controlled-host placement,
-automated producer-path syscall enforcement, and representative ndarray sizes
-remain open.
+remote native-protocol data and pool-generation replacement through a separate
+daemon. Direct pause-transition, incompatible-format recovery, daemon-process
+restart, DmaBuf revocation, fixed-arrival latency distributions,
+controlled-host placement, automated producer-path syscall enforcement, and
+representative ndarray sizes remain open.

@@ -73,6 +73,7 @@ struct observer {
 	struct endpoint endpoint;
 	struct producer *producer;
 	_Atomic uint32_t deliveries;
+	_Atomic uint32_t removals;
 	_Atomic uint32_t hold;
 	struct pw_buffer *held;
 	uint32_t held_sequence;
@@ -130,9 +131,7 @@ static void iterate_main_loop(struct fixture *fixture)
 {
 	struct pw_loop *loop = pw_main_loop_get_loop(fixture->main_loop);
 
-	pw_loop_enter(loop);
 	(void)pw_loop_iterate(loop, 10);
-	pw_loop_leave(loop);
 }
 
 static int find_node(void *data, struct pw_global *global)
@@ -416,18 +415,35 @@ static void observer_process(void *data)
 		if (same != observer->lease_storage)
 			atomic_fetch_add_explicit(&observer->endpoint.errors, 1,
 					memory_order_relaxed);
-		atomic_store_explicit(&observer->deliveries, delivery + 1u,
-				memory_order_release);
 		if (atomic_load_explicit(&observer->hold, memory_order_acquire) != 0 &&
 				observer->held == NULL) {
 			observer->held = pw_buffer;
 			observer->held_sequence = sequence;
+			atomic_store_explicit(&observer->deliveries, delivery + 1u,
+					memory_order_release);
 			continue;
 		}
 		if (pw_stream_queue_buffer(observer->endpoint.stream, pw_buffer) < 0)
 			atomic_fetch_add_explicit(&observer->endpoint.errors, 1,
 					memory_order_relaxed);
+		atomic_store_explicit(&observer->deliveries, delivery + 1u,
+				memory_order_release);
 	}
+}
+
+static void observer_remove_buffer(void *data, struct pw_buffer *buffer)
+{
+	struct observer *observer = data;
+
+	/* A generation change is allowed to revoke the downstream pool.  Once
+	 * remove_buffer identifies an application-held buffer, the application
+	 * must drop that pointer instead of returning it through the new pool. */
+	if (observer->held == buffer) {
+		observer->held = NULL;
+		observer->held_sequence = 0;
+	}
+	atomic_fetch_add_explicit(&observer->removals, 1,
+			memory_order_release);
 }
 
 static const struct pw_stream_events producer_events = {
@@ -441,6 +457,7 @@ static const struct pw_stream_events observer_events = {
 	PW_VERSION_STREAM_EVENTS,
 	.state_changed = endpoint_state_changed,
 	.process = observer_process,
+	.remove_buffer = observer_remove_buffer,
 	.trigger_done = endpoint_trigger_done,
 };
 
@@ -729,6 +746,10 @@ static void fixture_init_format(struct fixture *fixture, const char *overflow,
 	fixture->module = pw_context_load_module(fixture->context,
 			"libpipewire-module-queue", args, NULL);
 	CHECK(fixture->module != NULL);
+	/* Keep the loop entered exactly as pw_main_loop_run() does.  Releasing it
+	 * between manual iterations permits cross-loop invokes to acquire the main
+	 * loop mutex from a data-loop callback. */
+	pw_loop_enter(pw_main_loop_get_loop(fixture->main_loop));
 	/* Both deployment identities exist before either external endpoint is
 	 * linked.  Their pools and formats are negotiated later. */
 	capture_node = wait_for_node(fixture, "test.queue-input");
@@ -753,6 +774,7 @@ static void fixture_init_format(struct fixture *fixture, const char *overflow,
 	atomic_init(&fixture->producer.process_finish_nsec, 0);
 	atomic_init(&fixture->producer.record_identity, true);
 	atomic_init(&fixture->observer.deliveries, 0);
+	atomic_init(&fixture->observer.removals, 0);
 	atomic_init(&fixture->observer.hold, 1);
 	fixture->observer.producer = &fixture->producer;
 	fixture->observer.lease_storage = strcmp(storage, "lease") == 0;
@@ -807,6 +829,7 @@ static void fixture_clear(struct fixture *fixture)
 		pw_impl_module_destroy(fixture->module);
 	if (fixture->core != NULL)
 		pw_core_disconnect(fixture->core);
+	pw_loop_leave(pw_main_loop_get_loop(fixture->main_loop));
 	pw_context_destroy(fixture->context);
 	pw_main_loop_destroy(fixture->main_loop);
 	free(fixture->producer.identity);
@@ -1019,6 +1042,62 @@ static void test_retained_lease_withdrawal(void)
 	trigger_producer(&fixture, 2);
 	trigger_observer(&fixture, 2);
 	CHECK(fixture.observer.sequence[1] == 2);
+	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
+	fixture_clear(&fixture);
+}
+
+static void test_lease_generation_replacement(void)
+{
+	struct fixture fixture;
+	struct pw_impl_node *producer_node, *capture_node, *playback_node;
+	struct pw_impl_link *playback_link;
+	uint32_t removals, sequence;
+
+	fixture_init(&fixture, "drop-oldest", "lease");
+	playback_node = wait_for_node(&fixture, "test.queue-output");
+	playback_link = fixture.playback_link;
+	trigger_producer(&fixture, 1);
+	trigger_observer(&fixture, 1);
+	CHECK(fixture.observer.held != NULL);
+
+	/* Input withdrawal must leave the independently owned old-generation
+	 * payload valid until it is returned or the output pool is revoked. */
+	pw_impl_link_destroy(fixture.capture_link);
+	fixture.capture_link = NULL;
+	for (uint32_t i = 0; i < 8; i++)
+		iterate_main_loop(&fixture);
+	CHECK(validate_observer_buffer(fixture.observer.held, &sequence,
+			fixture.observer.endpoint.video_format));
+	CHECK(sequence == 1);
+	CHECK(wait_for_node(&fixture, "test.queue-output") == playback_node);
+	CHECK(fixture.playback_link == playback_link);
+
+	/* Reconnect while the old output lease is still held.  The same endpoint
+	 * and link must replace their pool, revoke the held pointer through the
+	 * observer's remove_buffer callback, and install only new-generation FDs. */
+	removals = atomic_load_explicit(&fixture.observer.removals,
+			memory_order_acquire);
+	producer_node = wait_for_node(&fixture, "test.queue-producer");
+	capture_node = wait_for_node(&fixture, "test.queue-input");
+	fixture.capture_link = link_nodes(&fixture, producer_node, capture_node);
+	wait_for_link(&fixture, fixture.capture_link);
+	wait_for_link(&fixture, playback_link);
+	wait_for_counter(&fixture, &fixture.observer.removals, removals + 1u,
+			"old observer pool revocation");
+	CHECK(fixture.observer.held == NULL);
+	CHECK(wait_for_node(&fixture, "test.queue-output") == playback_node);
+	CHECK(fixture.playback_link == playback_link);
+
+	trigger_producer(&fixture, 2);
+	trigger_observer(&fixture, 2);
+	CHECK(fixture.observer.sequence[1] == 2);
+	CHECK(fixture.observer.held != NULL);
+	atomic_store_explicit(&fixture.observer.hold, 0, memory_order_release);
+	release_observer(&fixture);
+	wait_for_stats(&fixture, 2);
+	CHECK(module_counter(&fixture, "queue.state.capture-generation") == 2);
+	CHECK(module_counter(&fixture, "queue.state.requested-generation") == 2);
+	CHECK(module_counter(&fixture, "queue.state.installed-generation") == 2);
 	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
 	fixture_clear(&fixture);
 }
@@ -1312,6 +1391,8 @@ int main(int argc, char **argv)
 	}
 	fprintf(stderr, "queue lifecycle storage=lease case=retained-withdrawal\n");
 	test_retained_lease_withdrawal();
+	fprintf(stderr, "queue lifecycle storage=lease case=generation-replacement\n");
+	test_lease_generation_replacement();
 	test_video_format();
 	pw_deinit();
 	return 0;

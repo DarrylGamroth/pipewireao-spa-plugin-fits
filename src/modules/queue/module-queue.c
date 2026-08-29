@@ -32,6 +32,7 @@
 #define MAX_DATA_BLOCKS PWAO_QUEUE_MAX_DATA_BLOCKS
 #define MAX_METAS PWAO_QUEUE_MAX_METAS
 #define PARAM_BUFFER_SIZE 16384u
+#define MAX_STATS_ITEMS 40u
 #define STATS_INTERVAL_NSEC SPA_NSEC_PER_SEC
 #define SLOT_TOKEN_BITS 6u
 #define SLOT_TOKEN_MASK ((UINT64_C(1) << SLOT_TOKEN_BITS) - 1u)
@@ -57,6 +58,18 @@ enum failure_state {
 	FAILURE_NONE,
 	FAILURE_RECORDING,
 	FAILURE_READY,
+};
+
+enum playback_generation_state {
+	PLAYBACK_GENERATION_NONE,
+	PLAYBACK_GENERATION_WAITING,
+	PLAYBACK_GENERATION_READY,
+};
+
+enum ownership_action {
+	OWNERSHIP_ACTION_NONE,
+	OWNERSHIP_ACTION_PAUSE,
+	OWNERSHIP_ACTION_WITHDRAW,
 };
 
 struct protocol_failure {
@@ -89,7 +102,7 @@ struct output_slot {
 	struct pw_buffer *playback;
 	bool output_available;
 	bool output_in_flight;
-	bool lease_current;
+	uint64_t generation;
 	uint64_t delivered_input;
 	int owned_fds[MAX_DATA_BLOCKS];
 };
@@ -138,6 +151,10 @@ struct impl {
 	uint32_t n_playback_present;
 	_Atomic bool playback_configured;
 	bool capture_pool_withdrawing;
+	uint64_t capture_generation;
+	uint64_t playback_requested_generation;
+	_Atomic uint64_t playback_installed_generation;
+	enum playback_generation_state playback_generation_state;
 	_Atomic uint64_t blocked_input;
 	_Atomic uint64_t next_token;
 	_Atomic uint32_t active_outputs;
@@ -152,9 +169,34 @@ struct impl {
 	_Alignas(SPA_CACHE_LINE_SIZE) _Atomic uint32_t fatal_error;
 	struct protocol_failure failure;
 	bool failure_reported;
+	_Atomic uint32_t ownership_requested;
+	_Atomic bool ownership_in_progress;
+	_Atomic uint32_t refs;
 	_Atomic bool destroy_scheduled;
-	bool destroying;
+	_Atomic bool destroying;
 };
+
+static void impl_free(struct impl *impl);
+
+static void impl_ref(struct impl *impl)
+{
+	atomic_fetch_add_explicit(&impl->refs, 1, memory_order_relaxed);
+}
+
+static void impl_unref(struct impl *impl)
+{
+	if (atomic_fetch_sub_explicit(&impl->refs, 1,
+			memory_order_acq_rel) == 1)
+		impl_free(impl);
+}
+
+static bool ownership_transition_pending(const struct impl *impl)
+{
+	return atomic_load_explicit(&impl->ownership_in_progress,
+			memory_order_acquire) ||
+		atomic_load_explicit(&impl->ownership_requested,
+			memory_order_acquire) != OWNERSHIP_ACTION_NONE;
+}
 
 static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_AUTHOR, "PipeWireAO contributors" },
@@ -174,7 +216,7 @@ static void schedule_destroy(struct impl *impl)
 {
 	bool expected = false;
 
-	if (impl->destroying)
+	if (atomic_load_explicit(&impl->destroying, memory_order_acquire))
 		return;
 	if (atomic_compare_exchange_strong_explicit(&impl->destroy_scheduled,
 			&expected, true, memory_order_acq_rel, memory_order_relaxed))
@@ -199,6 +241,56 @@ static const char *slot_state_name(uint32_t state)
 	default:
 		return "invalid";
 	}
+}
+
+static const char *playback_generation_state_name(
+		enum playback_generation_state state)
+{
+	switch (state) {
+	case PLAYBACK_GENERATION_NONE:
+		return "none";
+	case PLAYBACK_GENERATION_WAITING:
+		return "waiting";
+	case PLAYBACK_GENERATION_READY:
+		return "ready";
+	default:
+		return "invalid";
+	}
+}
+
+static const char *ownership_transition_name(const struct impl *impl)
+{
+	switch (atomic_load_explicit(&impl->ownership_requested,
+			memory_order_acquire)) {
+	case OWNERSHIP_ACTION_PAUSE:
+		return "pause";
+	case OWNERSHIP_ACTION_WITHDRAW:
+		return "withdraw";
+	case OWNERSHIP_ACTION_NONE:
+		return atomic_load_explicit(&impl->ownership_in_progress,
+				memory_order_acquire) ? "finishing" : "idle";
+	default:
+		return "invalid";
+	}
+}
+
+static uint64_t next_generation(uint64_t generation)
+{
+	generation++;
+	return generation == 0 ? 1 : generation;
+}
+
+static void invalidate_playback_generation(struct impl *impl,
+		bool abandon_request)
+{
+	atomic_store_explicit(&impl->playback_configured, false,
+			memory_order_release);
+	impl->playback_generation_state = abandon_request ?
+			PLAYBACK_GENERATION_NONE : PLAYBACK_GENERATION_WAITING;
+	atomic_store_explicit(&impl->playback_installed_generation, 0,
+			memory_order_relaxed);
+	if (abandon_request)
+		impl->playback_requested_generation = 0;
 }
 
 static uint32_t slot_token_index(uint64_t token)
@@ -377,6 +469,8 @@ static void capture_process(void *data)
 	uint32_t count;
 	uint64_t blocked_input;
 
+	if (ownership_transition_pending(impl))
+		return;
 	drain_completions(impl);
 	if (atomic_load_explicit(&impl->fatal_error, memory_order_acquire) != 0)
 		return;
@@ -556,9 +650,6 @@ static struct output_slot *find_copy_output(struct impl *impl)
 	return NULL;
 }
 
-static int prepare_output_slot(struct impl *impl,
-		struct output_slot *slot);
-
 static int recover_backpressure(struct spa_loop *loop, bool async,
 		uint32_t seq, const void *data, size_t size, void *user_data)
 {
@@ -570,9 +661,16 @@ static int recover_backpressure(struct spa_loop *loop, bool async,
 	(void)seq;
 	(void)data;
 	(void)size;
-	drain_completions(impl);
-	if (atomic_load_explicit(&impl->fatal_error, memory_order_acquire) != 0)
+	if (ownership_transition_pending(impl) ||
+			atomic_load_explicit(&impl->destroying, memory_order_acquire)) {
+		impl_unref(impl);
 		return 0;
+	}
+	drain_completions(impl);
+	if (atomic_load_explicit(&impl->fatal_error, memory_order_acquire) != 0) {
+		impl_unref(impl);
+		return 0;
+	}
 	blocked_input = atomic_load_explicit(&impl->blocked_input,
 			memory_order_relaxed);
 	if (blocked_input != SLOT_TOKEN_NONE) {
@@ -584,7 +682,7 @@ static int recover_backpressure(struct spa_loop *loop, bool async,
 					"backpressure.blocked-invalid-slot", index,
 					SLOT_BLOCKED, UINT32_MAX, blocked_input,
 					SLOT_TOKEN_NONE, -EINVAL);
-			return 0;
+			goto done;
 		}
 		if (atomic_load_explicit(&impl->inputs[index].token,
 					memory_order_acquire) != blocked_input ||
@@ -595,7 +693,7 @@ static int recover_backpressure(struct spa_loop *loop, bool async,
 					SLOT_BLOCKED, expected, blocked_input,
 					atomic_load_explicit(&impl->inputs[index].token,
 						memory_order_acquire), -EPROTO);
-			return 0;
+			goto done;
 		}
 		if (pwao_queue_ring_try_push(&impl->pending, blocked_input) == 1)
 			atomic_store_explicit(&impl->blocked_input, SLOT_TOKEN_NONE,
@@ -607,6 +705,8 @@ static int recover_backpressure(struct spa_loop *loop, bool async,
 					memory_order_acq_rel, memory_order_relaxed);
 		}
 	}
+done:
+	impl_unref(impl);
 	return 0;
 }
 
@@ -617,13 +717,22 @@ static void request_backpressure_recovery(struct impl *impl)
 	int result;
 
 	if (impl->overflow != PWAO_QUEUE_OVERFLOW_BACKPRESSURE ||
+			ownership_transition_pending(impl) ||
+			atomic_load_explicit(&impl->destroying, memory_order_acquire) ||
 			impl->capture == NULL ||
 			(blocked_input = atomic_load_explicit(&impl->blocked_input,
 					memory_order_acquire)) == SLOT_TOKEN_NONE)
 		return;
 	loop = pw_stream_get_data_loop(impl->capture);
-	result = loop == NULL ? -EIO : pw_loop_invoke(loop,
-			recover_backpressure, 1, NULL, 0, false, impl);
+	if (loop == NULL)
+		result = -EIO;
+	else {
+		impl_ref(impl);
+		result = pw_loop_invoke(loop, recover_backpressure, 1,
+				NULL, 0, false, impl);
+		if (result < 0)
+			impl_unref(impl);
+	}
 	if (result < 0)
 		MARK_PROTOCOL_ERROR(impl, "backpressure.schedule",
 				slot_token_index(blocked_input),
@@ -676,17 +785,16 @@ static void reclaim_playback_buffers(struct impl *impl)
 			atomic_fetch_sub_explicit(&impl->active_outputs, 1,
 					memory_order_relaxed);
 		}
-		if (impl->storage == STORAGE_LEASE && !slot->lease_current &&
+		/* ALLOC_BUFFERS storage is immutable after add_buffer exported it to
+		 * the peer.  A returned buffer from an obsolete generation stays
+		 * unavailable until PipeWire removes the old pool and installs the
+		 * requested generation. */
+		slot->output_available =
 				atomic_load_explicit(&impl->playback_configured,
-					memory_order_acquire)) {
-			result = prepare_output_slot(impl, slot);
-			if (result < 0) {
-				MARK_PROTOCOL_ERROR(impl, "playback.rebind-lease",
-						slot->index, UINT32_MAX, UINT32_MAX, result);
-				return;
-			}
-		}
-		slot->output_available = true;
+					memory_order_acquire) &&
+				slot->generation == atomic_load_explicit(
+						&impl->playback_installed_generation,
+						memory_order_relaxed);
 	}
 }
 
@@ -698,6 +806,8 @@ static void playback_process(void *data)
 	uint32_t attempt, input_index = UINT32_MAX;
 	int result;
 
+	if (ownership_transition_pending(impl))
+		return;
 	reclaim_playback_buffers(impl);
 	if (atomic_load_explicit(&impl->fatal_error, memory_order_acquire) != 0)
 		return;
@@ -742,7 +852,9 @@ static void playback_process(void *data)
 			}
 			output_slot = &impl->outputs[input_index];
 			if (!output_slot->output_available ||
-					!output_slot->lease_current) {
+					output_slot->generation != atomic_load_explicit(
+						&impl->playback_installed_generation,
+						memory_order_relaxed)) {
 				atomic_fetch_add_explicit(
 						&impl->output_stats.pool_exhaustions, 1,
 						memory_order_relaxed);
@@ -823,9 +935,10 @@ static void playback_process(void *data)
 static void reset_input_ownership_quiescent(struct impl *impl,
 		bool return_capture, bool detach_output_leases)
 {
-	uint32_t i;
+	uint32_t i, limit = return_capture ? impl->n_capture_buffers :
+			MAX_POOL_BUFFERS;
 
-	for (i = 0; i < impl->n_capture_buffers; i++) {
+	for (i = 0; i < limit; i++) {
 		struct input_slot *slot = &impl->inputs[i];
 		uint32_t state = atomic_exchange_explicit(&slot->state,
 				SLOT_FREE, memory_order_acq_rel);
@@ -842,33 +955,16 @@ static void reset_input_ownership_quiescent(struct impl *impl,
 	atomic_store_explicit(&impl->blocked_input, SLOT_TOKEN_NONE,
 			memory_order_relaxed);
 	if (detach_output_leases && impl->storage == STORAGE_LEASE)
-		for (i = 0; i < impl->n_playback_buffers; i++) {
+		for (i = 0; i < MAX_POOL_BUFFERS; i++) {
 			if (impl->outputs[i].output_in_flight)
 				impl->outputs[i].delivered_input = SLOT_TOKEN_NONE;
-			impl->outputs[i].lease_current = false;
 		}
-}
-
-static void release_all_quiescent(struct impl *impl)
-{
-	uint32_t i;
-
-	reset_input_ownership_quiescent(impl, true, true);
-	atomic_store_explicit(&impl->active_outputs, 0, memory_order_relaxed);
-	for (i = 0; i < impl->n_playback_buffers; i++) {
-		impl->outputs[i].output_available = false;
-		impl->outputs[i].output_in_flight = false;
-		impl->outputs[i].lease_current = false;
-		impl->outputs[i].delivered_input = SLOT_TOKEN_NONE;
-	}
 }
 
 static void pause_ownership_quiescent(struct impl *impl)
 {
 	uint32_t i;
 
-	if (impl->playback != NULL)
-		reclaim_playback_buffers(impl);
 	drain_completions(impl);
 	if (atomic_load_explicit(&impl->fatal_error, memory_order_acquire) != 0)
 		return;
@@ -904,99 +1000,198 @@ static void pause_ownership_quiescent(struct impl *impl)
 
 static void withdraw_input_pool_quiescent(struct impl *impl)
 {
-	if (impl->playback != NULL)
-		reclaim_playback_buffers(impl);
 	reset_input_ownership_quiescent(impl, false, true);
 }
 
-typedef void (*ownership_action_t)(struct impl *impl);
+static int configure_playback(struct impl *impl);
+static void maybe_configure_playback(struct impl *impl);
+static int ownership_playback_stage(struct spa_loop *loop, bool async,
+		uint32_t seq, const void *data, size_t size, void *user_data);
 
-struct ownership_lock_context {
-	struct impl *impl;
-	struct pw_loop *second;
-	ownership_action_t action;
-};
+static int invoke_owned(struct impl *impl, struct pw_loop *loop,
+		spa_invoke_func_t function)
+{
+	int result;
 
-static int ownership_action_locked(struct spa_loop *loop, bool async,
+	if (loop == NULL)
+		return -EIO;
+	impl_ref(impl);
+	result = pw_loop_invoke(loop, function, 1, NULL, 0, false, impl);
+	if (result < 0)
+		impl_unref(impl);
+	return result;
+}
+
+static int schedule_ownership_playback_stage(struct impl *impl)
+{
+	if (impl->playback == NULL)
+		return -EIO;
+	return invoke_owned(impl, pw_stream_get_data_loop(impl->playback),
+			ownership_playback_stage);
+}
+
+static void cancel_ownership_transition(struct impl *impl)
+{
+	atomic_store_explicit(&impl->ownership_requested,
+			OWNERSHIP_ACTION_NONE, memory_order_release);
+	atomic_store_explicit(&impl->ownership_in_progress, false,
+			memory_order_release);
+}
+
+static void ownership_schedule_failed(struct impl *impl, const char *operation,
+		int result)
+{
+	if (!atomic_load_explicit(&impl->destroying, memory_order_acquire))
+		MARK_PROTOCOL_ERROR(impl, operation, UINT32_MAX,
+				UINT32_MAX, UINT32_MAX, result);
+	cancel_ownership_transition(impl);
+}
+
+/* A transition is ordered playback -> capture -> main.  Each asynchronous
+ * stage runs after any process callback already executing on that loop.  New
+ * process callbacks observe the transition gate and return without touching
+ * ownership.  This avoids nesting PipeWire loop locks under the main loop. */
+static void finish_ownership_transition(struct impl *impl)
+{
+	bool expected;
+	int result;
+
+	if (atomic_load_explicit(&impl->destroying, memory_order_acquire)) {
+		cancel_ownership_transition(impl);
+		return;
+	}
+	if (atomic_load_explicit(&impl->ownership_requested,
+			memory_order_acquire) != OWNERSHIP_ACTION_NONE) {
+		result = schedule_ownership_playback_stage(impl);
+		if (result < 0)
+			ownership_schedule_failed(impl, "ownership.reschedule", result);
+		return;
+	}
+
+	atomic_store_explicit(&impl->ownership_in_progress, false,
+			memory_order_release);
+	/* A requester can publish an action after the check above while it still
+	 * sees ownership_in_progress=true.  Recheck after releasing the worker and
+	 * claim it on the requester's behalf.  Process callbacks also inspect the
+	 * requested action, so this handoff cannot expose a pending transition. */
+	if (atomic_load_explicit(&impl->ownership_requested,
+			memory_order_acquire) != OWNERSHIP_ACTION_NONE) {
+		expected = false;
+		if (atomic_compare_exchange_strong_explicit(
+				&impl->ownership_in_progress, &expected, true,
+				memory_order_acq_rel, memory_order_relaxed)) {
+			result = schedule_ownership_playback_stage(impl);
+			if (result < 0)
+				ownership_schedule_failed(impl,
+						"ownership.handoff", result);
+		}
+		return;
+	}
+	maybe_configure_playback(impl);
+}
+
+static int ownership_main_stage(struct spa_loop *loop, bool async,
 		uint32_t seq, const void *data, size_t size, void *user_data)
 {
-	struct ownership_lock_context *context = user_data;
+	struct impl *impl = user_data;
 
 	(void)loop;
 	(void)async;
 	(void)seq;
 	(void)data;
 	(void)size;
-	context->action(context->impl);
+	finish_ownership_transition(impl);
+	impl_unref(impl);
 	return 0;
 }
 
-static int ownership_first_locked(struct spa_loop *loop, bool async,
+static int ownership_capture_stage(struct spa_loop *loop, bool async,
 		uint32_t seq, const void *data, size_t size, void *user_data)
 {
-	struct ownership_lock_context *context = user_data;
+	struct impl *impl = user_data;
+	enum ownership_action action;
+	int result;
 
 	(void)loop;
 	(void)async;
 	(void)seq;
 	(void)data;
 	(void)size;
-	if (context->second == NULL)
-		return ownership_action_locked(NULL, false, 0, NULL, 0, context);
-	return pw_loop_locked(context->second, ownership_action_locked, 1,
-			NULL, 0, context);
-}
-
-/* Ownership transitions are control-plane operations, while capture_process
- * and playback_process can run on different graph data loops.  Lock both
- * endpoints so no callback can publish an entry across a lifecycle boundary.
- * A stable address order avoids lock inversion. */
-static int ownership_action_synchronized(struct impl *impl,
-		ownership_action_t action)
-{
-	struct pw_loop *capture_loop, *playback_loop = NULL, *first, *second;
-	struct ownership_lock_context context;
-
-	if (impl->capture == NULL)
+	if (atomic_load_explicit(&impl->destroying, memory_order_acquire)) {
+		cancel_ownership_transition(impl);
+		impl_unref(impl);
 		return 0;
-	capture_loop = pw_stream_get_data_loop(impl->capture);
-	if (capture_loop == NULL)
-		return -EIO;
-	if (impl->playback != NULL)
-		playback_loop = pw_stream_get_data_loop(impl->playback);
-	if (playback_loop == capture_loop)
-		playback_loop = NULL;
-	first = capture_loop;
-	second = playback_loop;
-	if (second != NULL && (uintptr_t)second < (uintptr_t)first) {
-		struct pw_loop *swap = first;
-
-		first = second;
-		second = swap;
 	}
-	context = (struct ownership_lock_context) {
-		.impl = impl,
-		.second = second,
-		.action = action,
-	};
-	return pw_loop_locked(first, ownership_first_locked, 1, NULL, 0,
-			&context);
+	action = atomic_exchange_explicit(&impl->ownership_requested,
+			OWNERSHIP_ACTION_NONE, memory_order_acq_rel);
+	if (action == OWNERSHIP_ACTION_WITHDRAW)
+		withdraw_input_pool_quiescent(impl);
+	else if (action == OWNERSHIP_ACTION_PAUSE)
+		pause_ownership_quiescent(impl);
+	if (atomic_load_explicit(&impl->destroying, memory_order_acquire)) {
+		cancel_ownership_transition(impl);
+		impl_unref(impl);
+		return 0;
+	}
+	result = invoke_owned(impl, pw_context_get_main_loop(impl->context),
+			ownership_main_stage);
+	if (result < 0)
+		ownership_schedule_failed(impl, "ownership.main-stage", result);
+	impl_unref(impl);
+	return 0;
 }
 
-static int release_all_synchronized(struct impl *impl)
+static int ownership_playback_stage(struct spa_loop *loop, bool async,
+		uint32_t seq, const void *data, size_t size, void *user_data)
 {
-	return ownership_action_synchronized(impl, release_all_quiescent);
+	struct impl *impl = user_data;
+	int result;
+
+	(void)loop;
+	(void)async;
+	(void)seq;
+	(void)data;
+	(void)size;
+	if (atomic_load_explicit(&impl->destroying, memory_order_acquire)) {
+		cancel_ownership_transition(impl);
+		impl_unref(impl);
+		return 0;
+	}
+	if (impl->playback != NULL)
+		reclaim_playback_buffers(impl);
+	result = impl->capture == NULL ? -EIO : invoke_owned(impl,
+			pw_stream_get_data_loop(impl->capture), ownership_capture_stage);
+	if (result < 0)
+		ownership_schedule_failed(impl, "ownership.capture-stage", result);
+	impl_unref(impl);
+	return 0;
 }
 
-static int pause_ownership_synchronized(struct impl *impl)
+static int request_ownership_action(struct impl *impl,
+		enum ownership_action action)
 {
-	return ownership_action_synchronized(impl, pause_ownership_quiescent);
-}
+	uint32_t requested;
+	bool expected = false;
+	int result;
 
-static int withdraw_input_pool_synchronized(struct impl *impl)
-{
-	return ownership_action_synchronized(impl,
-			withdraw_input_pool_quiescent);
+	if (action == OWNERSHIP_ACTION_NONE ||
+			atomic_load_explicit(&impl->destroying, memory_order_acquire))
+		return 0;
+	requested = atomic_load_explicit(&impl->ownership_requested,
+			memory_order_relaxed);
+	while (requested < (uint32_t)action &&
+			!atomic_compare_exchange_weak_explicit(
+				&impl->ownership_requested, &requested, action,
+				memory_order_release, memory_order_relaxed))
+		;
+	if (!atomic_compare_exchange_strong_explicit(
+			&impl->ownership_in_progress, &expected, true,
+			memory_order_acq_rel, memory_order_relaxed))
+		return 0;
+	result = schedule_ownership_playback_stage(impl);
+	if (result < 0)
+		ownership_schedule_failed(impl, "ownership.start", result);
+	return result;
 }
 
 static int validate_capture_pool(struct impl *impl)
@@ -1053,14 +1248,11 @@ static int validate_capture_pool(struct impl *impl)
 	return 0;
 }
 
-static int configure_playback(struct impl *impl);
-
 static void capture_add_buffer(void *data, struct pw_buffer *buffer)
 {
 	struct impl *impl = data;
 	struct input_slot *slot;
 	uint32_t index;
-	int result;
 
 	for (index = 0; index < MAX_POOL_BUFFERS; index++)
 		if (impl->inputs[index].capture == NULL)
@@ -1071,8 +1263,10 @@ static void capture_add_buffer(void *data, struct pw_buffer *buffer)
 		return;
 	}
 	slot = &impl->inputs[index];
-	if (impl->n_capture_present == 0)
+	if (impl->n_capture_present == 0) {
 		impl->capture_pool_withdrawing = false;
+		impl->capture_generation = next_generation(impl->capture_generation);
+	}
 	slot->index = index;
 	slot->capture = buffer;
 	atomic_store_explicit(&slot->state, SLOT_FREE, memory_order_relaxed);
@@ -1082,15 +1276,7 @@ static void capture_add_buffer(void *data, struct pw_buffer *buffer)
 	buffer->user_data = slot;
 	impl->n_capture_present++;
 	impl->n_capture_buffers = SPA_MAX(impl->n_capture_buffers, index + 1u);
-	if (!atomic_load_explicit(&impl->playback_configured,
-			memory_order_acquire) && impl->format != NULL &&
-			impl->n_capture_present >= impl->max_buffers + 2u &&
-			pw_stream_get_state(impl->capture, NULL) ==
-				PW_STREAM_STATE_PAUSED &&
-			(result = configure_playback(impl)) < 0)
-		(void)pw_stream_set_error(impl->capture, result,
-				"queue output configuration failed: %s",
-				spa_strerror(result));
+	maybe_configure_playback(impl);
 }
 
 static void capture_remove_buffer(void *data, struct pw_buffer *buffer)
@@ -1100,16 +1286,13 @@ static void capture_remove_buffer(void *data, struct pw_buffer *buffer)
 
 	if (slot == NULL)
 		return;
-	/* The playback node is a stable graph endpoint.  Capture withdrawal starts
-	 * a new pool generation, but duplicated lease descriptors stay owned by the
-	 * old output buffers until downstream returns them. */
+	/* The playback node is a stable graph endpoint. Capture withdrawal starts
+	 * a new pool generation, but each old output buffer keeps its duplicated
+	 * descriptor until downstream returns it or PipeWire revokes that pool. */
 	if (!impl->capture_pool_withdrawing) {
 		impl->capture_pool_withdrawing = true;
-		atomic_store_explicit(&impl->playback_configured, false,
-				memory_order_release);
-		if (withdraw_input_pool_synchronized(impl) < 0)
-			MARK_PROTOCOL_ERROR(impl, "capture.withdraw-synchronize",
-					slot->index, UINT32_MAX, UINT32_MAX, -EIO);
+		invalidate_playback_generation(impl, true);
+		(void)request_ownership_action(impl, OWNERSHIP_ACTION_WITHDRAW);
 	}
 	slot->capture = NULL;
 	buffer->user_data = NULL;
@@ -1147,9 +1330,31 @@ static int prepare_output_slot(struct impl *impl,
 				SPA_N_ELEMENTS(slot->owned_fds));
 		if (result < 0)
 			return result;
-		slot->lease_current = true;
 	}
 	return 0;
+}
+
+static void maybe_activate_playback_generation(struct impl *impl)
+{
+	uint32_t i;
+	uint64_t generation = impl->playback_requested_generation;
+
+	if (generation == 0 || generation != impl->capture_generation ||
+			impl->format == NULL ||
+			impl->n_playback_present != impl->n_capture_buffers)
+		return;
+	for (i = 0; i < impl->n_capture_buffers; i++)
+		if (impl->outputs[i].playback == NULL ||
+				impl->outputs[i].generation != generation)
+			return;
+	atomic_store_explicit(&impl->playback_installed_generation, generation,
+			memory_order_relaxed);
+	impl->playback_generation_state = PLAYBACK_GENERATION_READY;
+	/* This release publishes the complete output-slot pool to the playback
+	 * process callback.  Slot storage remains immutable until PipeWire
+	 * quiesces that callback and emits remove_buffer. */
+	atomic_store_explicit(&impl->playback_configured, true,
+			memory_order_release);
 }
 
 static void playback_add_buffer(void *data, struct pw_buffer *buffer)
@@ -1170,19 +1375,25 @@ static void playback_add_buffer(void *data, struct pw_buffer *buffer)
 	slot->playback = buffer;
 	slot->output_available = false;
 	slot->output_in_flight = false;
-	slot->lease_current = false;
+	slot->generation = 0;
 	slot->delivered_input = SLOT_TOKEN_NONE;
 	buffer->user_data = slot;
 	impl->n_playback_present++;
 	impl->n_playback_buffers = SPA_MAX(impl->n_playback_buffers, index + 1u);
-	if (index < impl->n_capture_buffers &&
+	if (impl->playback_requested_generation != 0 &&
+			impl->playback_requested_generation == impl->capture_generation &&
+			index < impl->n_capture_buffers &&
 			impl->inputs[index].capture != NULL) {
 		int result = prepare_output_slot(impl, slot);
 
-		if (result < 0)
+		if (result < 0) {
 			MARK_PROTOCOL_ERROR(impl, "playback.add-layout", index,
 					UINT32_MAX, UINT32_MAX, result);
+			return;
+		}
+		slot->generation = impl->playback_requested_generation;
 	}
+	maybe_activate_playback_generation(impl);
 }
 
 static void playback_remove_buffer(void *data, struct pw_buffer *buffer)
@@ -1192,6 +1403,12 @@ static void playback_remove_buffer(void *data, struct pw_buffer *buffer)
 
 	if (slot == NULL)
 		return;
+	/* use_buffers() quiesces the playback process before this callback.  Once
+	 * any installed buffer is removed, no member of that pool generation may
+	 * be published again.  Keep the request so the following add_buffer
+	 * callbacks can qualify the replacement pool. */
+	invalidate_playback_generation(impl,
+			impl->playback_requested_generation == 0);
 	if (slot->output_in_flight) {
 		if (impl->storage == STORAGE_LEASE &&
 				slot->delivered_input != SLOT_TOKEN_NONE) {
@@ -1222,7 +1439,7 @@ static void playback_remove_buffer(void *data, struct pw_buffer *buffer)
 	slot->playback = NULL;
 	slot->output_available = false;
 	slot->output_in_flight = false;
-	slot->lease_current = false;
+	slot->generation = 0;
 	slot->delivered_input = SLOT_TOKEN_NONE;
 	buffer->user_data = NULL;
 	if (impl->n_playback_present == 0) {
@@ -1299,8 +1516,8 @@ static int configure_playback(struct impl *impl)
 
 	if (impl->playback == NULL)
 		return -EIO;
-	if (atomic_load_explicit(&impl->playback_configured,
-			memory_order_acquire))
+	if (impl->capture_generation != 0 &&
+			impl->playback_requested_generation == impl->capture_generation)
 		return 0;
 	if ((result = validate_capture_pool(impl)) < 0)
 		return result;
@@ -1354,21 +1571,40 @@ static int configure_playback(struct impl *impl)
 				SPA_POD_Int((int32_t)sample->metas[i].size));
 	}
 
+	/* Updating the buffer contract toggles PipeWire's parameter serial and
+	 * requests a new output pool while preserving the node, port, and link.
+	 * Existing spa_data descriptors are immutable: readiness is published only
+	 * after use_buffers() has removed the previous pool and add_buffer has
+	 * installed every descriptor for this capture generation. */
+	impl->playback_requested_generation = impl->capture_generation;
+	impl->playback_generation_state = PLAYBACK_GENERATION_WAITING;
+	atomic_store_explicit(&impl->playback_configured, false,
+			memory_order_release);
 	result = pw_stream_update_params(impl->playback, params, n_params);
 	if (result < 0)
-		goto done;
-	for (i = 0; i < impl->n_playback_buffers; i++) {
-		struct output_slot *slot = &impl->outputs[i];
-
-		if (slot->playback == NULL || slot->output_in_flight)
-			continue;
-		if ((result = prepare_output_slot(impl, slot)) < 0)
-			goto done;
-	}
-	atomic_store_explicit(&impl->playback_configured, true,
-			memory_order_release);
+		invalidate_playback_generation(impl, true);
 done:
 	return result;
+}
+
+static void maybe_configure_playback(struct impl *impl)
+{
+	int result;
+
+	if (atomic_load_explicit(&impl->destroying, memory_order_acquire) ||
+			ownership_transition_pending(impl) ||
+			impl->capture == NULL || impl->playback == NULL ||
+			impl->format == NULL || impl->capture_pool_withdrawing ||
+			impl->playback_requested_generation == impl->capture_generation ||
+			impl->n_capture_present < impl->max_buffers + 2u ||
+			pw_stream_get_state(impl->capture, NULL) !=
+				PW_STREAM_STATE_PAUSED)
+		return;
+	result = configure_playback(impl);
+	if (result < 0)
+		(void)pw_stream_set_error(impl->capture, result,
+				"queue output configuration failed: %s",
+				spa_strerror(result));
 }
 
 static int setup_playback_endpoint(struct impl *impl)
@@ -1404,13 +1640,10 @@ static void capture_param_changed(void *data, uint32_t id,
 	if (id != SPA_PARAM_Format)
 		return;
 	if (param == NULL) {
-		atomic_store_explicit(&impl->playback_configured, false,
-				memory_order_release);
-		if (!impl->capture_pool_withdrawing &&
-				(result = withdraw_input_pool_synchronized(impl)) < 0)
-			(void)pw_stream_set_error(impl->capture, result,
-					"queue input pool withdrawal failed: %s",
-					spa_strerror(result));
+		invalidate_playback_generation(impl, true);
+		if (!impl->capture_pool_withdrawing)
+			(void)request_ownership_action(impl,
+					OWNERSHIP_ACTION_WITHDRAW);
 		impl->capture_pool_withdrawing = true;
 		free(impl->format);
 		impl->format = NULL;
@@ -1441,7 +1674,6 @@ static void stream_state_changed(void *data, enum pw_stream_state old,
 		enum pw_stream_state state, const char *error)
 {
 	struct impl *impl = data;
-	int result;
 
 	if (state == PW_STREAM_STATE_UNCONNECTED) {
 		schedule_destroy(impl);
@@ -1454,27 +1686,15 @@ static void stream_state_changed(void *data, enum pw_stream_state old,
 		return;
 	}
 	if (state == PW_STREAM_STATE_PAUSED && old == PW_STREAM_STATE_STREAMING) {
-		result = pause_ownership_synchronized(impl);
-		if (result < 0)
-			(void)pw_stream_set_error(impl->capture, result,
-					"queue input pause failed: %s",
-					spa_strerror(result));
+		(void)request_ownership_action(impl, OWNERSHIP_ACTION_PAUSE);
 		return;
 	}
 	if (state == PW_STREAM_STATE_STREAMING && impl->playback != NULL) {
 		(void)pw_stream_set_active(impl->playback, true);
 		return;
 	}
-	if (state != PW_STREAM_STATE_PAUSED || impl->format == NULL ||
-			atomic_load_explicit(&impl->playback_configured,
-				memory_order_acquire) ||
-			impl->n_capture_present < impl->max_buffers + 2u)
-		return;
-	result = configure_playback(impl);
-	if (result < 0)
-		(void)pw_stream_set_error(impl->capture, result,
-				"queue output configuration failed: %s",
-				spa_strerror(result));
+	if (state == PW_STREAM_STATE_PAUSED)
+		maybe_configure_playback(impl);
 }
 
 static const struct pw_stream_events capture_events = {
@@ -1518,8 +1738,8 @@ static const struct pw_core_events core_events = {
 static void update_stats(void *data, uint64_t expirations)
 {
 	struct impl *impl = data;
-	struct spa_dict_item items[28];
-	char values[28][32];
+	struct spa_dict_item items[MAX_STATS_ITEMS];
+	char values[MAX_STATS_ITEMS][32];
 	char message[640];
 	char slot[32] = "n/a";
 	char blocked_slot[32] = "n/a";
@@ -1582,6 +1802,27 @@ static void update_stats(void *data, uint64_t expirations)
 				memory_order_acquire) ? "true" : "false");
 	items[count++] = SPA_DICT_ITEM_INIT("queue.state.input-format",
 			impl->format != NULL ? "negotiated" : "none");
+	items[count++] = SPA_DICT_ITEM_INIT("queue.state.ownership-transition",
+			ownership_transition_name(impl));
+	items[count++] = SPA_DICT_ITEM_INIT("queue.state.output-generation",
+			playback_generation_state_name(
+				impl->playback_generation_state));
+	(void)snprintf(values[count], sizeof(values[count]), "%" PRIu64,
+			impl->capture_generation);
+	items[count] = SPA_DICT_ITEM_INIT("queue.state.capture-generation",
+			values[count]);
+	count++;
+	(void)snprintf(values[count], sizeof(values[count]), "%" PRIu64,
+			impl->playback_requested_generation);
+	items[count] = SPA_DICT_ITEM_INIT("queue.state.requested-generation",
+			values[count]);
+	count++;
+	(void)snprintf(values[count], sizeof(values[count]), "%" PRIu64,
+			atomic_load_explicit(&impl->playback_installed_generation,
+				memory_order_relaxed));
+	items[count] = SPA_DICT_ITEM_INIT("queue.state.installed-generation",
+			values[count]);
+	count++;
 	failure_state = atomic_load_explicit(&impl->fatal_error,
 			memory_order_acquire);
 	if (failure_state == FAILURE_READY) {
@@ -1685,11 +1926,26 @@ static void update_stats(void *data, uint64_t expirations)
 	}
 }
 
-static void impl_destroy(struct impl *impl)
+static void impl_free(struct impl *impl)
 {
 	uint32_t i;
 
-	impl->destroying = true;
+	for (i = 0; i < MAX_POOL_BUFFERS; i++)
+		pwao_queue_buffer_close_fds(impl->outputs[i].owned_fds,
+				SPA_N_ELEMENTS(impl->outputs[i].owned_fds));
+	free(impl->format);
+	pw_properties_free(impl->capture_props);
+	pw_properties_free(impl->playback_props);
+	free(impl);
+}
+
+static void impl_destroy(struct impl *impl)
+{
+	bool expected = false;
+
+	if (!atomic_compare_exchange_strong_explicit(&impl->destroying,
+			&expected, true, memory_order_acq_rel, memory_order_relaxed))
+		return;
 	atomic_store_explicit(&impl->destroy_scheduled, true,
 			memory_order_release);
 	if (impl->stats_timer != NULL) {
@@ -1706,8 +1962,6 @@ static void impl_destroy(struct impl *impl)
 		pw_stream_destroy(impl->playback);
 		impl->playback = NULL;
 	}
-	if (impl->capture != NULL)
-		(void)release_all_synchronized(impl);
 	if (impl->capture != NULL) {
 		pw_stream_destroy(impl->capture);
 		impl->capture = NULL;
@@ -1721,13 +1975,7 @@ static void impl_destroy(struct impl *impl)
 		if (impl->disconnect_core)
 			pw_core_disconnect(core);
 	}
-	for (i = 0; i < MAX_POOL_BUFFERS; i++)
-		pwao_queue_buffer_close_fds(impl->outputs[i].owned_fds,
-				SPA_N_ELEMENTS(impl->outputs[i].owned_fds));
-	free(impl->format);
-	pw_properties_free(impl->capture_props);
-	pw_properties_free(impl->playback_props);
-	free(impl);
+	impl_unref(impl);
 }
 
 static void module_destroy(void *data)
@@ -1885,12 +2133,17 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	memset(impl, 0, sizeof(*impl));
 	impl->context = context;
 	impl->module = module;
+	atomic_init(&impl->ownership_requested, OWNERSHIP_ACTION_NONE);
+	atomic_init(&impl->ownership_in_progress, false);
+	atomic_init(&impl->refs, 1);
 	atomic_init(&impl->blocked_input, SLOT_TOKEN_NONE);
 	atomic_init(&impl->next_token, 0);
 	atomic_init(&impl->active_outputs, 0);
 	atomic_init(&impl->playback_configured, false);
+	atomic_init(&impl->playback_installed_generation, 0);
 	atomic_init(&impl->fatal_error, FAILURE_NONE);
 	atomic_init(&impl->destroy_scheduled, false);
+	atomic_init(&impl->destroying, false);
 	atomic_init(&impl->input_stats.publications, 0);
 	atomic_init(&impl->input_stats.replacements, 0);
 	atomic_init(&impl->input_stats.dropped_arrivals, 0);
