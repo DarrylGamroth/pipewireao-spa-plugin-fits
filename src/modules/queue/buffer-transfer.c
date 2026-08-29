@@ -32,8 +32,12 @@ int pwao_queue_buffer_validate_layout(const struct spa_buffer *input,
 				in->type >= SPA_META_START_features)
 			continue;
 		out = spa_buffer_find_meta(output, in->type);
-
-		if (out == NULL || out->size != in->size ||
+		/* Metadata is negotiated independently on the queue's capture and
+		 * playback links. Forward the intersection; metadata that only the
+		 * producer supplies is not part of the playback buffer contract. */
+		if (out == NULL)
+			continue;
+		if (out->size != in->size ||
 				(in->size > 0 && (in->data == NULL || out->data == NULL)))
 			return -EINVAL;
 	}
@@ -61,6 +65,8 @@ int pwao_queue_buffer_transfer(const struct spa_buffer *input,
 				in->type >= SPA_META_START_features)
 			continue;
 		out = spa_buffer_find_meta(output, in->type);
+		if (out == NULL)
+			continue;
 		if (in->size > 0)
 			memcpy(out->data, in->data, in->size);
 	}
@@ -119,7 +125,8 @@ int pwao_queue_buffer_alias(const struct spa_buffer *input,
 		if (in->type >= 32 || in->fd < 0 ||
 				(in->type != SPA_DATA_MemFd &&
 				 in->type != SPA_DATA_DmaBuf) ||
-				(out->type & (1u << in->type)) == 0) {
+				(out->type != in->type &&
+				 (out->type & (1u << in->type)) == 0)) {
 			result = -ENOTSUP;
 			goto error;
 		}
@@ -138,7 +145,11 @@ int pwao_queue_buffer_alias(const struct spa_buffer *input,
 		out->fd = owned_fds[i];
 		out->mapoffset = in->mapoffset;
 		out->maxsize = in->maxsize;
-		out->data = in->data;
+		/* The duplicated descriptor owns the lease.  The input mapping belongs
+		 * to the capture pool and can disappear independently when that pool is
+		 * withdrawn.  Leave mapping to the downstream endpoint so no pointer
+		 * crosses pool generations. */
+		out->data = NULL;
 	}
 	return 0;
 

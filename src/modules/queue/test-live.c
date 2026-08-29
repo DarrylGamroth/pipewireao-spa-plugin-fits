@@ -173,20 +173,26 @@ static struct pw_impl_node *wait_for_node(struct fixture *fixture,
 	abort();
 }
 
-static void wait_for_node_removal(struct fixture *fixture, const char *name)
+static int count_port(void *data, struct pw_impl_port *port)
 {
-	struct node_search search = { .name = name };
-	uint64_t deadline = monotonic_nsec() + TIMEOUT_NSEC;
+	uint32_t *count = data;
 
-	while (monotonic_nsec() < deadline) {
-		search.node = NULL;
-		(void)pw_context_for_each_global(fixture->context, find_node, &search);
-		if (search.node == NULL)
-			return;
-		iterate_main_loop(fixture);
-	}
-	fprintf(stderr, "timed out waiting for node removal %s\n", name);
-	abort();
+	(void)port;
+	(*count)++;
+	return 0;
+}
+
+static void check_initial_queue_ports(struct pw_impl_node *capture_node,
+		struct pw_impl_node *playback_node)
+{
+	uint32_t capture_inputs = 0, playback_outputs = 0;
+
+	CHECK(pw_impl_node_for_each_port(capture_node, PW_DIRECTION_INPUT,
+			count_port, &capture_inputs) == 0);
+	CHECK(pw_impl_node_for_each_port(playback_node, PW_DIRECTION_OUTPUT,
+			count_port, &playback_outputs) == 0);
+	CHECK(capture_inputs == 1);
+	CHECK(playback_outputs == 1);
 }
 
 static void wait_for_streaming(struct fixture *fixture,
@@ -690,7 +696,7 @@ static void release_observer(struct fixture *fixture)
 }
 
 static void fixture_init_format(struct fixture *fixture, const char *overflow,
-		const char *storage, bool video_format)
+		const char *storage, bool video_format, bool observer_first)
 {
 	char args[512];
 	const char *capture_queue_id, *playback_queue_id;
@@ -723,6 +729,20 @@ static void fixture_init_format(struct fixture *fixture, const char *overflow,
 	fixture->module = pw_context_load_module(fixture->context,
 			"libpipewire-module-queue", args, NULL);
 	CHECK(fixture->module != NULL);
+	/* Both deployment identities exist before either external endpoint is
+	 * linked.  Their pools and formats are negotiated later. */
+	capture_node = wait_for_node(fixture, "test.queue-input");
+	playback_node = wait_for_node(fixture, "test.queue-output");
+	check_initial_queue_ports(capture_node, playback_node);
+	capture_queue_id = pw_properties_get(
+			pw_impl_node_get_properties(capture_node),
+			PWAO_QUEUE_ID_PROPERTY);
+	playback_queue_id = pw_properties_get(
+			pw_impl_node_get_properties(playback_node),
+			PWAO_QUEUE_ID_PROPERTY);
+	CHECK(capture_queue_id != NULL);
+	CHECK(playback_queue_id != NULL);
+	CHECK(strcmp(capture_queue_id, playback_queue_id) == 0);
 	fixture->producer.identity = calloc(MAX_SEQUENCE,
 			sizeof(*fixture->producer.identity));
 	CHECK(fixture->producer.identity != NULL);
@@ -736,26 +756,27 @@ static void fixture_init_format(struct fixture *fixture, const char *overflow,
 	atomic_init(&fixture->observer.hold, 1);
 	fixture->observer.producer = &fixture->producer;
 	fixture->observer.lease_storage = strcmp(storage, "lease") == 0;
+	if (observer_first) {
+		create_endpoint_stream(fixture, "test.queue-observer",
+				PW_DIRECTION_INPUT, &observer_events,
+				&fixture->observer.endpoint);
+		observer_node = wait_for_node(fixture, "test.queue-observer");
+		fixture->playback_link = link_nodes(fixture, playback_node,
+				observer_node);
+	}
 	create_endpoint_stream(fixture, "test.queue-producer", PW_DIRECTION_OUTPUT,
 			&producer_events, &fixture->producer.endpoint);
 	producer_node = wait_for_node(fixture, "test.queue-producer");
-	capture_node = wait_for_node(fixture, "test.queue-input");
 	fixture->capture_link = link_nodes(fixture, producer_node, capture_node);
 	wait_for_link(fixture, fixture->capture_link);
-	playback_node = wait_for_node(fixture, "test.queue-output");
-	capture_queue_id = pw_properties_get(
-			pw_impl_node_get_properties(capture_node),
-			PWAO_QUEUE_ID_PROPERTY);
-	playback_queue_id = pw_properties_get(
-			pw_impl_node_get_properties(playback_node),
-			PWAO_QUEUE_ID_PROPERTY);
-	CHECK(capture_queue_id != NULL);
-	CHECK(playback_queue_id != NULL);
-	CHECK(strcmp(capture_queue_id, playback_queue_id) == 0);
-	create_endpoint_stream(fixture, "test.queue-observer", PW_DIRECTION_INPUT,
-			&observer_events, &fixture->observer.endpoint);
-	observer_node = wait_for_node(fixture, "test.queue-observer");
-	fixture->playback_link = link_nodes(fixture, playback_node, observer_node);
+	if (!observer_first) {
+		create_endpoint_stream(fixture, "test.queue-observer",
+				PW_DIRECTION_INPUT, &observer_events,
+				&fixture->observer.endpoint);
+		observer_node = wait_for_node(fixture, "test.queue-observer");
+		fixture->playback_link = link_nodes(fixture, playback_node,
+				observer_node);
+	}
 	wait_for_link(fixture, fixture->playback_link);
 	wait_for_streaming(fixture, &fixture->producer.endpoint);
 	wait_for_streaming(fixture, &fixture->observer.endpoint);
@@ -764,7 +785,7 @@ static void fixture_init_format(struct fixture *fixture, const char *overflow,
 static void fixture_init(struct fixture *fixture, const char *overflow,
 		const char *storage)
 {
-	fixture_init_format(fixture, overflow, storage, false);
+	fixture_init_format(fixture, overflow, storage, false, false);
 }
 
 static void fixture_clear(struct fixture *fixture)
@@ -823,7 +844,21 @@ static void test_video_format(void)
 {
 	struct fixture fixture;
 
-	fixture_init_format(&fixture, "drop-oldest", "copy", true);
+	fixture_init_format(&fixture, "drop-oldest", "copy", true, false);
+	trigger_producer(&fixture, 1);
+	trigger_observer(&fixture, 1);
+	CHECK(fixture.observer.sequence[0] == 1);
+	atomic_store_explicit(&fixture.observer.hold, 0, memory_order_release);
+	release_observer(&fixture);
+	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
+	fixture_clear(&fixture);
+}
+
+static void test_observer_first(const char *storage)
+{
+	struct fixture fixture;
+
+	fixture_init_format(&fixture, "drop-oldest", storage, false, true);
 	trigger_producer(&fixture, 1);
 	trigger_observer(&fixture, 1);
 	CHECK(fixture.observer.sequence[0] == 1);
@@ -908,20 +943,23 @@ static void test_module_destruction(const char *storage,
 static void test_format_recreation(const char *storage)
 {
 	struct fixture fixture;
-	struct pw_impl_node *producer_node, *capture_node, *playback_node,
-			*observer_node;
+	struct pw_impl_node *producer_node, *capture_node, *playback_node;
+	struct pw_impl_link *playback_link;
 
 	fixture_init(&fixture, "drop-oldest", storage);
+	playback_node = wait_for_node(&fixture, "test.queue-output");
+	playback_link = fixture.playback_link;
 	trigger_producer(&fixture, 1);
 	CHECK(atomic_load_explicit(&fixture.observer.deliveries,
 			memory_order_relaxed) == 0);
-	/* Removing the input link withdraws the negotiated format. The queue must
-	 * release the queued input, destroy its output stream, and retain enough
-	 * configuration to create a fresh output after renegotiation. */
+	/* The producer link owns one input pool generation.  Removing it must not
+	 * replace the output deployment identity or its downstream link. */
 	pw_impl_link_destroy(fixture.capture_link);
 	fixture.capture_link = NULL;
-	fixture.playback_link = NULL;
-	wait_for_node_removal(&fixture, "test.queue-output");
+	for (uint32_t i = 0; i < 8; i++)
+		iterate_main_loop(&fixture);
+	CHECK(wait_for_node(&fixture, "test.queue-output") == playback_node);
+	CHECK(fixture.playback_link == playback_link);
 	CHECK(atomic_load_explicit(&fixture.producer.endpoint.errors,
 			memory_order_relaxed) == 0);
 	CHECK(atomic_load_explicit(&fixture.observer.endpoint.errors,
@@ -931,10 +969,9 @@ static void test_format_recreation(const char *storage)
 	capture_node = wait_for_node(&fixture, "test.queue-input");
 	fixture.capture_link = link_nodes(&fixture, producer_node, capture_node);
 	wait_for_link(&fixture, fixture.capture_link);
-	playback_node = wait_for_node(&fixture, "test.queue-output");
-	observer_node = wait_for_node(&fixture, "test.queue-observer");
-	fixture.playback_link = link_nodes(&fixture, playback_node, observer_node);
-	wait_for_link(&fixture, fixture.playback_link);
+	CHECK(wait_for_node(&fixture, "test.queue-output") == playback_node);
+	CHECK(fixture.playback_link == playback_link);
+	wait_for_link(&fixture, playback_link);
 	wait_for_streaming(&fixture, &fixture.producer.endpoint);
 	wait_for_streaming(&fixture, &fixture.observer.endpoint);
 	trigger_producer(&fixture, 2);
@@ -942,6 +979,46 @@ static void test_format_recreation(const char *storage)
 	CHECK(fixture.observer.sequence[0] == 2);
 	atomic_store_explicit(&fixture.observer.hold, 0, memory_order_release);
 	release_observer(&fixture);
+	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
+	fixture_clear(&fixture);
+}
+
+static void test_retained_lease_withdrawal(void)
+{
+	struct fixture fixture;
+	struct pw_impl_node *producer_node, *capture_node, *playback_node;
+	struct pw_impl_link *playback_link;
+	uint32_t sequence;
+
+	fixture_init(&fixture, "drop-oldest", "lease");
+	playback_node = wait_for_node(&fixture, "test.queue-output");
+	playback_link = fixture.playback_link;
+	trigger_producer(&fixture, 1);
+	trigger_observer(&fixture, 1);
+	CHECK(fixture.observer.held != NULL);
+
+	pw_impl_link_destroy(fixture.capture_link);
+	fixture.capture_link = NULL;
+	for (uint32_t i = 0; i < 8; i++)
+		iterate_main_loop(&fixture);
+	CHECK(wait_for_node(&fixture, "test.queue-output") == playback_node);
+	CHECK(fixture.playback_link == playback_link);
+	CHECK(validate_observer_buffer(fixture.observer.held, &sequence,
+			fixture.observer.endpoint.video_format));
+	CHECK(sequence == 1);
+	atomic_store_explicit(&fixture.observer.hold, 0, memory_order_release);
+	release_observer(&fixture);
+
+	producer_node = wait_for_node(&fixture, "test.queue-producer");
+	capture_node = wait_for_node(&fixture, "test.queue-input");
+	fixture.capture_link = link_nodes(&fixture, producer_node, capture_node);
+	wait_for_link(&fixture, fixture.capture_link);
+	wait_for_link(&fixture, playback_link);
+	wait_for_streaming(&fixture, &fixture.producer.endpoint);
+	wait_for_streaming(&fixture, &fixture.observer.endpoint);
+	trigger_producer(&fixture, 2);
+	trigger_observer(&fixture, 2);
+	CHECK(fixture.observer.sequence[1] == 2);
 	CHECK(module_counter(&fixture, "queue.stats.protocol-errors") == 0);
 	fixture_clear(&fixture);
 }
@@ -1218,6 +1295,8 @@ int main(int argc, char **argv)
 	for (uint32_t storage = 0; storage < 2; storage++) {
 		const char *name = storage == 0 ? "copy" : "lease";
 
+		fprintf(stderr, "queue lifecycle storage=%s case=observer-first\n", name);
+		test_observer_first(name);
 		fprintf(stderr, "queue lifecycle storage=%s case=destruction-empty\n", name);
 		test_module_destruction(name, "empty");
 		fprintf(stderr, "queue lifecycle storage=%s case=destruction-queued\n", name);
@@ -1231,6 +1310,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "queue lifecycle storage=%s case=format-recreation\n", name);
 		test_format_recreation(name);
 	}
+	fprintf(stderr, "queue lifecycle storage=lease case=retained-withdrawal\n");
+	test_retained_lease_withdrawal();
 	test_video_format();
 	pw_deinit();
 	return 0;

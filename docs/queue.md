@@ -104,8 +104,11 @@ context.modules = [
 ```
 
 The input and output are ordinary PipeWire nodes and must be linked by the
-deployment or session manager. The output node is created only after the input
-has negotiated its exact ndarray format and buffer pool.
+deployment or session manager. Both endpoint nodes exist for the lifetime of
+the module. Before the first input negotiation, the output advertises no
+usable complete-buffer format. During a later input-pool transition it retains
+the last exact contract but publishes no frame; the next prepared input pool
+replaces that contract in place.
 
 The module publishes the same opaque `pipewireao.queue.id` property on both
 endpoint nodes. Graph clients MUST use that identity when they need to relate
@@ -245,13 +248,29 @@ chunk, and sequence-gap tests in both storage modes.
 ### QUEUE-007 — Lifecycle and lease recovery
 
 Pause, format removal, stream removal, module destruction, and configuration
-failure MUST prevent new publication and MUST return every retained input and
-output lease before their owning pools are destroyed. Restart after a clean
-pause MUST begin with an empty queue and reset per-slot ownership state while
-preserving cumulative counters.
+failure MUST prevent new publication. The module MUST empty its pending and
+completion queues and MUST account for every retained input and output lease
+before the corresponding pool storage can be reused or released. A clean pause
+MAY retain the current negotiated pool, but restart MUST begin with an empty
+pending queue and MUST preserve cumulative counters. Format or pool withdrawal
+starts a new input-pool generation.
+
+In lease storage, the output buffer MUST own an independent reference to the
+shared MemFd or DmaBuf and MUST NOT expose a pointer whose mapping lifetime is
+owned by the input stream. The module MUST NOT return an input buffer for reuse
+while a live output buffer still leases that input storage. Input-pool
+withdrawal MAY revoke the input buffer before the queue's output buffer is
+returned; in that case the independent output storage reference MUST keep the
+published payload valid until that output buffer is returned or its output pool
+is withdrawn. A downstream client MUST honor its own `remove_buffer` callback;
+this requirement does not extend the lifetime of an application-held
+`pw_buffer` after the downstream pool has revoked it.
 
 Verification intent (informative): stop and destroy at empty, queued,
-in-flight, completing, and backpressured states; then restart where supported.
+in-flight, completing, and backpressured states; retain a lease across input
+pool withdrawal while the output pool remains current; verify the retained
+bytes remain valid; return it before downstream pool renegotiation; then restart
+with a new pool generation without stale ownership or descriptors.
 
 ### QUEUE-008 — Observability
 
@@ -289,6 +308,34 @@ performance.
 Verification intent (informative): inspect the live graph and thread placement;
 use a fixed-arrival latency qualification with one deliberately stalled
 observer before promoting an operational isolation claim.
+
+### QUEUE-011 — Stable endpoints and transparent restart
+
+The module MUST create one input endpoint and one output endpoint during module
+initialization. Their PipeWire object identities, configured node names, and
+`pipewireao.queue.id` value MUST remain unchanged across an absent input
+format, input pause, buffer-pool withdrawal, format renegotiation, and clean
+restart. A downstream link compatible with the newly negotiated exact format
+MUST resume without the client resolving a replacement queue node or creating
+a replacement link.
+
+Verification intent (informative): record both endpoint object identities,
+attach a downstream observer, remove and recreate the producer link and buffer
+pool, then verify the same endpoint and link objects deliver the new generation.
+Repeat through a remote daemon and registry client.
+
+### QUEUE-012 — Failure containment
+
+An input or output link negotiation failure, incompatible downstream format,
+or downstream removal MUST NOT destroy the module or the unaffected endpoint.
+An internal ownership invariant failure MUST stop publication, retain the first
+failure diagnostics, and put both endpoints into an error state. Loss of the
+module's PipeWire core connection remains terminal for the module instance.
+
+Verification intent (informative): attach an incompatible observer and remove
+it; verify the queue endpoints remain registered and a later compatible
+observer receives data. Inject an ownership failure separately and verify the
+fail-fast diagnostic path.
 
 ## Ownership and publication
 
@@ -328,8 +375,8 @@ items, introduce two queue mechanisms, and lose index isolation on that path.
 
 ## Counters
 
-The module publishes cumulative decimal counters as module properties once at
-initialization and then once per second:
+The module publishes cumulative decimal counters as module properties and on
+both endpoint nodes once at initialization and then once per second:
 
 | Property | Meaning |
 | --- | --- |
@@ -339,12 +386,26 @@ initialization and then once per second:
 | `queue.stats.backpressure` | Arrivals retained because the queue was full. |
 | `queue.stats.deliveries` | Buffers published on the output stream. |
 | `queue.stats.completions` | Input leases completed by the output side. |
-| `queue.stats.pool-exhaustions` | Output cycles without a reusable copy buffer. |
+| `queue.stats.pool-exhaustions` | Output cycles without the required reusable copy buffer or current-generation lease buffer. |
 | `queue.stats.protocol-errors` | Ownership or layout invariant failures. |
 
-The module preserves the first ownership failure in diagnostic properties before
-putting its streams into the error state. The daemon also logs the same record so
-the failure remains available after the fail-fast module teardown.
+Current bounded state is also published once per second. These values are
+diagnostic gauges, not cumulative counters:
+
+| Property | Meaning |
+| --- | --- |
+| `queue.state.pending-depth` | Current pending-ring depth. |
+| `queue.state.completion-depth` | Current completion-ring depth. |
+| `queue.state.active-outputs` | Output buffers awaiting return. |
+| `queue.state.capture-buffers` | Current input-pool buffer count. |
+| `queue.state.playback-buffers` | Current output-pool buffer count. |
+| `queue.state.configured` | Whether the current input pool has prepared the output contract. |
+| `queue.state.input-format` | `negotiated` or `none`. |
+
+The module preserves the first ownership failure in diagnostic properties
+before putting its streams into the error state. The daemon also logs the same
+record so the failure remains available even if an operator later unloads the
+failed module.
 
 | Property | Meaning |
 | --- | --- |
@@ -358,6 +419,8 @@ the failure remains available after the fail-fast module teardown.
 | `queue.error.blocked-slot` | Backpressured input slot at the first failure, or `n/a`. |
 | `queue.error.slot-acquisitions` | Successful acquisitions of the affected slot in its current pool. |
 | `queue.error.slot-returns` | Successful upstream returns of the affected slot in its current pool. |
+| `queue.error.expected-token` | Required generation-tagged slot token, or `n/a`. |
+| `queue.error.observed-token` | Generation-tagged slot token actually observed, or `n/a`. |
 | `queue.error.result` | Negative errno-style result associated with the failure. |
 
 Counters are monotonic for the module lifetime. Pause and restart clear queued
@@ -385,9 +448,14 @@ AddressSanitizer/UndefinedBehaviorSanitizer and ThreadSanitizer pass both the
 queue engine and live graph tests.
 
 The live test uses an exact ndarray format and two independently triggered
-PipeWire graph components. It holds an observer buffer while continuing to
-drive the producer, then checks the delivered sequence, payload, Header,
-backing-storage identity, recovery, and counter history for this matrix:
+PipeWire graph components. A separate real-daemon registry test verifies that
+both initial endpoints are remotely visible and publish the same queue
+identity. Observer-first cases create the downstream link while the queue has
+no input format, then verify that the same link becomes active and delivers
+after the producer negotiates. The live test also holds an observer buffer
+while continuing to drive the producer, then checks the delivered sequence,
+payload, Header, backing-storage identity, recovery, and counter history for
+this matrix:
 
 | Storage | Overflow | Stalled-observer result | Status |
 | --- | --- | --- | --- |
@@ -457,7 +525,11 @@ copy-versus-lease performance comparison.
 This in-process test verifies graph semantics, not physical data-loop or CPU
 isolation. The live suite now separately covers copy and lease teardown while
 empty, queued, in-flight/completing, and backpressured; retained-observer
-destruction and reattachment; and input-format/link removal followed by output
-recreation and resumed delivery. Fixed-arrival latency distributions,
-controlled-host placement, automated producer-path syscall enforcement, and
-representative ndarray sizes remain open.
+destruction and reattachment; stable output identity and downstream-link
+retention across input-format/pool replacement; downstream linking before the
+first input format; MemFd lease validity after input-pool withdrawal; and
+initial endpoint discovery through a separate daemon and registry client.
+Direct pause-transition, incompatible-format recovery, remote-daemon restart
+lifecycle, fixed-arrival latency distributions, controlled-host placement,
+automated producer-path syscall enforcement, and representative ndarray sizes
+remain open.

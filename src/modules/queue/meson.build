@@ -74,6 +74,34 @@ if get_option('tests').allowed()
     env: queue_module_test_env,
     timeout: 30,
   )
+
+  pipewire_daemon = find_program(
+    pipewire_pkg_dep.get_variable(pkgconfig: 'confdatadir') / 'pipewire-ao',
+    required: false,
+  )
+  shell = find_program('sh')
+  if pipewire_daemon.found()
+    queue_remote_registry_test = executable(
+      'pipewireao-queue-remote-registry-test',
+      'test-remote-registry.c',
+      dependencies: [spa_dep, pipewire_dep],
+    )
+    test(
+      'pipewireao-queue-remote-registry',
+      shell,
+      args: [
+        files('test-remote.sh'),
+        queue_remote_registry_test.full_path(),
+        pipewire_daemon.full_path(),
+        meson.current_source_dir() / 'test-remote.conf',
+        meson.current_build_dir(),
+      ],
+      depends: [queue_module, queue_remote_registry_test],
+      env: queue_module_test_env,
+      timeout: 15,
+    )
+  endif
+
   benchmark(
     'pipewireao-queue-producer-cycle',
     queue_live_test,

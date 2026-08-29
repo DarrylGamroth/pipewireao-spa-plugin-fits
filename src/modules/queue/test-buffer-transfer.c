@@ -44,6 +44,9 @@ static void test_copy(void)
 				&output_acquisition },
 		{ SPA_META_Header, sizeof(output_header), &output_header },
 	};
+	struct spa_meta output_header_only = {
+		SPA_META_Header, sizeof(output_header), &output_header,
+	};
 	struct spa_chunk input_chunks[2] = {
 		{ .offset = 3, .size = 7, .stride = 11, .flags = 5 },
 		{ .offset = 14, .size = 5, .stride = 13, .flags = 9 },
@@ -97,6 +100,13 @@ static void test_copy(void)
 	CHECK(output_busy.count == 5);
 	input_bytes[3] ^= 0xffu;
 	CHECK(input_bytes[3] != output_bytes[3]);
+	/* A consumer may negotiate only Header even when the producer also
+	 * supplies Acquisition metadata. */
+	output.n_metas = 1;
+	output.metas = &output_header_only;
+	output_header.seq = 0;
+	CHECK(pwao_queue_buffer_transfer(&input, &output, true) == 0);
+	CHECK(output_header.seq == input_header.seq);
 	output_data[1].maxsize = 18;
 	CHECK(pwao_queue_buffer_transfer(&input, &output, true) < 0);
 }
@@ -141,7 +151,7 @@ static void test_lease(void)
 	output_data.chunk = &output_chunk;
 	CHECK(pwao_queue_buffer_alias(&input, &output, &owned_fd, 1) == 0);
 	CHECK(owned_fd >= 0 && owned_fd != input_data.fd);
-	CHECK(output_data.fd == owned_fd && output_data.data == input_data.data);
+	CHECK(output_data.fd == owned_fd && output_data.data == NULL);
 	CHECK(output_data.maxsize == input_data.maxsize);
 	CHECK(fstat(input_data.fd, &input_stat) == 0);
 	CHECK(fstat(output_data.fd, &output_stat) == 0);
@@ -151,7 +161,14 @@ static void test_lease(void)
 	CHECK(memcmp(&input_header, &output_header, sizeof(input_header)) == 0);
 	CHECK(memcmp(&input_chunk, &output_chunk, sizeof(input_chunk)) == 0);
 	mapping[4] = 0x5a;
-	CHECK(((uint8_t *)output_data.data)[4] == 0x5a);
+	{
+		uint8_t *output_mapping = mmap(NULL, 64, PROT_READ, MAP_SHARED,
+				output_data.fd, 0);
+
+		CHECK(output_mapping != MAP_FAILED);
+		CHECK(output_mapping[4] == 0x5a);
+		CHECK(munmap(output_mapping, 64) == 0);
+	}
 	pwao_queue_buffer_close_fds(&owned_fd, 1);
 	CHECK(owned_fd == -1);
 	CHECK(munmap(mapping, 64) == 0);

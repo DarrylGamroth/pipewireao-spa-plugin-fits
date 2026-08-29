@@ -69,6 +69,10 @@ int main(int argc, char **argv)
 		"queue.max-buffers=1 queue.overflow=drop-oldest queue.storage=zero-copy",
 		"queue.max-buffers=1 queue.overflow=drop-oldest queue.storage=copy "
 			"queue.media=video/encoded",
+		"queue.max-buffers=1 queue.overflow=drop-oldest queue.storage=copy "
+			"capture.props=\"{\"",
+		"queue.max-buffers=1 queue.overflow=drop-oldest queue.storage=copy "
+			"capture.props={ node.name=unterminated",
 	};
 	uint32_t i;
 	int path_length;
@@ -135,6 +139,16 @@ int main(int argc, char **argv)
 			"queue.stats.pool-exhaustions"), "0") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.stats.protocol-errors"),
 			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.state.pending-depth"),
+			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties,
+			"queue.state.completion-depth"), "0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.state.active-outputs"),
+			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.state.configured"),
+			"false") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.state.input-format"),
+			"none") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.error.operation"),
 			"none") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.error.source-line"),
@@ -155,6 +169,10 @@ int main(int argc, char **argv)
 			"0") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.error.slot-returns"),
 			"0") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.expected-token"),
+			"n/a") == 0);
+	CHECK(strcmp(pw_properties_get(properties, "queue.error.observed-token"),
+			"n/a") == 0);
 	CHECK(strcmp(pw_properties_get(properties, "queue.error.result"),
 			"0") == 0);
 	for (i = 0; i < 64 && !node_check.capture_found; i++) {

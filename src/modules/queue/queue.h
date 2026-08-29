@@ -50,6 +50,17 @@ int pwao_queue_ring_try_push(struct pwao_queue_ring *ring, uint64_t value);
 int pwao_queue_ring_try_pop(struct pwao_queue_ring *ring, uint64_t *value);
 
 /*
+ * Inspect the oldest value without claiming it, then claim it only if it is
+ * still the oldest value.  The conditional claim lets a consumer wait for a
+ * value-specific resource without removing and reordering that value.  A
+ * concurrent drop-oldest producer can make try_claim return -EAGAIN.
+ */
+int pwao_queue_ring_try_peek(const struct pwao_queue_ring *ring,
+		uint64_t *value);
+int pwao_queue_ring_try_claim(struct pwao_queue_ring *ring,
+		uint64_t expected_value);
+
+/*
  * Admit value even at capacity. The producer and consumer race for ownership
  * of the oldest slot. dropped_value is UINT64_MAX when the consumer won and
  * no queued value was dropped by this call.

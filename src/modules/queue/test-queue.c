@@ -53,6 +53,25 @@ static void test_fifo_and_full(void)
 			value == UINT64_MAX);
 }
 
+static void test_conditional_claim(void)
+{
+	struct pwao_queue_ring ring;
+	uint64_t value;
+
+	CHECK(pwao_queue_ring_init(&ring, 2) == 0);
+	CHECK(pwao_queue_ring_try_peek(&ring, &value) == 0 &&
+			value == UINT64_MAX);
+	CHECK(pwao_queue_ring_try_push(&ring, 41) == 1);
+	CHECK(pwao_queue_ring_try_push(&ring, 42) == 1);
+	CHECK(pwao_queue_ring_try_peek(&ring, &value) == 1 && value == 41);
+	CHECK(pwao_queue_ring_try_claim(&ring, 42) == -EAGAIN);
+	CHECK(pwao_queue_ring_try_peek(&ring, &value) == 1 && value == 41);
+	CHECK(pwao_queue_ring_try_claim(&ring, 41) == 1);
+	CHECK(pwao_queue_ring_try_peek(&ring, &value) == 1 && value == 42);
+	CHECK(pwao_queue_ring_try_claim(&ring, 42) == 1);
+	CHECK(pwao_queue_ring_try_claim(&ring, 42) == 0);
+}
+
 static void test_drop_oldest(void)
 {
 	struct pwao_queue_ring ring;
@@ -196,8 +215,7 @@ static void *consumer_main(void *data)
 	for (;;) {
 		uint64_t entry;
 		uint32_t sequence;
-		const int result = pwao_queue_ring_try_pop(&state->ring,
-				&entry);
+		int result = pwao_queue_ring_try_peek(&state->ring, &entry);
 
 		if (result < 0) {
 			atomic_store_explicit(&state->failure, 1,
@@ -211,6 +229,14 @@ static void *consumer_main(void *data)
 				break;
 			sched_yield();
 			continue;
+		}
+		result = pwao_queue_ring_try_claim(&state->ring, entry);
+		if (result == -EAGAIN || result == 0)
+			continue;
+		if (result < 0) {
+			atomic_store_explicit(&state->failure, 1,
+					memory_order_relaxed);
+			break;
 		}
 		if (entry > UINT32_MAX) {
 			atomic_store_explicit(&state->failure, 1,
@@ -256,6 +282,7 @@ int main(void)
 {
 	test_boundaries();
 	test_fifo_and_full();
+	test_conditional_claim();
 	test_drop_oldest();
 	test_reset();
 	test_wide_entries();
