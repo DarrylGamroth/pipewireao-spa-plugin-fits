@@ -20,8 +20,14 @@ enum hamamatsu_feature_kind {
 	HAMAMATSU_FEATURE_COMMAND,
 };
 
+enum hamamatsu_capture_mode {
+	HAMAMATSU_CAPTURE_MODE_COPY,
+	HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY,
+};
+
 struct hamamatsu_camera_options {
 	uint32_t device_index;
+	enum hamamatsu_capture_mode capture_mode;
 };
 
 struct hamamatsu_camera_info {

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "camera.h"
+#include "phoenix-queue.h"
 
 #include <dcamapi4.h>
 #include <dcamprop.h>
@@ -23,7 +24,9 @@ struct hamamatsu_camera_buffer {
 	void *memory;
 	uint64_t size;
 	void *user_data;
+	struct phoenix_queue_buffer *phoenix_buffer;
 	bool queued;
+	bool capture_member;
 };
 
 struct enum_entry {
@@ -49,11 +52,17 @@ struct hamamatsu_camera {
 	struct dcam_feature *features;
 	uint32_t n_features;
 	struct hamamatsu_camera_buffer *buffers[HAMAMATSU_CAMERA_MAX_BUFFERS];
+	struct hamamatsu_camera_buffer *capture_buffers[HAMAMATSU_CAMERA_MAX_BUFFERS];
 	uint32_t n_buffers;
+	uint32_t n_capture_buffers;
 	uint32_t scan_hint;
+	uint32_t pending_frames;
+	uint32_t next_frame_index;
 	bool capture_buffers_allocated;
 	int32_t last_frame_count;
 	bool started;
+	enum hamamatsu_capture_mode capture_mode;
+	struct phoenix_queue *phoenix_queue;
 };
 
 static pthread_mutex_t api_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -474,6 +483,10 @@ int hamamatsu_camera_open(struct hamamatsu_camera **camera_ptr,
 		goto error;
 	}
 	camera->handle = open.hdcam;
+	camera->capture_mode = options->capture_mode;
+	if (camera->capture_mode == HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY &&
+			(result = phoenix_queue_create(&camera->phoenix_queue)) < 0)
+		goto error;
 	(void)get_string(camera->handle, DCAM_IDSTR_MODEL, camera->info.model,
 			sizeof(camera->info.model));
 	(void)get_string(camera->handle, DCAM_IDSTR_CAMERAID, camera->info.serial,
@@ -498,11 +511,17 @@ void hamamatsu_camera_close(struct hamamatsu_camera *camera)
 	if (camera == NULL)
 		return;
 	(void)hamamatsu_camera_stop(camera);
-	for (i = 0; i < camera->n_buffers; i++)
+	for (i = 0; i < camera->n_buffers; i++) {
+		if (camera->buffers[i]->phoenix_buffer != NULL)
+			(void)phoenix_queue_unregister(camera->phoenix_queue,
+					&camera->buffers[i]->phoenix_buffer);
 		free(camera->buffers[i]);
+	}
 	for (i = 0; i < camera->n_features; i++)
 		free_feature(&camera->features[i]);
 	free(camera->features);
+	/* Restore the Phoenix import before DCAM can unload its board module. */
+	phoenix_queue_destroy(camera->phoenix_queue);
 	if (camera->handle != NULL)
 		dcamdev_close(camera->handle);
 	if (camera->api_acquired)
@@ -742,6 +761,15 @@ int hamamatsu_camera_announce(struct hamamatsu_camera *camera, void *memory,
 	buffer->memory = memory;
 	buffer->size = size;
 	buffer->user_data = user_data;
+	if (camera->capture_mode == HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY) {
+		int result = phoenix_queue_register(camera->phoenix_queue, memory,
+				(size_t)size, &buffer->phoenix_buffer);
+
+		if (result < 0) {
+			free(buffer);
+			return result;
+		}
+	}
 	camera->buffers[camera->n_buffers++] = buffer;
 	*buffer_ptr = buffer;
 	return 0;
@@ -758,6 +786,13 @@ int hamamatsu_camera_revoke(struct hamamatsu_camera *camera,
 	for (i = 0; i < camera->n_buffers; i++) {
 		if (camera->buffers[i] != *buffer_ptr)
 			continue;
+		if ((*buffer_ptr)->phoenix_buffer != NULL) {
+			int result = phoenix_queue_unregister(camera->phoenix_queue,
+					&(*buffer_ptr)->phoenix_buffer);
+
+			if (result < 0)
+				return result;
+		}
 		free(*buffer_ptr);
 		*buffer_ptr = NULL;
 		memmove(&camera->buffers[i], &camera->buffers[i + 1],
@@ -778,6 +813,17 @@ int hamamatsu_camera_queue(struct hamamatsu_camera *camera,
 	for (i = 0; i < camera->n_buffers; i++) {
 		if (camera->buffers[i] == buffer) {
 			buffer->queued = true;
+			if (camera->started && buffer->capture_member &&
+					camera->capture_mode ==
+					HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY) {
+				int result = phoenix_queue_requeue(camera->phoenix_queue,
+						buffer->phoenix_buffer);
+
+				if (result < 0) {
+					buffer->queued = false;
+					return result;
+				}
+			}
 			return 0;
 		}
 	}
@@ -793,20 +839,52 @@ static void release_capture_buffers(struct hamamatsu_camera *camera)
 
 int hamamatsu_camera_start(struct hamamatsu_camera *camera)
 {
+	DCAMBUF_ATTACH attach;
+	void *pointers[HAMAMATSU_CAMERA_MAX_BUFFERS];
+	uint32_t i;
 	DCAMERR error;
 
 	if (camera == NULL || camera->started || camera->n_buffers < 2)
 		return -EINVAL;
-	error = dcambuf_alloc(camera->handle, (int32)DCAM_RING_FRAMES);
+	if (camera->capture_mode == HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY) {
+		camera->n_capture_buffers = 0;
+		for (i = 0; i < camera->n_buffers; i++) {
+			struct hamamatsu_camera_buffer *buffer = camera->buffers[i];
+
+			buffer->capture_member = false;
+			if (!buffer->queued)
+				continue;
+			buffer->capture_member = true;
+			camera->capture_buffers[camera->n_capture_buffers] = buffer;
+			pointers[camera->n_capture_buffers++] = buffer->memory;
+		}
+		if (camera->n_capture_buffers < 2)
+			return -ENOBUFS;
+		memset(&attach, 0, sizeof(attach));
+		attach.size = sizeof(attach);
+		attach.iKind = DCAMBUF_ATTACHKIND_FRAME;
+		attach.buffer = pointers;
+		attach.buffercount = (int32)camera->n_capture_buffers;
+		error = dcambuf_attach(camera->handle, &attach);
+	} else {
+		error = dcambuf_alloc(camera->handle, (int32)DCAM_RING_FRAMES);
+	}
 	if (!dcam_succeeded(error))
 		return dcam_error(error);
 	camera->capture_buffers_allocated = true;
+	if (camera->capture_mode == HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY &&
+			!phoenix_queue_is_associated(camera->phoenix_queue)) {
+		release_capture_buffers(camera);
+		return -ENOTSUP;
+	}
 	error = dcamcap_start(camera->handle, DCAMCAP_START_SEQUENCE);
 	if (!dcam_succeeded(error)) {
 		release_capture_buffers(camera);
 		return dcam_error(error);
 	}
 	camera->last_frame_count = 0;
+	camera->pending_frames = 0;
+	camera->next_frame_index = 0;
 	camera->started = true;
 	return 0;
 }
@@ -814,19 +892,75 @@ int hamamatsu_camera_start(struct hamamatsu_camera *camera)
 int hamamatsu_camera_stop(struct hamamatsu_camera *camera)
 {
 	uint32_t i;
+	int first_error = 0;
 
 	if (camera == NULL)
 		return -EINVAL;
 	if (camera->started) {
 		DCAMERR error = dcamcap_stop(camera->handle);
 		if (!dcam_succeeded(error))
-			return dcam_error(error);
+			first_error = dcam_error(error);
 	}
 	camera->started = false;
+	if (camera->phoenix_queue != NULL &&
+			phoenix_queue_flush(camera->phoenix_queue) < 0 && first_error == 0)
+		first_error = -EIO;
 	release_capture_buffers(camera);
-	for (i = 0; i < camera->n_buffers; i++)
+	for (i = 0; i < camera->n_buffers; i++) {
 		camera->buffers[i]->queued = false;
-	return 0;
+		camera->buffers[i]->capture_member = false;
+	}
+	camera->n_capture_buffers = 0;
+	camera->pending_frames = 0;
+	return first_error;
+}
+
+static int zero_copy_completion(struct hamamatsu_camera *camera,
+		const DCAMCAP_TRANSFERINFO *transfer,
+		struct hamamatsu_camera_completion *completion)
+{
+	struct hamamatsu_camera_buffer *output;
+	DCAMBUF_FRAME frame;
+	uint32_t delta, index;
+	DCAMERR error;
+
+	if (camera->pending_frames == 0) {
+		if (transfer->nFrameCount <= camera->last_frame_count ||
+				transfer->nNewestFrameIndex < 0)
+			return 0;
+		delta = (uint32_t)(transfer->nFrameCount - camera->last_frame_count);
+		if (delta > camera->n_capture_buffers)
+			return -EOVERFLOW;
+		camera->pending_frames = delta;
+		camera->next_frame_index = ((uint32_t)transfer->nNewestFrameIndex +
+				camera->n_capture_buffers - (delta - 1u)) %
+				camera->n_capture_buffers;
+	}
+	index = camera->next_frame_index;
+	output = camera->capture_buffers[index];
+	if (output == NULL || !output->queued || !output->capture_member)
+		return -EPROTO;
+	memset(&frame, 0, sizeof(frame));
+	frame.size = sizeof(frame);
+	frame.iFrame = (int32)index;
+	error = dcambuf_lockframe(camera->handle, &frame);
+	if (!dcam_succeeded(error))
+		return dcam_error(error);
+	if (frame.buf != output->memory)
+		return -EPROTO;
+	camera->next_frame_index = (index + 1u) % camera->n_capture_buffers;
+	camera->pending_frames--;
+	camera->last_frame_count++;
+	output->queued = false;
+	*completion = (struct hamamatsu_camera_completion) {
+		.buffer = output,
+		.user_data = output->user_data,
+		.frame_id = (uint32_t)frame.framestamp == DCAMCONST_FRAMESTAMP_MISMATCH ?
+				(uint32_t)camera->last_frame_count : (uint32_t)frame.framestamp,
+		.size_filled = camera->info.image_size,
+		.incomplete = false,
+	};
+	return 1;
 }
 
 int hamamatsu_camera_try_get_completion(struct hamamatsu_camera *camera,
@@ -845,6 +979,8 @@ int hamamatsu_camera_try_get_completion(struct hamamatsu_camera *camera,
 	error = dcamcap_transferinfo(camera->handle, &transfer);
 	if (!dcam_succeeded(error))
 		return dcam_error(error);
+	if (camera->capture_mode == HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY)
+		return zero_copy_completion(camera, &transfer, completion);
 	if (transfer.nFrameCount <= camera->last_frame_count ||
 			transfer.nNewestFrameIndex < 0)
 		return 0;

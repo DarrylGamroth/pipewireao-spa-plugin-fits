@@ -61,11 +61,12 @@ struct impl {
 	uint64_t info_all;
 	struct spa_node_info info;
 	struct spa_dict props;
-	struct spa_dict_item prop_items[12];
+	struct spa_dict_item prop_items[13];
 	struct spa_param_info params[2];
 	char node_name[192];
 	char node_description[256];
 	char device_index[16];
+	const char *capture_mode;
 	struct port port;
 	struct hamamatsu_camera *camera;
 	struct hamamatsu_camera_info camera_info;
@@ -465,8 +466,6 @@ static int stop_source(struct impl *self)
 	if (!self->started)
 		return 0;
 	res = hamamatsu_camera_stop(self->camera);
-	if (res < 0)
-		return res;
 	for (i = 0; i < self->port.n_buffers; i++)
 		self->slots[i].camera_queued = false;
 	self->started = false;
@@ -474,7 +473,7 @@ static int stop_source(struct impl *self)
 	self->params[1].flags ^= SPA_PARAM_INFO_SERIAL;
 	self->info.change_mask |= SPA_NODE_CHANGE_MASK_PARAMS;
 	emit_node_info(self, false);
-	return 0;
+	return res;
 }
 
 static int node_send_command(void *object, const struct spa_command *command)
@@ -935,6 +934,9 @@ static void configure_props(struct impl *self,
 			self->camera_info.model, options->device_index);
 	snprintf(self->device_index, sizeof(self->device_index), "%" PRIu32,
 			options->device_index);
+	self->capture_mode = options->capture_mode ==
+			HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY ?
+			"phoenix-zero-copy" : "copy";
 #define ADD_ITEM(key, value) \
 	self->prop_items[n++] = SPA_DICT_ITEM_INIT((key), (value))
 	ADD_ITEM(SPA_KEY_DEVICE_API, "hamamatsu");
@@ -948,6 +950,7 @@ static void configure_props(struct impl *self,
 	if (self->camera_info.serial[0] != '\0')
 		ADD_ITEM(SPA_KEY_DEVICE_SERIAL, self->camera_info.serial);
 	ADD_ITEM(SPA_KEY_API_HAMAMATSU_DEVICE_INDEX, self->device_index);
+	ADD_ITEM(SPA_KEY_API_HAMAMATSU_CAPTURE_MODE, self->capture_mode);
 	ADD_ITEM(SPA_KEY_API_HAMAMATSU_READINESS, "poll");
 	ADD_ITEM(SPA_KEY_API_HAMAMATSU_PIXEL_ENCODING,
 			self->camera_info.pixel_encoding);
@@ -977,6 +980,14 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	value = info == NULL ? NULL :
 			spa_dict_lookup(info, SPA_KEY_API_HAMAMATSU_READINESS);
 	if (value != NULL && !spa_streq(value, "poll"))
+		return -EINVAL;
+	value = info == NULL ? NULL :
+			spa_dict_lookup(info, SPA_KEY_API_HAMAMATSU_CAPTURE_MODE);
+	if (value == NULL || spa_streq(value, "copy"))
+		options.capture_mode = HAMAMATSU_CAPTURE_MODE_COPY;
+	else if (spa_streq(value, "phoenix-zero-copy"))
+		options.capture_mode = HAMAMATSU_CAPTURE_MODE_PHOENIX_ZERO_COPY;
+	else
 		return -EINVAL;
 	spa_hook_list_init(&self->hooks);
 	if ((res = hamamatsu_camera_open(&self->camera, &options)) < 0)

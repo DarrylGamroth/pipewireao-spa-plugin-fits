@@ -8,6 +8,7 @@
 #define SPA_NAME_API_HAMAMATSU_SOURCE "api.hamamatsu.source"
 
 #define SPA_KEY_API_HAMAMATSU_DEVICE_INDEX "api.hamamatsu.device-index"
+#define SPA_KEY_API_HAMAMATSU_CAPTURE_MODE "api.hamamatsu.capture-mode"
 #define SPA_KEY_API_HAMAMATSU_READINESS "api.hamamatsu.readiness"
 #define SPA_KEY_API_HAMAMATSU_PIXEL_ENCODING "api.hamamatsu.pixel-encoding"
 

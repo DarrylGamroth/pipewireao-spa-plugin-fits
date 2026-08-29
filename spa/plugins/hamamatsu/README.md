@@ -39,6 +39,7 @@ module configuration, FireBird driver, and device permissions.
 | Property | Meaning |
 | --- | --- |
 | `api.hamamatsu.device-index` | Zero-based DCAM device index; default `0`. |
+| `api.hamamatsu.capture-mode` | `copy` (default) or experimental `phoenix-zero-copy`. |
 | `api.hamamatsu.readiness` | Must be `poll` when supplied. |
 
 DCAM `MONO8` maps to SPA `GRAY8`. Unpacked `MONO12` and `MONO16` map to
@@ -77,12 +78,7 @@ stride, payload size, or pixel format.
 
 ## Buffer ownership
 
-`dcambuf_attach` accepts application-allocated memory, but DCAM cycles through
-the attached array as an overwrite ring. A downstream PipeWire client can hold
-a published SPA buffer indefinitely, so attaching the SPA pool directly would
-allow the camera to overwrite leased data.
-
-This implementation asks DCAM to allocate its recommended 16-frame internal
+The default `copy` mode asks DCAM to allocate its recommended 16-frame internal
 capture ring. When a complete frame is available, `dcambuf_copyframe` copies
 the newest frame into an available SPA buffer. This costs one host copy but
 preserves PipeWire buffer ownership. The DCAM manual explicitly limits
@@ -90,11 +86,34 @@ preserves PipeWire buffer ownership. The DCAM manual explicitly limits
 with `dcambuf_attach`. Frames skipped because no SPA buffer was available
 appear as a sequence discontinuity; completed frames are not marked corrupt.
 
+The opt-in `phoenix-zero-copy` mode attaches the queued SPA buffers to DCAM and
+retains each corresponding Phoenix buffer object until PipeWire returns that
+SPA buffer. Returning it explicitly releases the object to the Phoenix driver,
+so the attached DCAM array behaves as a queue with back pressure instead of an
+overwrite ring. Capture requires at least two queued buffers at start. The
+attached pool is fixed for that capture run; stop and restart acquisition to
+change its membership.
+
+This mode is a narrowly gated compatibility adapter, not a public Phoenix API
+integration. It changes the in-memory `PHX_Acquire` import used by
+`libfgphnx.so.4` and restores it when the camera closes; no installed vendor
+file is changed. Activation requires the exact DCAM 26.6.7175 FireBird module
+with GNU build ID `0534bb1b621b2a8a2e4c87d22151e27b0aa1dac0`. The inspected
+module SHA-256 is
+`432f87fd3a865a28c60035d049a2d68b4c720b4d825301b62ed9e7b9f8b22685`.
+Unknown builds fail with `ENOTSUP`, and the default copy path remains
+available. The initial implementation permits one zero-copy Hamamatsu camera
+per process.
+
 ## Qualification boundary
 
 Mock tests cover factory validation, format negotiation, dynamic controls,
 layout invalidation, metadata, buffer recycling, and pause/restart behavior.
+They also cover the intercepted Phoenix lock, object-get, deferred-release,
+explicit requeue, flush, unlock, and unrelated-handle pass-through lifecycle.
 The real backend is compiled against the supplied DCAM headers and runtime.
 Physical ORCA-Quest/FireBird discovery, acquisition, trigger behavior,
 timestamps, dropped-frame accounting, throughput, and restart recovery still
-require camera hardware qualification.
+require camera hardware qualification. In particular, the zero-copy mode must
+be treated as experimental until the retained object lifetime and stop/restart
+sequence have been exercised on the FireBird hardware.

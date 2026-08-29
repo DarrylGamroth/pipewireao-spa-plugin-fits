@@ -26,6 +26,7 @@ struct capture {
 	uint64_t node_flags;
 	const char *readiness;
 	const char *device_index;
+	const char *capture_mode;
 	const char *pixel_encoding;
 };
 
@@ -50,6 +51,8 @@ static void on_info(void *data, const struct spa_node_info *info)
 				SPA_KEY_API_HAMAMATSU_READINESS);
 		capture->device_index = spa_dict_lookup(info->props,
 				SPA_KEY_API_HAMAMATSU_DEVICE_INDEX);
+		capture->capture_mode = spa_dict_lookup(info->props,
+				SPA_KEY_API_HAMAMATSU_CAPTURE_MODE);
 		capture->pixel_encoding = spa_dict_lookup(info->props,
 				SPA_KEY_API_HAMAMATSU_PIXEL_ENCODING);
 	}
@@ -228,6 +231,7 @@ int main(int argc, char *argv[])
 			(SPA_NODE_FLAG_RT | SPA_NODE_FLAG_POLL_DRIVER));
 	spa_assert_se(spa_streq(capture.readiness, "poll"));
 	spa_assert_se(spa_streq(capture.device_index, "0"));
+	spa_assert_se(spa_streq(capture.capture_mode, "copy"));
 	spa_assert_se(spa_streq(capture.pixel_encoding, "Mono12"));
 	{
 		struct spa_pod *props, *value, *write;

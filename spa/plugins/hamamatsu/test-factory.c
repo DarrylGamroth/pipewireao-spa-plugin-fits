@@ -78,6 +78,26 @@ int main(int argc, char *argv[])
 
 		spa_assert_se(initialize(factory, &info) == -EINVAL);
 	}
+	if (!real_sdk) {
+		const struct spa_dict_item items[] = {
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_HAMAMATSU_CAPTURE_MODE,
+					"phoenix-zero-copy"),
+		};
+		const struct spa_dict info = SPA_DICT_INIT(items,
+				SPA_N_ELEMENTS(items));
+
+		spa_assert_se(initialize(factory, &info) == 0);
+	}
+	{
+		const struct spa_dict_item items[] = {
+			SPA_DICT_ITEM_INIT(SPA_KEY_API_HAMAMATSU_CAPTURE_MODE,
+					"invalid"),
+		};
+		const struct spa_dict info = SPA_DICT_INIT(items,
+				SPA_N_ELEMENTS(items));
+
+		spa_assert_se(initialize(factory, &info) == -EINVAL);
+	}
 	spa_assert_se(dlclose(library) == 0);
 	return 0;
 }

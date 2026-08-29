@@ -1,10 +1,12 @@
 hamamatsu_common_sources = ['plugin.c', 'source.c', 'params.c']
-hamamatsu_c_args = ['-Wno-pedantic']
+hamamatsu_c_args = ['-Wno-pedantic'] + cc.get_supported_arguments(
+  ['-fcf-protection=full'],
+)
 if hamamatsu_found
   hamamatsu_lib = shared_library(
     'spa-hamamatsu',
-    hamamatsu_common_sources + ['camera.c'],
-    dependencies: [spa_dep, threads_dep, m_dep, hamamatsu_dep],
+    hamamatsu_common_sources + ['camera.c', 'phoenix-queue.c'],
+    dependencies: [spa_dep, threads_dep, m_dep, dl_dep, hamamatsu_dep],
     c_args: hamamatsu_c_args,
     build_rpath: hamamatsu_runtime_dir,
     install: true,
@@ -47,5 +49,13 @@ if get_option('tests').allowed()
     args: [hamamatsu_mock_lib.full_path()],
     depends: hamamatsu_mock_lib,
   )
+
+  hamamatsu_phoenix_queue_test = executable(
+    'spa-hamamatsu-phoenix-queue-test',
+    ['test-phoenix-queue.c', 'phoenix-queue.c'],
+    dependencies: [spa_dep, threads_dep, dl_dep],
+    c_args: hamamatsu_c_args + ['-DPHOENIX_QUEUE_TESTING'],
+  )
+  test('spa-hamamatsu-phoenix-queue', hamamatsu_phoenix_queue_test)
 
 endif
