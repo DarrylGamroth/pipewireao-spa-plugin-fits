@@ -132,6 +132,27 @@ option(
 )
 
 option(
+  'hamamatsu',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the Hamamatsu DCAM-API SPA source',
+)
+
+option(
+  'hamamatsu-sdk-prefix',
+  type: 'string',
+  value: '/usr/local/hamamatsu_dcam/sdk',
+  description: 'Hamamatsu DCAM-SDK4 root containing inc/dcamapi4.h',
+)
+
+option(
+  'hamamatsu-runtime-prefix',
+  type: 'string',
+  value: '/usr/local/lib',
+  description: 'DCAM-API runtime root or directory containing libdcamapi.so',
+)
+
+option(
   'aravis',
   type: 'feature',
   value: 'disabled',

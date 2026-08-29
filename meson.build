@@ -236,6 +236,47 @@ if get_option('andor3').allowed()
 endif
 subdir('spa/plugins/andor3')
 
+hamamatsu_found = false
+if get_option('hamamatsu').allowed()
+  hamamatsu_sdk_prefix = get_option('hamamatsu-sdk-prefix')
+  if fs.exists(hamamatsu_sdk_prefix / 'inc/dcamapi4.h')
+    hamamatsu_include_dir = hamamatsu_sdk_prefix / 'inc'
+  else
+    hamamatsu_include_dir = hamamatsu_sdk_prefix / 'include'
+  endif
+  hamamatsu_runtime_prefix = get_option('hamamatsu-runtime-prefix')
+  if fs.is_dir(hamamatsu_runtime_prefix / 'core')
+    hamamatsu_library_dir = hamamatsu_runtime_prefix / 'core'
+  else
+    hamamatsu_library_dir = hamamatsu_runtime_prefix
+  endif
+  hamamatsu_python = import('python').find_installation('python3')
+  hamamatsu_runtime_dir = meson.current_build_dir() / 'hamamatsu-runtime'
+  hamamatsu_core = run_command(
+    hamamatsu_python,
+    files('scripts/prepare-hamamatsu.py'),
+    hamamatsu_library_dir,
+    hamamatsu_runtime_dir,
+    check: get_option('hamamatsu').enabled(),
+  )
+  if hamamatsu_core.returncode() == 0
+    hamamatsu_dep = declare_dependency(
+      compile_args: ['-isystem' + hamamatsu_include_dir],
+      link_args: [hamamatsu_core.stdout().strip()],
+    )
+    hamamatsu_found = cc.has_header(
+      'dcamapi4.h',
+      dependencies: hamamatsu_dep,
+      required: get_option('hamamatsu'),
+    ) and cc.has_header(
+      'dcamprop.h',
+      dependencies: hamamatsu_dep,
+      required: get_option('hamamatsu'),
+    )
+  endif
+endif
+subdir('spa/plugins/hamamatsu')
+
 aravis_dep = dependency(
   'aravis-0.10',
   required: get_option('aravis'),
@@ -267,5 +308,6 @@ summary('BGAPI2 plugin', bgapi2_found, section: 'SPA plugins')
 summary('EDT PDV plugin', edtpdv_found, section: 'SPA plugins')
 summary('FliSdk plugin', flisdk_found, section: 'SPA plugins')
 summary('Andor SDK3 plugin', andor3_found, section: 'SPA plugins')
+summary('Hamamatsu DCAM-API plugin', hamamatsu_found, section: 'SPA plugins')
 summary('Aravis experimental plugin', aravis_found, section: 'SPA plugins')
 summary('FITS cube source', fits_found, section: 'SPA plugins')
