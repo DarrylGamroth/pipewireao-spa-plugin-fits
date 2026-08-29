@@ -8,7 +8,7 @@ compile_error!("the HERMES decoder currently requires a little-endian target");
 use std::ffi::{CStr, c_char};
 use std::ptr;
 
-use calculon_spa_node::{
+use pipewireao_spa_node::{
     Factory, Format, FormatConstraint, InputFrame, Node, OutputFrame, Port, PortRef, Rate, sys,
 };
 

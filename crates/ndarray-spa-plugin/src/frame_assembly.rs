@@ -1,28 +1,30 @@
 //! Assembly of rank-two row-block ndarrays into complete frames.
 
-use calculon_spa_node::{
+use pipewireao_spa_node::{
     Factory, Format, FormatConstraint, Header, InputFrame, Node, OutputFrame, Port, PortRef, Rate,
     forward_frame, shares_data, sys,
 };
 
-use crate::config::{optional_info, parse_positive_usize, parse_rate, parse_size, required_info};
+use crate::config::{
+    optional_nonempty, parse_positive_usize, parse_rate, parse_size, required_info,
+};
 
 /// Factory name of the ndarray frame assembler.
-pub const FRAME_ASSEMBLY_FACTORY_NAME: &str = "api.calculon.frame-assembly";
+pub const FRAME_ASSEMBLY_FACTORY_NAME: &str = "api.ndarray.frame-assembly";
 
-const KEY_SIZE: &[u8] = b"api.calculon.frame-size\0";
-const KEY_RATE: &[u8] = b"api.calculon.frame-rate\0";
-const KEY_BLOCK_SCHEMA: &[u8] = b"api.calculon.row-block-schema\0";
-const KEY_FRAME_SCHEMA: &[u8] = b"api.calculon.frame-schema\0";
-const KEY_PROFILE: &[u8] = b"api.calculon.ndarray-profile\0";
-const KEY_ELEMENT_TYPE: &[u8] = b"api.calculon.ndarray-element-type\0";
-const KEY_LAYOUT: &[u8] = b"api.calculon.ndarray-layout\0";
-const KEY_BLOCK_ROWS: &[u8] = b"api.calculon.row-block-rows\0";
+const KEY_SIZE: &[u8] = b"api.ndarray.frame-size\0";
+const KEY_RATE: &[u8] = b"api.ndarray.frame-rate\0";
+const KEY_BLOCK_SCHEMA: &[u8] = b"api.ndarray.row-block-schema\0";
+const KEY_FRAME_SCHEMA: &[u8] = b"api.ndarray.frame-schema\0";
+const KEY_PROFILE: &[u8] = b"api.ndarray.profile\0";
+const KEY_ELEMENT_TYPE: &[u8] = b"api.ndarray.element-type\0";
+const KEY_LAYOUT: &[u8] = b"api.ndarray.layout\0";
+const KEY_BLOCK_ROWS: &[u8] = b"api.ndarray.row-block-rows\0";
 const INPUT: usize = 0;
 const OUTPUT: usize = 1;
 
 pub(crate) static FACTORY: Factory =
-    Factory::new::<FrameAssemblyNode>(b"api.calculon.frame-assembly\0");
+    Factory::new::<FrameAssemblyNode>(b"api.ndarray.frame-assembly\0");
 
 struct FrameAssemblyNode {
     ports: Vec<Port>,
@@ -402,16 +404,6 @@ impl Node for FrameAssemblyNode {
             return self.publish_complete();
         }
         Ok(sys::SPA_STATUS_NEED_DATA as i32)
-    }
-}
-
-fn optional_nonempty<'a>(
-    info: Option<&'a sys::spa_dict>,
-    key: &[u8],
-) -> Result<Option<&'a str>, i32> {
-    match optional_info(info, key)? {
-        Some("") => Err(-libc::EINVAL),
-        value => Ok(value),
     }
 }
 

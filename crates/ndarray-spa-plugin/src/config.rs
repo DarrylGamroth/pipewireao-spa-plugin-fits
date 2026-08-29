@@ -2,9 +2,7 @@
 
 use std::ffi::{CStr, c_char};
 
-use calculon_spa_node::{Rate, sys};
-
-const PROFILE_DIGEST_CHARACTERS: usize = 64;
+use pipewireao_spa_node::{Rate, sys};
 
 pub(crate) fn required_info<'a>(
     info: Option<&'a sys::spa_dict>,
@@ -57,6 +55,16 @@ pub(crate) fn optional_info<'a>(
     Ok(None)
 }
 
+pub(crate) fn optional_nonempty<'a>(
+    info: Option<&'a sys::spa_dict>,
+    key: &[u8],
+) -> Result<Option<&'a str>, i32> {
+    match optional_info(info, key)? {
+        Some("") => Err(-libc::EINVAL),
+        value => Ok(value),
+    }
+}
+
 pub(crate) fn parse_size(value: &str) -> Result<(u32, u32), i32> {
     let (width, height) = value.split_once('x').ok_or(-libc::EINVAL)?;
     let width = width.parse::<u32>().map_err(|_| -libc::EINVAL)?;
@@ -80,21 +88,6 @@ pub(crate) fn parse_positive_usize(value: &str) -> Result<usize, i32> {
     (value != 0).then_some(value).ok_or(-libc::EINVAL)
 }
 
-pub(crate) fn parse_finite_f32(value: &str) -> Result<f32, i32> {
-    let value = value.parse::<f32>().map_err(|_| -libc::EINVAL)?;
-    value.is_finite().then_some(value).ok_or(-libc::EINVAL)
-}
-
-pub(crate) fn valid_profile(profile: &str) -> bool {
-    let Some(digest) = profile.strip_prefix("sha256:") else {
-        return false;
-    };
-    digest.len() == PROFILE_DIGEST_CHARACTERS
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,13 +102,8 @@ mod tests {
     }
 
     #[test]
-    fn detector_profile_requires_exact_lowercase_sha256_syntax() {
-        assert!(valid_profile(
-            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        ));
-        assert!(!valid_profile(
-            "sha256:0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"
-        ));
-        assert!(!valid_profile("sha256:abc"));
+    fn positive_usize_is_strict() {
+        assert_eq!(parse_positive_usize("1"), Ok(1));
+        assert_eq!(parse_positive_usize("0"), Err(-libc::EINVAL));
     }
 }

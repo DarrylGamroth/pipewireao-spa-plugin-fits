@@ -50,18 +50,4 @@ if get_option('tests').allowed()
     depends: fits_lib,
     env: fits_source_test_env,
   )
-
-  fits_calculon_test = executable(
-    'spa-fits-calculon-test',
-    'test-calculon.c',
-    dependencies: [spa_dep, cfitsio_dep, dl_dep],
-    include_directories: plugin_include,
-    c_args: ['-Wno-pedantic'],
-  )
-  test(
-    'spa-fits-calculon-ingress',
-    fits_calculon_test,
-    args: [fits_lib.full_path(), calculon_lib.full_path()],
-    depends: [fits_lib, calculon_lib],
-  )
 endif

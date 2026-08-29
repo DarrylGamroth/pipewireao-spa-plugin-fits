@@ -28,9 +28,10 @@ the activation flag that permits polling across processes.
 | `api.bgapi2.source` | graph driver | configured `poll` or `eventfd` | complete ordinary output |
 | `api.aravis.source` | comparison graph driver | nonblocking camera probe | complete frames or experimental native-GV raw row blocks |
 | `api.egrabber.source` | graph driver | nonblocking camera or row-readout probe | complete video frames or complete raw row blocks |
-| `api.calculon.pixel-calibration` | follower | graph dependency | complete frame or row-block input and output |
-| `api.calculon.frame-assembly` | follower | graph dependency | complete row blocks in, complete frames out |
-| Other Calculon factories | followers | graph dependency | ordinary complete ndarrays |
+| `api.ndarray.video-view` | follower | graph dependency | packed complete raw video in, equivalent ndarray out |
+| Calculon FGN pixel calibration | follower | graph dependency | complete frame or row-block input and output |
+| `api.ndarray.frame-assembly` | follower | graph dependency | complete row blocks in, complete frames out |
+| Other Calculon FGN operators | followers | graph dependency | ordinary complete ndarrays |
 | `api.alpao.sink` | terminal follower | graph dependency | ordinary complete commands |
 | `libpipewire-module-queue` | asynchronous topology boundary | separate input/output graphs | ordinary complete buffers |
 
@@ -43,12 +44,13 @@ ownership:
 flowchart LR
     Camera["Camera or FITS source"]
     Raw["Complete raw frame"]
+    View["Raw-video ndarray view"]
     Calibration["Pixel calibration"]
     Frame["Complete calibrated ndarray"]
     Algorithm["Full-frame algorithm"]
     Sink["ALPAO or another follower"]
 
-    Camera --> Raw --> Calibration --> Frame --> Algorithm --> Sink
+    Camera --> Raw --> View --> Calibration --> Frame --> Algorithm --> Sink
 ```
 
 eGrabber complete-frame mode may announce the negotiated SPA buffers directly
@@ -131,13 +133,13 @@ eGrabber always reports `POLL_DRIVER` in both complete-frame and row-block
 modes because CallbackOnDemand does not expose a readiness fd. Output mode and
 wake mechanism are separate contracts.
 
-Configure eGrabber row blocks and the matching Calculon artifact size:
+Configure eGrabber row blocks and make the same row-block extent part of the
+Calculon FGN pixel-calibration port declaration:
 
 ```ini
 api.egrabber.output-mode = row-block
 api.egrabber.row-block-rows = 8
 api.egrabber.detector-profile = detector-profile-id
-api.calculon.row-block-rows = 8
 ```
 
 `N` must be positive, smaller than the detector height, and divide the
@@ -154,8 +156,11 @@ api.fits.row-block-rows = 8
 api.fits.simulated-readout-time-ns = 250000
 api.fits.schema = org.calculon.ao.raw-pixel-row-block/1
 api.fits.profile = detector-profile-id
-api.calculon.row-block-rows = 8
 ```
+
+The FGN input and output declarations use the same eight-row extent and exact
+profile. The filter-graph host rejects a mismatched extent, schema, profile, or
+rate before processing starts.
 
 The FITS source preloads and converts the cube before activation. Its uniform
 block schedule is an experimental input, not a substitute for measured camera
@@ -202,16 +207,15 @@ layout = ROW_MAJOR
 rate = frame_rate * height / N
 ```
 
-Pixel calibration emits
+Calculon FGN pixel calibration emits
 [`org.calculon.ao.calibrated-pixel-row-block/1`](schemas/calibrated-pixel-row-block-1.md)
 with the same shape and rate and `F32_LE` elements.
 
-The calibration source alternatives are exact: a complete `GRAY8`,
-`GRAY16_LE`, or `GRAY16_BE` frame, or the raw row-block ndarray schema. Format
-negotiation selects one alternative for the stream. A stream does not mix
-complete frames and blocks. Eight-bit values are widened to detector ADU;
-16-bit values are decoded according to the negotiated byte order before the
-same prepared calibration plan runs.
+The calibration source alternatives are exact: a complete U16 raw-detector
+ndarray or the U16 raw row-block ndarray schema. Packed complete-frame
+`GRAY16_LE` first passes through `api.ndarray.video-view`. Format negotiation
+selects one alternative for the stream; a stream does not mix complete frames
+and blocks.
 
 ## Identity and loss
 
@@ -234,13 +238,14 @@ camera aborts, eGrabber abandons the remainder and marks the next frame
 discontinuous. It never publishes the final block before terminal camera
 completion validates the frame.
 
-Pixel calibration snapshots the selected flat/background pair at offset zero.
-It applies one plan to the whole sequence and emits at most one complete
-calibrated block per input block.
+The FGN parameter plan is adopted at a graph-cycle boundary. If a new
+flat/background plan is adopted after row zero, the first block using it is
+marked `DISCONT`; frame assembly abandons the mixed partial frame. Calibration
+emits at most one complete calibrated block per input block.
 
 ## Assembly and observer isolation
 
-`api.calculon.frame-assembly` accepts either the configured row-block ndarray
+`api.ndarray.frame-assembly` accepts either the configured row-block ndarray
 or the exact complete-frame ndarray. For row blocks it owns a preallocated
 frame workspace and accepts only the next offset for one sequence. A gap,
 overlap, unexpected sequence, out-of-range block, or invalid marker abandons
@@ -257,14 +262,14 @@ mapping, extent, and rate.
 For calibrated detector rows, the corresponding factory information is:
 
 ```ini
-api.calculon.frame-size = 640x480
-api.calculon.frame-rate = 500/1
-api.calculon.row-block-rows = 8
-api.calculon.row-block-schema = org.calculon.ao.calibrated-pixel-row-block/1
-api.calculon.frame-schema = org.calculon.ao.calibrated-pixels/1
-api.calculon.ndarray-profile = detector-profile-id
-api.calculon.ndarray-element-type = F32_LE
-api.calculon.ndarray-layout = row-major
+api.ndarray.frame-size = 640x480
+api.ndarray.frame-rate = 500/1
+api.ndarray.row-block-rows = 8
+api.ndarray.row-block-schema = org.calculon.ao.calibrated-pixel-row-block/1
+api.ndarray.frame-schema = org.calculon.ao.calibrated-pixels/1
+api.ndarray.profile = detector-profile-id
+api.ndarray.element-type = F32_LE
+api.ndarray.layout = row-major
 ```
 
 Telemetry and GUI branches normally attach after assembly. Isolate them with:

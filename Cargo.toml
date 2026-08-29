@@ -1,8 +1,9 @@
 [workspace]
 members = [
-  "crates/calculon-spa-node",
-  "crates/calculon-spa-plugins",
   "crates/hermes-spa-decoder",
+  "crates/ndarray-spa-plugin",
+  "crates/nuvu-spa-plugin",
+  "crates/pipewireao-spa-node",
 ]
 resolver = "3"
 

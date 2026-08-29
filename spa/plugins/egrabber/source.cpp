@@ -42,7 +42,7 @@
 #include <spa/utils/names.h>
 #include <spa/utils/string.h>
 
-#include <pipewireao-plugins/calculon.h>
+#include <pipewireao-plugins/ndarray.h>
 #include <pipewireao-plugins/pod.h>
 
 #include "camera.hpp"
@@ -824,7 +824,7 @@ struct spa_pod *build_output_format(impl *self, uint32_t id,
 			SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_application),
 			SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_ndarray),
 			SPA_FORMAT_NDARRAY_schema,
-			SPA_POD_String(SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK),
+			SPA_POD_String(SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK),
 			SPA_FORMAT_NDARRAY_elementType,
 			SPA_POD_Id(row_element_type(self)),
 			SPA_FORMAT_NDARRAY_shape,
@@ -1035,7 +1035,7 @@ int validate_row_block_format(impl *self, const struct spa_pod *param)
 	property = spa_pod_find_prop(fixed, nullptr, SPA_FORMAT_NDARRAY_schema);
 	if (property == nullptr ||
 			spa_pod_get_string(&property->value, &schema) < 0 ||
-			!spa_streq(schema, SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK))
+			!spa_streq(schema, SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK))
 		return -EINVAL;
 	property = spa_pod_find_prop(fixed, nullptr, SPA_FORMAT_NDARRAY_profile);
 	if (property == nullptr ||

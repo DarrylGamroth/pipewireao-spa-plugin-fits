@@ -6,7 +6,7 @@
 //! and six leading samples per tap. The final sample row in each detector half
 //! is the per-output overscan row.
 
-use calculon_spa_node::{
+use pipewireao_spa_node::{
     Factory, Format, FormatConstraint, InputFrame, Node, OutputFrame, Port, PortRef, sys,
 };
 

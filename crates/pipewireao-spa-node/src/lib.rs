@@ -1,4 +1,4 @@
-//! Rust implementation boundary for loadable Calculon SPA nodes.
+//! Reusable Rust implementation boundary for loadable PipeWireAO SPA nodes.
 //!
 //! The crate owns SPA factories, node and port callbacks, POD formats, buffer
 //! ownership, and complete-frame scheduling. Numerical operations remain in

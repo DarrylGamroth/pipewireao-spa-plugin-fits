@@ -1,5 +1,8 @@
 # Calculon full-system CPU and memory profiling
 
+> Historical record: this document measures the retired native Calculon SPA
+> factories. Current scientific processing uses the Calculon FGN bundle.
+
 This record identifies the hot code and tests page residency for the reference
 raw-image-to-ALPAO path. The decisive result is computational: enabling
 Calculon's existing OxiBLAS backend reduces the median service time by 65.5%.

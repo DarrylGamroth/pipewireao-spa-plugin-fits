@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use libspa::sys;
 
 unsafe extern "C" {
-    fn calculon_spa_unwrap_fixed_pod(
+    fn pipewireao_spa_unwrap_fixed_pod(
         source: *const sys::spa_pod,
         storage: *mut c_void,
         size: usize,
@@ -19,7 +19,7 @@ pub(crate) unsafe fn unwrap_fixed_pod(pod: *const sys::spa_pod) -> Result<Vec<u6
         .ok_or(-libc::EOVERFLOW)?;
     let mut storage = vec![0_u64; source_size.div_ceil(std::mem::size_of::<u64>())];
     let size = unsafe {
-        calculon_spa_unwrap_fixed_pod(
+        pipewireao_spa_unwrap_fixed_pod(
             pod,
             storage.as_mut_ptr().cast(),
             storage.len() * std::mem::size_of::<u64>(),

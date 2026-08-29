@@ -50,12 +50,13 @@ frame membership from arrival time or graph-cycle number.
 
 ## Calibration and assembly
 
-Pixel calibration accepts either a complete raw video frame or the exact raw
-row-block schema. In block mode it snapshots the selected flat/background pair
-when offset zero arrives and consumes one raw block for each calibrated block.
-All blocks in one sequence therefore use one calibration generation.
+Calculon FGN pixel calibration accepts either a complete raw-detector ndarray
+or the exact raw row-block schema. Complete packed raw video first passes
+through `api.ndarray.video-view`; the adapter changes only the structural
+format and never changes pixel values. In block mode calibration consumes one
+raw block for each calibrated block.
 
-An `api.calculon.frame-assembly` instance configured with this input schema and
+An `api.ndarray.frame-assembly` instance configured with this input schema and
 `org.calculon.ao.calibrated-pixels/1` as its output schema accepts only the next
 expected offset for one sequence. A gap, overlap, changed sequence,
 out-of-range block, or invalid marker abandons the partial frame. The next

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require the Calculon SPA cdylib to expose only its SPA entry point."""
+"""Require a Rust SPA plugin to expose only its SPA entry point."""
 
 from __future__ import annotations
 

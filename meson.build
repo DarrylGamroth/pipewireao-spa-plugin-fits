@@ -44,8 +44,9 @@ genicam_feature_dep = declare_dependency(
 
 install_headers(
   'include/pipewireao-plugins/alpao.h',
-  'include/pipewireao-plugins/calculon.h',
   'include/pipewireao-plugins/fits.h',
+  'include/pipewireao-plugins/ndarray.h',
+  'include/pipewireao-plugins/nuvu.h',
   'include/pipewireao-plugins/pod.h',
   subdir: 'pipewireao-plugins-0.1/pipewireao-plugins',
 )
@@ -67,7 +68,8 @@ if get_option('tests').allowed()
 endif
 
 subdir('spa/plugins/alpao')
-subdir('spa/plugins/calculon')
+subdir('spa/plugins/ndarray')
+subdir('spa/plugins/nuvu')
 subdir('src/modules/queue')
 
 egrabber_found = false

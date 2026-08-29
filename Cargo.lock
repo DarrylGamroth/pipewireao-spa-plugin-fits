@@ -28,12 +28,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
-name = "autocfg"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -57,56 +51,6 @@ name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
-
-[[package]]
-name = "bytemuck"
-version = "1.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
-dependencies = [
- "bytemuck_derive",
-]
-
-[[package]]
-name = "bytemuck_derive"
-version = "1.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc0e56a716f1e132ff6bf4bdac1c944a3fcdc1cae65f70a4a2a1ac3b401d2d1f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.3",
-]
-
-[[package]]
-name = "calculon-algorithms"
-version = "0.1.0"
-dependencies = [
- "num-traits",
- "oxiblas-blas",
- "oxiblas-matrix",
- "serde",
-]
-
-[[package]]
-name = "calculon-spa-node"
-version = "0.1.0"
-dependencies = [
- "cc",
- "libc",
- "libspa-ao",
- "pkg-config",
-]
-
-[[package]]
-name = "calculon-spa-plugins"
-version = "0.1.0"
-dependencies = [
- "calculon-algorithms",
- "calculon-spa-node",
- "libc",
- "libspa-ao",
-]
 
 [[package]]
 name = "cc"
@@ -210,8 +154,8 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hermes-spa-decoder"
 version = "0.1.0"
 dependencies = [
- "calculon-spa-node",
  "libc",
+ "pipewireao-spa-node",
 ]
 
 [[package]]
@@ -248,12 +192,6 @@ dependencies = [
  "cfg-if",
  "windows-link",
 ]
-
-[[package]]
-name = "libm"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libspa-ao"
@@ -316,59 +254,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-complex"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
+name = "nuvu-spa-plugin"
+version = "0.1.0"
 dependencies = [
- "bytemuck",
- "num-traits",
+ "libc",
+ "libspa-ao",
+ "pipewireao-spa-node",
 ]
 
 [[package]]
-name = "num-traits"
-version = "0.2.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+name = "pipewireao-ndarray-spa-plugin"
+version = "0.1.0"
 dependencies = [
- "autocfg",
- "libm",
+ "libc",
+ "libspa-ao",
+ "pipewireao-spa-node",
 ]
 
 [[package]]
-name = "oxiblas-blas"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b9e1346a6fb0c859ba99a0c46d54c3b6f620b132ce1be4aa7ef93634002009b"
+name = "pipewireao-spa-node"
+version = "0.1.0"
 dependencies = [
- "bytemuck",
- "num-complex",
- "num-traits",
- "oxiblas-core",
- "oxiblas-matrix",
-]
-
-[[package]]
-name = "oxiblas-core"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb71a758e4b67699331dc2f01a20ddc05a5b952b66be9e46857f2aafe19db353"
-dependencies = [
- "bytemuck",
- "num-complex",
- "num-traits",
-]
-
-[[package]]
-name = "oxiblas-matrix"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3b5d0050e3dea737a5d9c7c30d0029a73f270c5edb59281cef991a4d13c9fb9"
-dependencies = [
- "bytemuck",
- "num-complex",
- "num-traits",
- "oxiblas-core",
+ "cc",
+ "libc",
+ "libspa-ao",
+ "pkg-config",
 ]
 
 [[package]]
@@ -441,16 +351,6 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys",
-]
-
-[[package]]
-name = "serde"
-version = "1.0.229"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
-dependencies = [
- "serde_core",
- "serde_derive",
 ]
 
 [[package]]

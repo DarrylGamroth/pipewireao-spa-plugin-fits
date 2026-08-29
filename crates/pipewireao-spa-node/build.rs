@@ -17,5 +17,5 @@ fn main() {
     for include in spa.include_paths {
         build.include(include);
     }
-    build.warnings(true).compile("calculon_spa_pod");
+    build.warnings(true).compile("pipewireao_spa_pod");
 }

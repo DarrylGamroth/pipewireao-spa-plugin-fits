@@ -1,233 +1,114 @@
-# Algorithm plugin architecture
+# Scientific graph and structural-transform architecture
 
-Status: accepted boundary; raw-frame-to-ALPAO reference slice implemented
+Status: accepted and implemented on 2026-08-29
 
 Decision: PWAO-PLUGIN-002
 
-## Repository boundary
+## Ownership boundary
 
-Algorithm implementations and their SPA adapters have separate ownership:
+Scientific algorithms use the PipeWireAO ndarray filter-graph (FGN) ABI.
+Calculon owns its schemas, declarations, prepared numerical state, workspaces,
+and the production `libcalculon-fgn.so` bundle. Pixel calibration, wavefront
+measurement, reconstruction, controller integration, and PDM command creation
+are no longer duplicated as native SPA factories in this repository.
 
-- The PipeWireAO fork owns generic graph execution, scheduling, SPA buffer
-  contracts, and the structural `application/ndarray` format.
-- `calculon-algorithms` owns scientific operations, physical-unit semantics,
-  semantic schema identifiers, prepared plans, workspaces, and numerical tests.
-  It has no dependency on PipeWire or SPA.
-- This repository owns loadable SPA factories that negotiate formats, validate
-  buffers, translate lifecycle calls, and invoke a Calculon plan.
+This repository retains only operations that belong to a transport or device
+boundary:
 
-The adapter does not copy an algorithm implementation into the plugin
-repository. One tested Calculon plan remains the numerical authority whether
-it is called from a SPA graph or directly from Rust.
+- `api.ndarray.frame-assembly` converts immutable row-block artifacts into one
+  complete ndarray artifact.
+- `api.ndarray.video-view` exposes a packed raw-video frame as an equivalent
+  ndarray artifact without interpreting pixel values.
+- `api.hnu240.decoder` maps the Nüvü HNü240 Camera Link carrier into detector
+  pixels.
+- ALPAO's `command-normalization-f32-f64` FGN operator converts physical PDM
+  commands into its normalized device-command schema.
+- `api.alpao.sink` owns the final SPA and ASDK device boundary.
 
-## Format and transport negotiation
+The reusable `pipewireao-spa-node` Rust crate contains the native SPA ABI
+boundary shared by frame assembly, the HNü240 decoder, and the HERMES decoder.
+It catches panics before they cross C and uses a non-waiting callback gate.
+Rust is appropriate for these stateful byte-layout transforms; choosing Rust
+does not make them scientific Calculon algorithms.
 
-An ndarray link is compatible only when its complete fixed format agrees:
-`mediaType`, `mediaSubtype`, `elementType`, `shape`, and `layout`, plus every
-present semantic `schema`, interpretation `profile`, and clocked `rate` field.
-Absence is also exact: a format without an optional field does not silently
-acquire one. The schema identifies what the values mean; it does not replace
-the structural properties or the deployment profile. In particular, two
-arrays with the same schema but different actuator order profiles are
-incompatible.
+## Exact formats
 
-PipeWire may encode a fixed negotiated property as a SPA `Choice(None)`. The
-adapter unwraps that representation before parsing but rejects every
-unresolved choice. It then applies the same exact format constraint, including
-schema and profile, as it does to a directly encoded fixed value.
+Every ndarray boundary matches element type, shape, packed layout, optional
+rate, optional semantic schema, and optional interpretation profile exactly.
+Absence is significant. Profiles are immutable per-port compatibility
+identities, not node-wide labels or runtime parameters.
 
-Every port uses ordinary `SPA_IO_Buffers`. Pixel calibration offers exact
-complete-frame `GRAY8`, `GRAY16_LE`, and `GRAY16_BE` video alternatives plus a
-U16 row-block ndarray alternative. Format negotiation selects one carrier and
-artifact granularity for the stream; buffers never change after publication.
+The FGN ABI carries scientific operations inside one filter-chain node. This
+avoids a separate PipeWire buffer handoff for every Calculon operation while
+retaining explicit schemas and independently declared operators.
 
-## Language boundary
+## Generic frame assembly
 
-Calculon algorithms and their SPA factories use Rust. Rust provides explicit
-buffer and state ownership without garbage collection, while keeping the
-numerical implementation and adapter in one language. The SPA ABI remains C:
-the loadable library exports `spa_handle_factory_enum`, C method tables, and
-ordinary SPA POD and buffer contracts.
+`api.ndarray.frame-assembly` is schema-configured and byte-preserving. Its
+construction keys are:
 
-The reusable `calculon-spa-node` crate contains the unsafe ABI boundary. It
-must remain small and must catch panics before they cross C. Its callback gate
-never waits: an overlapping or reentrant callback fails with `-EBUSY`.
-Repeated processing performs bounded work and allocates no heap memory after
-node preparation.
-
-C remains the default for device plugins backed by a C SDK. C++ is used only
-where an implementation dependency requires C++, such as eGrabber. Language
-choice is local to a plugin and does not change its SPA runtime identity.
-
-## Pixel-calibration factory
-
-`api.calculon.pixel-calibration` applies the authoritative Calculon equation:
-
-```text
-calibrated[i] = flat[i] * (f32(raw[i]) - background[i])
-```
-
-Raw and background values are detector ADU, `flat` is PDE/ADU, and calibrated
-output is PDE. The factory has these fixed ports:
-
-Factory construction requires:
-
-| Property | Value |
+| Key | Meaning |
 | --- | --- |
-| `api.calculon.detector-size` | Positive `WIDTHxHEIGHT` pair |
-| `api.calculon.detector-rate` | Positive `NUM/DEN` frame rate |
-| `api.calculon.detector-profile` | Exact lowercase detector-profile fingerprint |
-| `api.calculon.row-block-rows` | Optional positive row count dividing `HEIGHT`; omitted for complete-frame output |
+| `api.ndarray.frame-size` | Positive complete `WIDTHxHEIGHT` extent. |
+| `api.ndarray.frame-rate` | Optional positive complete-frame `NUM/DEN` rate. |
+| `api.ndarray.row-block-rows` | Positive block height smaller than and dividing `HEIGHT`. |
+| `api.ndarray.row-block-schema` | Optional exact input semantic schema. |
+| `api.ndarray.frame-schema` | Optional exact output semantic schema. |
+| `api.ndarray.profile` | Optional exact interpretation profile retained on both ports. |
+| `api.ndarray.element-type` | Any standard fixed-width SPA ndarray element type. |
+| `api.ndarray.layout` | `row-major` or `column-major`. |
 
-| Direction and ID | Role | Negotiated format |
-| --- | --- | --- |
-| input 0 | raw detector pixels | complete `video/raw` `GRAY8`, `GRAY16_LE`, or `GRAY16_BE` frame, or U16 `org.calculon.ao.raw-pixel-row-block/1` ndarray |
-| input 1 | prepared flat calibration | F32 ndarray, `org.calculon.ao.flat-calibration/1`, no rate |
-| input 2 | prepared background calibration | F32 ndarray, `org.calculon.ao.background-calibration/1`, no rate |
-| output 0 | calibrated detector frame or row block | F32 ndarray; complete calibrated-pixels schema at frame rate, or calibrated-pixel-row-block schema `[N,width]` at block rate |
+The input advertises `[block_rows,width]` and complete `[height,width]`
+alternatives. The output is the complete alternative. `SPA_META_Header.seq`
+identifies the frame, `offset` is the first block row, and `MARKER` identifies
+the last block. Only contiguous rows from one sequence are published. A gap,
+overlap, unexpected sequence, or invalid marker abandons the partial frame and
+marks the next complete output `DISCONT`.
 
-Full-frame ndarray ports require `[height, width]`; row-block ports require
-`[N, width]`. Both use `ROW_MAJOR` and the same exact detector profile. The
-profile is currently a trusted lowercase
-`sha256:<64-hex-digits>` identifier; canonical profile serialization remains a
-separate specification task.
+A complete input frame passes through directly when the negotiated buffers
+share storage. Otherwise the node performs one direct copy. Row-block assembly
+uses one preallocated workspace and publishes nothing until the final block.
 
-Flat and background inputs are optional prepared-artifact streams. Each
-accepted artifact requires a standard SPA Header sequence number. The node
-retains a bounded number of immutable planes. A `Props` update selects the
-flat and background sequence numbers together, so a complete calibration pair
-becomes active atomically between frame callbacks. Sequence `-1` selects the
-identity plane: one for flat and zero for background.
+## Generic raw-video view
 
-Complete-frame and row-block paths both use standard `SPA_IO_Buffers`. Each
-row-block callback consumes one complete raw block and publishes one complete
-calibrated block. Prepared artifacts are inspected at most once per port per
-callback; there is no private queue.
+`api.ndarray.video-view` is the complete-frame bridge into FGN. It accepts an
+exact packed `GRAY8` or `GRAY16_LE` frame and publishes the identical bytes as
+a row-major U8 or U16 ndarray. Construction fixes the frame size, frame rate,
+output schema, optional output profile, and video format. Compatible SPA buffer
+allocation forwards shared storage; the fallback copies each packed row once.
+The adapter does not normalize, calibrate, byte-swap, unpack, or change pixel
+values.
 
-The calibration plan is snapshotted at offset zero, so a flat or background
-selection cannot change midway through one block sequence. A gap, unexpected
-sequence, or invalid marker abandons that sequence and marks the next output
-discontinuous.
+## Nüvü decoder
 
-## Frame-assembly factory
+`api.hnu240.decoder` remains a camera-specific native SPA transform. It accepts
+the exact `hnu240-cl-full-8x8-v1` carrier profile as `GRAY8` 1408 by 131 and
+publishes `GRAY16_LE` 240 by 242, including two overscan rows. The decoder owns
+pixel rearrangement only. Camera control remains in `CLProtocol_hnu240`, and
+the camera or frame-grabber driver publishes the raw carrier unchanged.
+`api.ndarray.video-view` then provides the raw-detector ndarray schema and
+profile expected by Calculon FGN pixel calibration.
 
-`api.calculon.frame-assembly` is a structural ndarray transform. It is not
-coupled to calibrated pixels, detector profiles, or `F32_LE`. One prepared
-instance has these exact construction properties:
+## ALPAO command boundary
 
-| Property | Value |
-| --- | --- |
-| `api.calculon.frame-size` | Positive complete `WIDTHxHEIGHT` extent |
-| `api.calculon.frame-rate` | Optional positive complete-frame `NUM/DEN` rate; omit for an unclocked ndarray |
-| `api.calculon.row-block-rows` | Positive block height smaller than and dividing `HEIGHT` |
-| `api.calculon.row-block-schema` | Optional exact input semantic schema |
-| `api.calculon.frame-schema` | Optional exact output semantic schema |
-| `api.calculon.ndarray-profile` | Optional exact interpretation profile preserved on output |
-| `api.calculon.ndarray-element-type` | Any standard fixed-width SPA ndarray element type |
-| `api.calculon.ndarray-layout` | `row-major` or `column-major` |
+The ALPAO-owned FGN operator consumes
+`org.calculon.ao.demanded-pdm-command/1` F32 vectors and publishes
+`org.pipewireao.alpao.normalized-actuator-command/1` F64 vectors. Its
+construction profile appears on both ports and must match the sink. The
+operator divides by the positive configured command scale and rejects
+non-finite or out-of-range normalized values. A future calibrated conversion
+can replace the scalar implementation without transferring ownership to
+Calculon.
 
-The input port advertises two exact alternatives: `[N,width]` with the
-row-block schema at block rate, and `[height,width]` with the frame schema at
-frame rate. The output is always the exact complete-frame alternative. An
-unclocked input produces an unclocked output. Element type, layout, and every
-present profile field are preserved exactly. Optional schema fields remain
-absent unless configured.
-The schema properties make any scientific change in artifact granularity
-explicit; they may be equal when the schema is independent of transport
-granularity. The calibrated-pixel deployment maps
-the existing calibrated row-block schema to the complete calibrated-pixels
-schema documented in
-[Calibrated pixel row-block schema](schemas/calibrated-pixel-row-block-1.md).
+## Retired native factories
 
-`SPA_META_Header.seq` is the frame identity, `offset` is the first block row,
-and `MARKER` identifies the final block. The assembler accepts only contiguous
-offsets for one sequence, copies them into one preallocated frame workspace,
-and publishes only after the terminal block. A gap, overlap, unexpected
-sequence, or invalid marker abandons the partial frame. The next valid output
-is marked `DISCONT`. Non-marker Header flags from every accepted block are
-combined into the complete frame, so an early `DISCONT` or `CORRUPTED` flag is
-not lost. Processing is byte-preserving and performs no scalar conversion.
+The following native SPA factories were removed:
 
-A negotiated complete frame is already a complete artifact; its Header and
-element bytes pass through unchanged, except for `DISCONT` after a frame
-rejected by the node. `offset` and `MARKER` are not interpreted on this path.
-When SPA buffer allocation negotiation supplies shared input/output storage,
-the payload is forwarded without a copy. A host that does not select shared
-storage receives the same contract through one direct payload copy. The
-preallocated assembly workspace is not touched on this path.
+- `api.calculon.pixel-calibration`
+- `api.calculon.shwfs-controller`
+- `api.calculon.frame-assembly`
+- `api.alpao.command-normalization`
 
-## Fused Shack-Hartmann controller
-
-`api.calculon.shwfs-controller` is the first fused strict-control factory. Its
-public input is `org.calculon.ao.calibrated-pixels/1`; its public output is
-`org.calculon.ao.demanded-pdm-command/1`. Region extraction,
-Shack-Hartmann centroiding, reconstruction GEMV, leaky integration, and PDM
-command limiting use their authoritative Calculon plans in private prepared
-storage. They are not joined by intra-node SPA ports.
-
-The construction dictionary supplies the exact detector and region geometry,
-thresholds, controller parameters, actuator limits, and a profile-bound raw
-little-endian F32 reconstruction matrix. The matrix is validated before the
-node can start. One process callback is the transaction boundary for
-controller state and demanded-command publication.
-
-`api.alpao.command-normalization` is a separate device-boundary adapter. It
-converts the physical F32 demanded-PDM schema to the exact F64 normalized
-ALPAO schema and rejects values outside `[-1, +1]`. It is intentionally not a
-Calculon algorithm: the conversion is owned by the selected mirror command
-profile. The initial reference implementation uses one explicit scalar scale;
-deployed profiles require their calibrated conversion artifact.
-
-See `reference-shwfs-alpao-system.md` for the complete graph, construction
-keys, correctness gate, simulator invocation, and latency boundary.
-
-## Row-block execution and transactional algorithms
-
-Standard complete-buffer processing remains the default Calculon adapter mode.
-The row-block region uses regular scheduler dependencies. Pixel calibration
-maps each immutable raw block to a Calculon semantic work unit and publishes an
-immutable calibrated block.
-
-Row-block MVM input does not imply row-block MVM output. A cumulative MVM
-partial sum can modify every output element when another slope arrives and is
-therefore not an immutable output prefix. For a strict controller, the MVM and
-the linear part of TFC/CLWC instead accumulate into private next-frame state:
-
-```text
-start:         working = leak * committed_controller_state
-process_range: working += gain * R[:, range] * slopes[range]
-finish:        apply terminal projection and safety, commit state, publish command
-abort:         discard working and preserve committed state
-```
-
-CLWC is the transactional synchronization point. Only `finish` may advance
-controller history or publish a mirror command. An incomplete, invalid,
-superseded, or aborted input must take the `abort` path. With several required
-HO, LO, or WFS inputs, the prepared workspace contains a bounded per-frame
-completion ledger and commits only after all identities and configuration
-generations match and every required input terminates successfully.
-
-The current controller factory still consumes complete assembled frames.
-Moving additional Calculon stages before assembly is valid only where their
-public row-block artifacts are immutable. Stateful controller output remains a
-terminal transaction: incomplete or aborted input must not advance controller
-history or publish a mirror command.
-
-See [Scheduled nodes and row-block ndarrays](scheduled-node-migration.md)
-for polling, row identity, assembly, and observer isolation.
-
-## Build boundary
-
-Meson builds and installs the Rust `cdylib` in PipeWireAO's SPA plugin
-directory. Cargo resolves the algorithms crate from the sibling
-`calculon-algorithms` repository during local development. Once both
-repositories have canonical remotes and releases, this path dependency should
-be replaced by a locked released dependency while retaining a local Cargo
-patch workflow for joint development.
-
-The C ABI test loads the release library with `dlopen`, enumerates and
-initializes the factory, verifies all advertised metadata, rejects incomplete
-construction data and undersized buffers, ingests a calibration pair, selects
-it atomically, checks the calibrated values and Header propagation, and
-interposes the system allocator to assert zero steady-state process
-allocations.
+Existing profiling records remain historical evidence for the retired
+implementation. New scientific graph work and performance qualification belong
+in `calculon-algorithms` and its FGN bundle.

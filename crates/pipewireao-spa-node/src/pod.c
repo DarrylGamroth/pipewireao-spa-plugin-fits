@@ -3,7 +3,7 @@
 
 #include <pipewireao-plugins/pod.h>
 
-size_t calculon_spa_unwrap_fixed_pod(const struct spa_pod *source,
+size_t pipewireao_spa_unwrap_fixed_pod(const struct spa_pod *source,
 		void *storage, size_t size)
 {
 	struct spa_pod_builder builder;

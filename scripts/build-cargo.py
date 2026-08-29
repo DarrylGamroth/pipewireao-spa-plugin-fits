@@ -19,7 +19,7 @@ def main() -> None:
     parser.add_argument("--profile", choices=("debug", "release"), required=True)
     parser.add_argument("--spa-include", type=pathlib.Path, required=True)
     parser.add_argument("--pkg-config-path")
-    parser.add_argument("--package", default="calculon-spa-plugins")
+    parser.add_argument("--package", required=True)
     args = parser.parse_args()
 
     command = [

@@ -13,7 +13,7 @@
 #include <fitsio.h>
 #include <pipewire/loop.h>
 #include <pipewire/pipewire.h>
-#include <pipewireao-plugins/calculon.h>
+#include <pipewireao-plugins/ndarray.h>
 #include <spa/buffer/meta.h>
 #include <spa/node/io.h>
 #include <spa/node/node.h>
@@ -448,7 +448,7 @@ static void run_row_source(const struct spa_handle_factory *factory,
 	const struct source_case test = {
 		.path = path,
 		.rate = "20/1",
-		.schema = SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK,
+		.schema = SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK,
 		.profile = TEST_PROFILE,
 		.output_mode = "row-block",
 		.row_block_rows = "1",
@@ -516,7 +516,7 @@ static void run_row_source(const struct spa_handle_factory *factory,
 	spa_assert_se(ndarray.rate.num == 60 && ndarray.rate.denom == 1);
 	spa_assert_se(spa_streq(format_string(format,
 			SPA_FORMAT_NDARRAY_schema),
-			SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK));
+			SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK));
 	spa_assert_se(spa_streq(format_string(format,
 			SPA_FORMAT_NDARRAY_profile), TEST_PROFILE));
 	capture.expected = SPA_PARAM_EnumFormat;
@@ -659,7 +659,7 @@ static void test_row_options(const struct spa_handle_factory *factory,
 	const struct source_case valid = {
 		.path = image_path,
 		.rate = "20/1",
-		.schema = SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK,
+		.schema = SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK,
 		.profile = TEST_PROFILE,
 		.output_mode = "row-block",
 		.row_block_rows = "1",

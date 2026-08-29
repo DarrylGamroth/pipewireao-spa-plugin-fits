@@ -37,11 +37,13 @@ meson compile -C build
 meson test -C build --print-errorlogs
 ```
 
-The default build also produces `api.calculon.pixel-calibration` as a Rust
-SPA factory. During local development, the Cargo workspace expects the
-`calculon-algorithms` repository beside this repository. Cargo is used for the
-Rust crates; Meson remains the build and installation entry point for the
-loadable plugin set.
+The default build also produces the Rust `api.ndarray.video-view`,
+`api.ndarray.frame-assembly`, and `api.hnu240.decoder` SPA factories plus the
+C ALPAO FGN operator. Scientific
+Calculon operators are built from the adjacent `calculon-algorithms`
+repository as `libcalculon-fgn.so`; this repository no longer compiles a
+second native SPA implementation of them. Cargo builds the Rust transport
+transforms, while Meson remains the build and installation entry point.
 
 `libspa-ao-0.2` and `libpipewire-ao-0.3` must resolve to a PipeWireAO
 installation. The SPA package must include the ndarray `schema` and `profile`
@@ -223,26 +225,28 @@ Example FGN node declaration:
 - Hardware vendors own their SDK ABI, device protocol, configuration, and
   calibration artifacts.
 
-## Calculon pixel calibration
+## Raw-video ndarray view
 
-The `api.calculon.pixel-calibration` factory converts exact `GRAY8`,
-`GRAY16_LE`, or `GRAY16_BE` raw detector frames into `F32_LE`
-calibrated-pixel ndarrays. Optional flat and
-background artifact ports use Calculon-owned schemas and standard Header
-sequence numbers; a node `Props` update activates a complete pair atomically.
-Complete-frame operation uses standard `SPA_IO_Buffers`. With
-`api.calculon.row-block-rows=N`, its raw port accepts complete U16
-`[N,width]` ndarray blocks and publishes complete F32 `[N,width]` blocks.
-`api.calculon.frame-assembly` reconstructs complete frames for the remaining
-algorithms and observers. Frame assembly is schema-configured and byte
-preserving: it accepts any prepared rank-two ndarray with a standard
-fixed-width element type in row-major or column-major layout, including
-unclocked arrays with no semantic schema or interpretation profile. Both
-factories perform no steady-state heap allocation in `process`.
+`api.ndarray.video-view` exposes an exact packed `GRAY8` or `GRAY16_LE` frame
+as a row-major U8 or U16 ndarray with configured schema and profile. Compatible
+SPA allocation uses the same storage; otherwise the adapter copies each packed
+row once. It performs no pixel conversion. This is the structural bridge from
+complete-frame camera sources and `api.hnu240.decoder` to Calculon FGN pixel
+calibration.
 
-The adapter and algorithm are Rust. The exported shared object is nevertheless
-an ordinary C SPA plugin. See the architecture document for port formats,
-factory properties, language rationale, and validation boundary.
+## Ndarray frame assembly
+
+`api.ndarray.frame-assembly` reconstructs complete frames from immutable
+row-block ndarrays. It is schema-configured and byte-preserving, accepts every
+standard fixed-width SPA element type in row-major or column-major layout, and
+supports unclocked arrays with no semantic schema or interpretation profile.
+Complete input frames use shared-storage forwarding when available; row-block
+assembly uses one preallocated workspace. Processing performs no steady-state
+heap allocation.
+
+Calculon pixel calibration, wavefront measurement, reconstruction, and control
+now use the ndarray FGN bundle in `calculon-algorithms`. See the architecture
+document for the ownership split and frame-assembly properties.
 
 ## HNü240 Camera Link decoder
 
@@ -277,7 +281,9 @@ spa/plugins/flisdk/           First Light Imaging FliSdk camera source factory
 spa/plugins/andor3/           Andor SDK3 camera source factory
 spa/plugins/aravis/           experimental Aravis GenTL/native-GV comparison source
 spa/plugins/fits/             CFITSIO vector and image-sequence source factory
-spa/plugins/calculon/         Calculon SPA factory build and C ABI tests
-crates/calculon-spa-node/     reusable Rust SPA ABI adapter
-crates/calculon-spa-plugins/  Rust algorithm factories
+spa/plugins/ndarray/          generic video-view and frame-assembly factories
+spa/plugins/nuvu/             Nüvü camera decoder SPA factory and tests
+crates/pipewireao-spa-node/   reusable Rust SPA ABI adapter
+crates/ndarray-spa-plugin/    generic ndarray transport transform
+crates/nuvu-spa-plugin/       HNü240 carrier decoder
 ```

@@ -8,16 +8,17 @@
 #include <spa/node/command.h>
 #include <spa/node/io.h>
 #include <spa/node/node.h>
-#include <spa/pod/filter.h>
+#include <spa/param/format.h>
+#include <spa/param/ndarray-utils.h>
+#include <spa/param/video/raw-utils.h>
 #include <spa/support/plugin.h>
 
-#include <pipewireao-plugins/calculon.h>
+#include <pipewireao-plugins/ndarray.h>
 
 #define WIDTH 4u
 #define HEIGHT 4u
 #define BLOCK_ROWS 2u
 #define PIXELS (WIDTH * HEIGHT)
-#define RAW_BLOCK_BYTES (WIDTH * BLOCK_ROWS * sizeof(uint16_t))
 #define BLOCK_BYTES (WIDTH * BLOCK_ROWS * sizeof(float))
 #define FRAME_BYTES (PIXELS * sizeof(float))
 
@@ -105,6 +106,16 @@ static struct spa_pod *enum_format(struct instance *instance,
 	return instance->capture.param;
 }
 
+static const char *format_string(const struct spa_pod *format, uint32_t key)
+{
+	const struct spa_pod_prop *property = spa_pod_find_prop(format, NULL, key);
+	const char *value = NULL;
+
+	spa_assert_se(property != NULL);
+	spa_assert_se(spa_pod_get_string(&property->value, &value) == 0);
+	return value;
+}
+
 static void configure(struct instance *instance, enum spa_direction direction,
 		uint32_t index)
 {
@@ -112,22 +123,6 @@ static void configure(struct instance *instance, enum spa_direction direction,
 
 	spa_assert_se(spa_node_port_set_param(instance->node, direction, 0,
 			SPA_PARAM_Format, 0, format) == 0);
-}
-
-static void negotiate(struct instance *output, struct instance *input)
-{
-	uint8_t storage[8192];
-	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof(storage));
-	struct spa_pod *negotiated = NULL;
-
-	spa_assert_se(spa_pod_filter(&builder, &negotiated,
-			enum_format(output, SPA_DIRECTION_OUTPUT, 0),
-			enum_format(input, SPA_DIRECTION_INPUT, 0)) == 0);
-	spa_assert_se(negotiated != NULL);
-	spa_assert_se(spa_node_port_set_param(output->node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_PARAM_Format, 0, negotiated) == 0);
-	spa_assert_se(spa_node_port_set_param(input->node, SPA_DIRECTION_INPUT, 0,
-			SPA_PARAM_Format, 0, negotiated) == 0);
 }
 
 static void init_buffer(struct buffer *buffer, uint32_t size, int32_t stride)
@@ -176,11 +171,11 @@ static void destroy(struct instance *instance)
 static void test_column_major_u16(const struct spa_handle_factory *factory)
 {
 	const struct spa_dict_item items[] = {
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SIZE, "4x4"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS, "2"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_ELEMENT_TYPE,
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SIZE, "4x4"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ROW_BLOCK_ROWS, "2"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ELEMENT_TYPE,
 				"U16_LE"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_LAYOUT,
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_LAYOUT,
 				"column-major"),
 	};
 	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
@@ -270,17 +265,17 @@ static void test_complete_frame_passthrough(
 		const struct spa_handle_factory *factory)
 {
 	const struct spa_dict_item items[] = {
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SIZE, "4x4"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_RATE, "1000/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS, "2"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_SCHEMA,
-				SPA_CALCULON_SCHEMA_CALIBRATED_PIXEL_ROW_BLOCK),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SCHEMA,
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SIZE, "4x4"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_RATE, "1000/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ROW_BLOCK_ROWS, "2"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ROW_BLOCK_SCHEMA,
+				"org.calculon.ao.calibrated-pixel-row-block/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SCHEMA,
 				"org.calculon.ao.calibrated-pixels/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_PROFILE, profile),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_ELEMENT_TYPE,
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_PROFILE, profile),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ELEMENT_TYPE,
 				"F32_LE"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_LAYOUT,
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_LAYOUT,
 				"row-major"),
 	};
 	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
@@ -353,39 +348,196 @@ static void test_complete_frame_passthrough(
 	}
 }
 
-int main(int argc, char **argv)
+static void test_video_view(const struct spa_handle_factory *factory)
 {
 	const struct spa_dict_item items[] = {
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_DETECTOR_SIZE, "4x4"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_DETECTOR_RATE, "1000/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_DETECTOR_PROFILE, profile),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS, "2"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SIZE, "4x4"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_RATE, "1000/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_SCHEMA,
+				"org.calculon.ao.raw-detector-pixels/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_PROFILE, profile),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_VIDEO_FORMAT,
+				"GRAY16_LE"),
 	};
 	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
+	uint32_t shared;
+
+	for (shared = 0; shared < 2; shared++) {
+		struct instance view;
+		struct buffer input, output;
+		struct spa_io_buffers input_io = {
+			.status = SPA_STATUS_NEED_DATA,
+			.buffer_id = SPA_ID_INVALID,
+		};
+		struct spa_io_buffers output_io = {
+			.status = SPA_STATUS_NEED_DATA,
+			.buffer_id = SPA_ID_INVALID,
+		};
+		struct spa_video_info_raw video = { 0 };
+		struct spa_ndarray_info ndarray = { 0 };
+		struct spa_pod *format;
+		uint32_t i;
+
+		make_node(&view, factory, &info);
+		format = enum_format(&view, SPA_DIRECTION_INPUT, 0);
+		spa_assert_se(spa_format_video_raw_parse(format, &video) >= 0);
+		spa_assert_se(video.format == SPA_VIDEO_FORMAT_GRAY16_LE);
+		spa_assert_se(video.size.width == WIDTH &&
+				video.size.height == HEIGHT);
+		configure(&view, SPA_DIRECTION_INPUT, 0);
+
+		format = enum_format(&view, SPA_DIRECTION_OUTPUT, 0);
+		spa_assert_se(spa_format_ndarray_parse(format, &ndarray) == 0);
+		spa_assert_se(ndarray.element_type == SPA_ELEMENT_TYPE_U16_LE);
+		spa_assert_se(ndarray.layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR);
+		spa_assert_se(ndarray.n_dimensions == 2 &&
+				ndarray.shape[0] == HEIGHT && ndarray.shape[1] == WIDTH);
+		spa_assert_se(ndarray.rate.num == 1000 && ndarray.rate.denom == 1);
+		spa_assert_se(spa_streq(format_string(format,
+				SPA_FORMAT_NDARRAY_schema),
+				"org.calculon.ao.raw-detector-pixels/1"));
+		spa_assert_se(spa_streq(format_string(format,
+				SPA_FORMAT_NDARRAY_profile), profile));
+		configure(&view, SPA_DIRECTION_OUTPUT, 0);
+
+		init_buffer(&input, PIXELS * sizeof(uint16_t),
+				WIDTH * sizeof(uint16_t));
+		init_buffer(&output, PIXELS * sizeof(uint16_t),
+				WIDTH * sizeof(uint16_t));
+		memset(output.payload, 0xa5, sizeof(output.payload));
+		use_buffer(&view, SPA_DIRECTION_INPUT, &input);
+		use_buffer_flags(&view, SPA_DIRECTION_OUTPUT, &output,
+				shared ? SPA_NODE_BUFFERS_FLAG_ALLOC : 0);
+		spa_assert_se(spa_node_port_set_io(view.node, SPA_DIRECTION_INPUT, 0,
+				SPA_IO_Buffers, &input_io, sizeof(input_io)) == 0);
+		spa_assert_se(spa_node_port_set_io(view.node, SPA_DIRECTION_OUTPUT, 0,
+				SPA_IO_Buffers, &output_io, sizeof(output_io)) == 0);
+		spa_assert_se(spa_node_send_command(view.node, &start) == 0);
+
+		for (i = 0; i < PIXELS; i++)
+			((uint16_t *)input.payload)[i] = (uint16_t)(100u + i);
+		input.header.flags = SPA_META_HEADER_FLAG_MARKER;
+		input.header.offset = 3;
+		input.header.seq = 901;
+		input.header.pts = 1234567;
+		input.header.dts_offset = 19;
+		input_io.buffer_id = 0;
+		input_io.status = SPA_STATUS_HAVE_DATA;
+		spa_assert_se(spa_node_process(view.node) == SPA_STATUS_HAVE_DATA);
+		spa_assert_se(input_io.status == SPA_STATUS_NEED_DATA);
+		spa_assert_se(output_io.status == SPA_STATUS_HAVE_DATA &&
+				output_io.buffer_id == 0);
+		spa_assert_se(output.header.flags == input.header.flags &&
+				output.header.offset == input.header.offset &&
+				output.header.seq == input.header.seq &&
+				output.header.pts == input.header.pts &&
+				output.header.dts_offset == input.header.dts_offset);
+		spa_assert_se(memcmp(output.data.data, input.payload,
+				PIXELS * sizeof(uint16_t)) == 0);
+		if (shared) {
+			spa_assert_se(output.data.data == input.data.data);
+			spa_assert_se(output.data.chunk == input.data.chunk);
+			spa_assert_se(output.payload[0] == 0xa5);
+		} else {
+			spa_assert_se(output.data.data == output.payload);
+		}
+
+		spa_assert_se(spa_node_send_command(view.node, &pause) == 0);
+		destroy(&view);
+	}
+}
+
+static void test_video_view_gray8(const struct spa_handle_factory *factory)
+{
+	const struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SIZE, "4x4"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_RATE, "500/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_SCHEMA, "test.raw-u8/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_VIDEO_FORMAT, "GRAY8"),
+	};
+	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	struct instance view;
+	struct buffer input, output;
+	struct spa_io_buffers input_io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
+	};
+	struct spa_io_buffers output_io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
+	};
+	struct spa_video_info_raw video = { 0 };
+	struct spa_ndarray_info ndarray = { 0 };
+	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
+	struct spa_pod *format;
+	uint32_t i;
+
+	make_node(&view, factory, &info);
+	format = enum_format(&view, SPA_DIRECTION_INPUT, 0);
+	spa_assert_se(spa_format_video_raw_parse(format, &video) >= 0);
+	spa_assert_se(video.format == SPA_VIDEO_FORMAT_GRAY8);
+	configure(&view, SPA_DIRECTION_INPUT, 0);
+	format = enum_format(&view, SPA_DIRECTION_OUTPUT, 0);
+	spa_assert_se(spa_format_ndarray_parse(format, &ndarray) == 0);
+	spa_assert_se(ndarray.element_type == SPA_ELEMENT_TYPE_U8);
+	spa_assert_se(ndarray.n_dimensions == 2 &&
+			ndarray.shape[0] == HEIGHT && ndarray.shape[1] == WIDTH);
+	spa_assert_se(ndarray.rate.num == 500 && ndarray.rate.denom == 1);
+	spa_assert_se(spa_streq(format_string(format,
+			SPA_FORMAT_NDARRAY_schema), "test.raw-u8/1"));
+	spa_assert_se(spa_pod_find_prop(format, NULL,
+			SPA_FORMAT_NDARRAY_profile) == NULL);
+	configure(&view, SPA_DIRECTION_OUTPUT, 0);
+
+	init_buffer(&input, PIXELS, WIDTH);
+	init_buffer(&output, PIXELS, WIDTH);
+	use_buffer(&view, SPA_DIRECTION_INPUT, &input);
+	use_buffer(&view, SPA_DIRECTION_OUTPUT, &output);
+	spa_assert_se(spa_node_port_set_io(view.node, SPA_DIRECTION_INPUT, 0,
+			SPA_IO_Buffers, &input_io, sizeof(input_io)) == 0);
+	spa_assert_se(spa_node_port_set_io(view.node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_IO_Buffers, &output_io, sizeof(output_io)) == 0);
+	spa_assert_se(spa_node_send_command(view.node, &start) == 0);
+	for (i = 0; i < PIXELS; i++)
+		input.payload[i] = (uint8_t)(i + 1u);
+	input.header.seq = 902;
+	input.header.flags = SPA_META_HEADER_FLAG_MARKER;
+	input_io.buffer_id = 0;
+	input_io.status = SPA_STATUS_HAVE_DATA;
+	spa_assert_se(spa_node_process(view.node) == SPA_STATUS_HAVE_DATA);
+	spa_assert_se(output_io.status == SPA_STATUS_HAVE_DATA);
+	spa_assert_se(output.header.seq == 902 &&
+			output.header.flags == SPA_META_HEADER_FLAG_MARKER);
+	spa_assert_se(memcmp(output.payload, input.payload, PIXELS) == 0);
+	spa_assert_se(spa_node_send_command(view.node, &pause) == 0);
+	destroy(&view);
+}
+
+int main(int argc, char **argv)
+{
 	const struct spa_dict_item assembly_items[] = {
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SIZE, "4x4"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_RATE, "1000/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS, "2"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_SCHEMA,
-				SPA_CALCULON_SCHEMA_CALIBRATED_PIXEL_ROW_BLOCK),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SCHEMA,
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SIZE, "4x4"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_RATE, "1000/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ROW_BLOCK_ROWS, "2"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ROW_BLOCK_SCHEMA,
+				"org.calculon.ao.calibrated-pixel-row-block/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SCHEMA,
 				"org.calculon.ao.calibrated-pixels/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_PROFILE, profile),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_ELEMENT_TYPE,
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_PROFILE, profile),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ELEMENT_TYPE,
 				"F32_LE"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_LAYOUT,
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_LAYOUT,
 				"row-major"),
 	};
 	const struct spa_dict assembly_info = SPA_DICT_INIT(assembly_items,
 			SPA_N_ELEMENTS(assembly_items));
 	spa_handle_factory_enum_func_t enumerate;
-	const struct spa_handle_factory *pixel_factory, *assembly_factory;
-	struct instance pixel, assembly;
-	struct buffer raw, block, frame;
-	struct spa_io_buffers raw_io = {
-		.status = SPA_STATUS_NEED_DATA,
-		.buffer_id = SPA_ID_INVALID,
-	};
+	const struct spa_handle_factory *assembly_factory, *video_view_factory;
+	struct instance assembly;
+	struct buffer block, frame;
 	struct spa_io_buffers block_io = {
 		.status = SPA_STATUS_NEED_DATA,
 		.buffer_id = SPA_ID_INVALID,
@@ -396,8 +548,6 @@ int main(int argc, char **argv)
 	};
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
-	uint16_t *raw_values;
-	const float *frame_values;
 	uint32_t i;
 	void *library, *symbol;
 
@@ -407,68 +557,49 @@ int main(int argc, char **argv)
 	symbol = dlsym(library, SPA_HANDLE_FACTORY_ENUM_FUNC_NAME);
 	spa_assert_se(symbol != NULL);
 	memcpy(&enumerate, &symbol, sizeof(enumerate));
-	pixel_factory = find_factory(enumerate,
-			SPA_NAME_API_CALCULON_PIXEL_CALIBRATION);
 	assembly_factory = find_factory(enumerate,
-			SPA_NAME_API_CALCULON_FRAME_ASSEMBLY);
-	spa_assert_se(pixel_factory != NULL && assembly_factory != NULL);
-	make_node(&pixel, pixel_factory, &info);
+			SPA_NAME_API_NDARRAY_FRAME_ASSEMBLY);
+	spa_assert_se(assembly_factory != NULL);
+	video_view_factory = find_factory(enumerate,
+			SPA_NAME_API_NDARRAY_VIDEO_VIEW);
+	spa_assert_se(video_view_factory != NULL);
 	make_node(&assembly, assembly_factory, &assembly_info);
-	/* The second exact input alternative is the raw U16 row-block ndarray. */
-	configure(&pixel, SPA_DIRECTION_INPUT, 1);
-	negotiate(&pixel, &assembly);
+	configure(&assembly, SPA_DIRECTION_INPUT, 0);
 	configure(&assembly, SPA_DIRECTION_OUTPUT, 0);
 
-	init_buffer(&raw, RAW_BLOCK_BYTES, WIDTH * sizeof(uint16_t));
 	init_buffer(&block, BLOCK_BYTES, WIDTH * sizeof(float));
 	init_buffer(&frame, FRAME_BYTES, WIDTH * sizeof(float));
-	use_buffer(&pixel, SPA_DIRECTION_INPUT, &raw);
-	use_buffer(&pixel, SPA_DIRECTION_OUTPUT, &block);
 	use_buffer(&assembly, SPA_DIRECTION_INPUT, &block);
 	use_buffer(&assembly, SPA_DIRECTION_OUTPUT, &frame);
-	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_INPUT, 0,
-			SPA_IO_Buffers, &raw_io, sizeof(raw_io)) == 0);
-	spa_assert_se(spa_node_port_set_io(pixel.node, SPA_DIRECTION_OUTPUT, 0,
-			SPA_IO_Buffers, &block_io, sizeof(block_io)) == 0);
 	spa_assert_se(spa_node_port_set_io(assembly.node, SPA_DIRECTION_INPUT, 0,
 			SPA_IO_Buffers, &block_io, sizeof(block_io)) == 0);
 	spa_assert_se(spa_node_port_set_io(assembly.node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, &frame_io, sizeof(frame_io)) == 0);
 
 	spa_assert_se(spa_node_send_command(assembly.node, &start) == 0);
-	spa_assert_se(spa_node_send_command(pixel.node, &start) == 0);
-	raw_values = (uint16_t *)raw.payload;
 	for (i = 0; i < WIDTH * BLOCK_ROWS; i++)
-		raw_values[i] = (uint16_t)(i + 1u);
-	raw.header.flags = SPA_META_HEADER_FLAG_DISCONT;
-	raw.header.offset = 0;
-	raw.header.seq = 42;
-	raw.header.pts = 123456;
-	raw_io.buffer_id = 0;
-	raw_io.status = SPA_STATUS_HAVE_DATA;
-	spa_assert_se(spa_node_process(pixel.node) == SPA_STATUS_HAVE_DATA);
-	spa_assert_se(block.header.seq == 42 && block.header.offset == 0);
-	spa_assert_se((block.header.flags & SPA_META_HEADER_FLAG_DISCONT) != 0);
-	spa_assert_se((block.header.flags & SPA_META_HEADER_FLAG_MARKER) == 0);
+		((float *)block.payload)[i] = (float)(i + 1u);
+	block.header.flags = SPA_META_HEADER_FLAG_DISCONT;
+	block.header.offset = 0;
+	block.header.seq = 42;
+	block.header.pts = 123456;
+	block_io.buffer_id = 0;
+	block_io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(assembly.node) == SPA_STATUS_NEED_DATA);
 
 	for (i = 0; i < WIDTH * BLOCK_ROWS; i++)
-		raw_values[i] = (uint16_t)(WIDTH * BLOCK_ROWS + i + 1u);
-	raw.header.flags = SPA_META_HEADER_FLAG_MARKER;
-	raw.header.offset = BLOCK_ROWS;
-	raw_io.buffer_id = 0;
-	raw_io.status = SPA_STATUS_HAVE_DATA;
-	spa_assert_se(spa_node_process(pixel.node) == SPA_STATUS_HAVE_DATA);
-	spa_assert_se(block.header.seq == 42 && block.header.offset == BLOCK_ROWS);
-	spa_assert_se((block.header.flags & SPA_META_HEADER_FLAG_MARKER) != 0);
+		((float *)block.payload)[i] = (float)(WIDTH * BLOCK_ROWS + i + 1u);
+	block.header.flags = SPA_META_HEADER_FLAG_MARKER;
+	block.header.offset = BLOCK_ROWS;
+	block_io.buffer_id = 0;
+	block_io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(assembly.node) == SPA_STATUS_HAVE_DATA);
 	spa_assert_se(frame_io.status == SPA_STATUS_HAVE_DATA);
 	spa_assert_se(frame.header.seq == 42 && frame.header.offset == 0);
 	spa_assert_se((frame.header.flags & SPA_META_HEADER_FLAG_DISCONT) != 0);
 	spa_assert_se((frame.header.flags & SPA_META_HEADER_FLAG_MARKER) != 0);
-	frame_values = (const float *)frame.payload;
 	for (i = 0; i < PIXELS; i++)
-		spa_assert_se(frame_values[i] == (float)(i + 1u));
+		spa_assert_se(((const float *)frame.payload)[i] == (float)(i + 1u));
 
 	/* A malformed partial frame is consumed and abandoned. The next complete
 	 * frame remains usable and advertises the loss as a discontinuity. */
@@ -505,12 +636,12 @@ int main(int argc, char **argv)
 	spa_assert_se((frame.header.flags & SPA_META_HEADER_FLAG_DISCONT) != 0);
 	spa_assert_se((frame.header.flags & SPA_META_HEADER_FLAG_MARKER) != 0);
 
-	spa_assert_se(spa_node_send_command(pixel.node, &pause) == 0);
 	spa_assert_se(spa_node_send_command(assembly.node, &pause) == 0);
 	destroy(&assembly);
-	destroy(&pixel);
 	test_column_major_u16(assembly_factory);
 	test_complete_frame_passthrough(assembly_factory);
+	test_video_view(video_view_factory);
+	test_video_view_gray8(video_view_factory);
 	spa_assert_se(dlclose(library) == 0);
 	return 0;
 }

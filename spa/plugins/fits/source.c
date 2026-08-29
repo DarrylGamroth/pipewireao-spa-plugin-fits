@@ -29,7 +29,7 @@
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 
-#include <pipewireao-plugins/calculon.h>
+#include <pipewireao-plugins/ndarray.h>
 
 #include "cube.h"
 #include "fits.h"
@@ -1479,7 +1479,7 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK) {
 		if (self->cube_info.sample_rank != 2 || self->profile[0] == '\0' ||
 				!spa_streq(self->schema,
-					SPA_CALCULON_SCHEMA_RAW_PIXEL_ROW_BLOCK) ||
+					SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK) ||
 				self->row_block_rows >= self->cube_info.height ||
 				self->cube_info.height % self->row_block_rows != 0) {
 			res = -EINVAL;
