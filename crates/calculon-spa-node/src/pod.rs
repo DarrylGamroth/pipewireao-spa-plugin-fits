@@ -92,7 +92,7 @@ pub(crate) fn port_param(
 
 fn format_value(format: &Format, object_id: u32) -> Value {
     match format.class {
-        FormatClass::Gray8 | FormatClass::Gray16 => object(
+        FormatClass::Gray8 | FormatClass::Gray16Le | FormatClass::Gray16Be => object(
             sys::SPA_TYPE_OBJECT_Format,
             object_id,
             vec![
@@ -102,7 +102,8 @@ fn format_value(format: &Format, object_id: u32) -> Value {
                     sys::SPA_FORMAT_VIDEO_format,
                     id(match format.class {
                         FormatClass::Gray8 => sys::SPA_VIDEO_FORMAT_GRAY8,
-                        FormatClass::Gray16 => sys::SPA_VIDEO_FORMAT_GRAY16_LE,
+                        FormatClass::Gray16Le => sys::SPA_VIDEO_FORMAT_GRAY16_LE,
+                        FormatClass::Gray16Be => sys::SPA_VIDEO_FORMAT_GRAY16_BE,
                         FormatClass::NdArray => unreachable!(),
                     }),
                 ),
@@ -155,9 +156,13 @@ fn rate_fraction(rate: Rate) -> Fraction {
 fn buffer_param(format: &Format) -> Result<Value, i32> {
     let stride = i32::try_from(format.packed_stride()?).map_err(|_| -libc::EOVERFLOW)?;
     let size = i32::try_from(format.packed_bytes()?).map_err(|_| -libc::EOVERFLOW)?;
-    let memory = 1_i32
+    let mem_ptr = 1_i32
         .checked_shl(sys::SPA_DATA_MemPtr)
         .ok_or(-libc::EOVERFLOW)?;
+    let mem_fd = 1_i32
+        .checked_shl(sys::SPA_DATA_MemFd)
+        .ok_or(-libc::EOVERFLOW)?;
+    let memory = mem_ptr | mem_fd;
     Ok(object(
         sys::SPA_TYPE_OBJECT_ParamBuffers,
         sys::SPA_PARAM_Buffers,
@@ -172,7 +177,7 @@ fn buffer_param(format: &Format) -> Result<Value, i32> {
                     ChoiceFlags::empty(),
                     ChoiceEnum::Flags {
                         default: memory,
-                        flags: vec![memory],
+                        flags: Vec::new(),
                     },
                 ))),
             ),
@@ -233,8 +238,13 @@ fn parse_gray(properties: &[Property]) -> Result<Format, i32> {
         Some(Value::Id(Id(value)))
             if matches!(
                 *value,
-                sys::SPA_VIDEO_FORMAT_GRAY8 | sys::SPA_VIDEO_FORMAT_GRAY16_LE
-            ) => *value,
+                sys::SPA_VIDEO_FORMAT_GRAY8
+                    | sys::SPA_VIDEO_FORMAT_GRAY16_LE
+                    | sys::SPA_VIDEO_FORMAT_GRAY16_BE
+            ) =>
+        {
+            *value
+        }
         _ => return Err(-libc::EINVAL),
     };
     let size = match unique(properties, sys::SPA_FORMAT_VIDEO_size)? {
@@ -245,10 +255,11 @@ fn parse_gray(properties: &[Property]) -> Result<Format, i32> {
         Some(Value::Fraction(rate)) => Rate::new(rate.num, rate.denom)?,
         _ => return Err(-libc::EINVAL),
     };
-    if pixel_format == sys::SPA_VIDEO_FORMAT_GRAY8 {
-        Format::gray8(size.width, size.height, rate)
-    } else {
-        Format::gray16(size.width, size.height, rate)
+    match pixel_format {
+        sys::SPA_VIDEO_FORMAT_GRAY8 => Format::gray8(size.width, size.height, rate),
+        sys::SPA_VIDEO_FORMAT_GRAY16_LE => Format::gray16_le(size.width, size.height, rate),
+        sys::SPA_VIDEO_FORMAT_GRAY16_BE => Format::gray16_be(size.width, size.height, rate),
+        _ => unreachable!("pixel format was validated above"),
     }
 }
 

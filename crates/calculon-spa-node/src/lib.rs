@@ -13,7 +13,7 @@ mod pod;
 mod pod_bridge;
 mod port;
 
-pub use buffer::{Header, InputFrame, OutputFrame, overlaps};
+pub use buffer::{Header, InputFrame, OutputFrame, forward_frame, overlaps, shares_data};
 pub use factory::{Factory, Node};
 pub use format::{Format, FormatClass, FormatConstraint, Rate};
 pub use libspa::pod::Value as PodValue;

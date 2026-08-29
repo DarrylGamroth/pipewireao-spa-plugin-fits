@@ -99,16 +99,23 @@ static const struct spa_node_events node_events = {
 	.result = on_result,
 };
 
-static struct spa_pod *enum_one(struct spa_node *node,
+static struct spa_pod *enum_at(struct spa_node *node,
 		struct param_capture *capture, enum spa_direction direction,
-		uint32_t port_id)
+		uint32_t port_id, uint32_t index)
 {
 	capture->expected = SPA_PARAM_EnumFormat;
 	capture->param = NULL;
 	spa_assert_se(spa_node_port_enum_params(node, 1, direction, port_id,
-			SPA_PARAM_EnumFormat, 0, 1, NULL) == 0);
+			SPA_PARAM_EnumFormat, index, 1, NULL) == 0);
 	spa_assert_se(capture->param != NULL);
 	return capture->param;
+}
+
+static struct spa_pod *enum_one(struct spa_node *node,
+		struct param_capture *capture, enum spa_direction direction,
+		uint32_t port_id)
+{
+	return enum_at(node, capture, direction, port_id, 0);
 }
 
 static const char *format_string(const struct spa_pod *format, uint32_t key)
@@ -188,6 +195,16 @@ static void configure_port(struct spa_node *node,
 		uint32_t port_id)
 {
 	struct spa_pod *format = enum_one(node, capture, direction, port_id);
+
+	spa_assert_se(spa_node_port_set_param(node, direction, port_id,
+			SPA_PARAM_Format, 0, format) == 0);
+}
+
+static void configure_port_at(struct spa_node *node,
+		struct param_capture *capture, enum spa_direction direction,
+		uint32_t port_id, uint32_t index)
+{
+	struct spa_pod *format = enum_at(node, capture, direction, port_id, index);
 
 	spa_assert_se(spa_node_port_set_param(node, direction, port_id,
 			SPA_PARAM_Format, 0, format) == 0);
@@ -347,6 +364,107 @@ static void exercise_processing(struct spa_node *node,
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 }
 
+static void exercise_gray_processing(const struct spa_handle_factory *factory,
+		const struct spa_dict *info, uint32_t format_index,
+		enum spa_video_format pixel_format)
+{
+	const size_t handle_size = spa_handle_factory_get_size(factory, info);
+	struct spa_handle *handle = calloc(1, handle_size);
+	struct spa_node *node = NULL;
+	struct spa_hook listener;
+	struct param_capture capture = { .expected = SPA_ID_INVALID };
+	struct spa_video_info_raw raw_info = SPA_VIDEO_INFO_RAW_INIT();
+	struct spa_pod *format;
+	struct test_buffer raw, output;
+	struct spa_buffer *raw_buffers[] = { &raw.buffer };
+	struct spa_buffer *output_buffers[] = { &output.buffer };
+	struct spa_io_buffers raw_io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = 0,
+	};
+	struct spa_io_buffers output_io = {
+		.status = SPA_STATUS_NEED_DATA,
+		.buffer_id = SPA_ID_INVALID,
+	};
+	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
+	float *output_values;
+	uint16_t expected[PIXELS];
+	uint32_t bytes_per_pixel, index;
+
+	spa_assert_se(handle != NULL);
+	spa_assert_se(spa_handle_factory_init(factory, handle, info, NULL, 0) == 0);
+	spa_assert_se(spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Node,
+			(void **)&node) == 0);
+	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
+			&capture) == 0);
+	format = enum_at(node, &capture, SPA_DIRECTION_INPUT, 0, format_index);
+	spa_assert_se(spa_format_video_raw_parse(format, &raw_info) >= 0);
+	spa_assert_se(raw_info.format == pixel_format);
+	spa_assert_se(raw_info.size.width == WIDTH && raw_info.size.height == HEIGHT);
+	spa_assert_se(raw_info.framerate.num == 1000 &&
+			raw_info.framerate.denom == 1);
+
+	configure_port_at(node, &capture, SPA_DIRECTION_INPUT, 0, format_index);
+	configure_port(node, &capture, SPA_DIRECTION_OUTPUT, 0);
+	bytes_per_pixel = pixel_format == SPA_VIDEO_FORMAT_GRAY8 ? 1u : 2u;
+	init_buffer(&raw, PIXELS * bytes_per_pixel,
+			(int32_t)(WIDTH * bytes_per_pixel));
+	init_buffer(&output, 0, WIDTH * (int32_t)sizeof(float));
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_INPUT, 0, 0,
+			raw_buffers, SPA_N_ELEMENTS(raw_buffers)) == 0);
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			output_buffers, SPA_N_ELEMENTS(output_buffers)) == 0);
+	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_INPUT, 0,
+			SPA_IO_Buffers, &raw_io, sizeof(raw_io)) == 0);
+	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_IO_Buffers, &output_io, sizeof(output_io)) == 0);
+
+	for (index = 0; index < PIXELS; index++) {
+		expected[index] = pixel_format == SPA_VIDEO_FORMAT_GRAY8 ?
+				(uint16_t)(3u + 5u * index) :
+				(uint16_t)(0x1203u + 5u * index);
+		if (pixel_format == SPA_VIDEO_FORMAT_GRAY8) {
+			raw.payload[index] = (uint8_t)expected[index];
+		} else {
+			raw.payload[2u * index] = (uint8_t)(expected[index] >> 8u);
+			raw.payload[2u * index + 1u] = (uint8_t)expected[index];
+		}
+	}
+	raw.header.flags = 5;
+	raw.header.offset = 7;
+	raw.header.pts = 456789;
+	raw.header.dts_offset = -8;
+	raw.header.seq = 50;
+	spa_assert_se(spa_node_send_command(node, &start) == 0);
+	raw_io.status = SPA_STATUS_HAVE_DATA;
+	spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
+	spa_assert_se(raw_io.status == SPA_STATUS_NEED_DATA);
+	spa_assert_se(output_io.status == SPA_STATUS_HAVE_DATA);
+	spa_assert_se(memcmp(&raw.header, &output.header,
+			sizeof(raw.header)) == 0);
+	output_values = (float *)output.payload;
+	for (index = 0; index < PIXELS; index++)
+		spa_assert_se(output_values[index] == (float)expected[index]);
+
+	output_io.status = SPA_STATUS_NEED_DATA;
+	raw.header.seq++;
+	raw_io.status = SPA_STATUS_HAVE_DATA;
+#if TRACK_ALLOCATIONS
+	measured_allocations = 0;
+	measure_allocations = true;
+#endif
+	spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
+#if TRACK_ALLOCATIONS
+	measure_allocations = false;
+	spa_assert_se(measured_allocations == 0);
+#endif
+	spa_assert_se(spa_node_send_command(node, &pause) == 0);
+	spa_hook_remove(&listener);
+	spa_assert_se(spa_handle_clear(handle) == 0);
+	free(handle);
+}
+
 static void exercise(const struct spa_handle_factory *factory)
 {
 	const struct spa_dict_item items[] = {
@@ -414,6 +532,9 @@ static void exercise(const struct spa_handle_factory *factory)
 	spa_hook_remove(&listener);
 	spa_assert_se(spa_handle_clear(handle) == 0);
 	free(handle);
+
+	exercise_gray_processing(factory, &info, 1, SPA_VIDEO_FORMAT_GRAY8);
+	exercise_gray_processing(factory, &info, 2, SPA_VIDEO_FORMAT_GRAY16_BE);
 }
 
 static void exercise_hnu240(const struct spa_handle_factory *factory)

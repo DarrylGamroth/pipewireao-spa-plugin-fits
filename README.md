@@ -198,8 +198,9 @@ discard actuator commands when ASDK is absent or unavailable.
 
 ## Calculon pixel calibration
 
-The `api.calculon.pixel-calibration` factory converts exact `GRAY16_LE` raw
-detector frames into `F32_LE` calibrated-pixel ndarrays. Optional flat and
+The `api.calculon.pixel-calibration` factory converts exact `GRAY8`,
+`GRAY16_LE`, or `GRAY16_BE` raw detector frames into `F32_LE`
+calibrated-pixel ndarrays. Optional flat and
 background artifact ports use Calculon-owned schemas and standard Header
 sequence numbers; a node `Props` update activates a complete pair atomically.
 Complete-frame operation uses standard `SPA_IO_Buffers`. With

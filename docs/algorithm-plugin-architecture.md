@@ -36,10 +36,10 @@ adapter unwraps that representation before parsing but rejects every
 unresolved choice. It then applies the same exact format constraint, including
 schema and profile, as it does to a directly encoded fixed value.
 
-Every port uses ordinary `SPA_IO_Buffers`. Pixel calibration offers two exact
-raw-input formats: a complete `GRAY16_LE` video frame, or a complete U16
-row-block ndarray. Format negotiation selects one artifact granularity for the
-stream; buffers never change after publication.
+Every port uses ordinary `SPA_IO_Buffers`. Pixel calibration offers exact
+complete-frame `GRAY8`, `GRAY16_LE`, and `GRAY16_BE` video alternatives plus a
+U16 row-block ndarray alternative. Format negotiation selects one carrier and
+artifact granularity for the stream; buffers never change after publication.
 
 ## Language boundary
 
@@ -81,7 +81,7 @@ Factory construction requires:
 
 | Direction and ID | Role | Negotiated format |
 | --- | --- | --- |
-| input 0 | raw detector pixels | complete `video/raw` `GRAY16_LE` frame, or U16 `org.calculon.ao.raw-pixel-row-block/1` ndarray |
+| input 0 | raw detector pixels | complete `video/raw` `GRAY8`, `GRAY16_LE`, or `GRAY16_BE` frame, or U16 `org.calculon.ao.raw-pixel-row-block/1` ndarray |
 | input 1 | prepared flat calibration | F32 ndarray, `org.calculon.ao.flat-calibration/1`, no rate |
 | input 2 | prepared background calibration | F32 ndarray, `org.calculon.ao.background-calibration/1`, no rate |
 | output 0 | calibrated detector frame or row block | F32 ndarray; complete calibrated-pixels schema at frame rate, or calibrated-pixel-row-block schema `[N,width]` at block rate |
@@ -126,10 +126,12 @@ instance has these exact construction properties:
 | `api.calculon.ndarray-element-type` | Any standard fixed-width SPA ndarray element type |
 | `api.calculon.ndarray-layout` | `row-major` or `column-major` |
 
-The input format is `[N,width]` at block rate when a rate is configured. The
-output format is `[height,width]` at frame rate. An unclocked input produces an
-unclocked output. Element type, layout, and every present profile field are
-preserved exactly. Optional schema fields remain absent unless configured.
+The input port advertises two exact alternatives: `[N,width]` with the
+row-block schema at block rate, and `[height,width]` with the frame schema at
+frame rate. The output is always the exact complete-frame alternative. An
+unclocked input produces an unclocked output. Element type, layout, and every
+present profile field are preserved exactly. Optional schema fields remain
+absent unless configured.
 The schema properties make any scientific change in artifact granularity
 explicit; they may be equal when the schema is independent of transport
 granularity. The calibrated-pixel deployment maps
@@ -145,6 +147,14 @@ sequence, or invalid marker abandons the partial frame. The next valid output
 is marked `DISCONT`. Non-marker Header flags from every accepted block are
 combined into the complete frame, so an early `DISCONT` or `CORRUPTED` flag is
 not lost. Processing is byte-preserving and performs no scalar conversion.
+
+A negotiated complete frame is already a complete artifact; its Header and
+element bytes pass through unchanged, except for `DISCONT` after a frame
+rejected by the node. `offset` and `MARKER` are not interpreted on this path.
+When SPA buffer allocation negotiation supplies shared input/output storage,
+the payload is forwarded without a copy. A host that does not select shared
+storage receives the same contract through one direct payload copy. The
+preallocated assembly workspace is not touched on this path.
 
 ## Fused Shack-Hartmann controller
 

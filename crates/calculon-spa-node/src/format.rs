@@ -28,7 +28,9 @@ pub enum FormatClass {
     /// Standard raw-video `GRAY8` detector carrier bytes.
     Gray8,
     /// Standard raw-video `GRAY16_LE` detector pixels.
-    Gray16,
+    Gray16Le,
+    /// Standard raw-video `GRAY16_BE` detector pixels.
+    Gray16Be,
     /// PipeWireAO native `application/ndarray`.
     NdArray,
 }
@@ -38,7 +40,7 @@ pub enum FormatClass {
 pub struct Format {
     /// Logical format family.
     pub class: FormatClass,
-    /// Native ndarray element type, or `SPA_ELEMENT_TYPE_U16_LE` for GRAY16.
+    /// Native ndarray element type, or the matching-width scalar type for video.
     pub element_type: u32,
     /// Logical shape in axis order. Images use `[height, width]`.
     pub shape: Box<[u32]>,
@@ -69,9 +71,27 @@ impl Format {
     }
 
     /// Constructs an exact standard `GRAY16_LE` detector format.
-    pub fn gray16(width: u32, height: u32, rate: Rate) -> Result<Self, i32> {
+    pub fn gray16_le(width: u32, height: u32, rate: Rate) -> Result<Self, i32> {
         let format = Self {
-            class: FormatClass::Gray16,
+            class: FormatClass::Gray16Le,
+            element_type: sys::SPA_ELEMENT_TYPE_U16_LE,
+            shape: Box::new([height, width]),
+            layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
+            rate: Some(rate),
+            schema: None,
+            profile: None,
+        };
+        format.validate()?;
+        Ok(format)
+    }
+
+    /// Constructs an exact standard `GRAY16_BE` detector format.
+    pub fn gray16_be(width: u32, height: u32, rate: Rate) -> Result<Self, i32> {
+        let format = Self {
+            class: FormatClass::Gray16Be,
+            // SPA ndarray element types have no big-endian U16 member. This
+            // field supplies the two-byte carrier width for video formats;
+            // the class retains the authoritative byte order.
             element_type: sys::SPA_ELEMENT_TYPE_U16_LE,
             shape: Box::new([height, width]),
             layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
@@ -243,10 +263,10 @@ impl Format {
             return Err(-libc::EINVAL);
         }
         match self.class {
-            FormatClass::Gray8 | FormatClass::Gray16 => {
+            FormatClass::Gray8 | FormatClass::Gray16Le | FormatClass::Gray16Be => {
                 let expected_type = match self.class {
                     FormatClass::Gray8 => sys::SPA_ELEMENT_TYPE_U8,
-                    FormatClass::Gray16 => sys::SPA_ELEMENT_TYPE_U16_LE,
+                    FormatClass::Gray16Le | FormatClass::Gray16Be => sys::SPA_ELEMENT_TYPE_U16_LE,
                     FormatClass::NdArray => unreachable!(),
                 };
                 if self.shape.len() != 2

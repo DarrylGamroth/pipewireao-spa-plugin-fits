@@ -698,6 +698,12 @@ unsafe extern "C" fn node_port_set_param<N: Node>(
         let mut state = claim(instance)?;
         let index = port_index(&state.node, direction, port_id)?;
         let previous_node_flags = state.node_flags();
+        let previous_port_flags = state
+            .node
+            .ports()
+            .iter()
+            .map(|port| port.info.flags)
+            .collect::<Vec<_>>();
         let format = if param.is_null() {
             None
         } else {
@@ -731,18 +737,35 @@ unsafe extern "C" fn node_port_set_param<N: Node>(
                 return Err(error);
             }
         }
-        let (key, mut info, node_info) = {
-            let port = &mut state.node.ports_mut()[index];
-            port.info.params = port.params.as_mut_ptr();
-            port.info.n_params = port.params.len() as u32;
-            let key = port.key;
-            let info = port.info;
-            let node_info = (state.node_flags() != previous_node_flags).then(|| state.node_info());
-            (key, info, node_info)
+        let port_infos = {
+            state
+                .node
+                .ports_mut()
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(port_index, port)| {
+                    port.info.params = port.params.as_mut_ptr();
+                    port.info.n_params = port.params.len() as u32;
+                    let mut change_mask = 0;
+                    if port_index == index {
+                        change_mask |= sys::SPA_PORT_CHANGE_MASK_PARAMS as u64;
+                    }
+                    if previous_port_flags[port_index] != port.info.flags {
+                        change_mask |= sys::SPA_PORT_CHANGE_MASK_FLAGS as u64;
+                    }
+                    (change_mask != 0).then(|| {
+                        let mut info = port.info;
+                        info.change_mask = change_mask;
+                        (port.key, info)
+                    })
+                })
+                .collect::<Vec<_>>()
         };
+        let node_info = (state.node_flags() != previous_node_flags).then(|| state.node_info());
         drop(state);
-        info.change_mask = sys::SPA_PORT_CHANGE_MASK_PARAMS as u64;
-        emit_port_info(&mut instance.hooks, key, &info);
+        for (key, info) in port_infos {
+            emit_port_info(&mut instance.hooks, key, &info);
+        }
         if let Some(mut info) = node_info {
             info.change_mask = sys::SPA_NODE_CHANGE_MASK_FLAGS as u64;
             emit_node_info(&mut instance.hooks, &info);
@@ -766,9 +789,6 @@ unsafe extern "C" fn node_port_use_buffers<N: Node>(
         if state.started {
             return Err(-libc::EBUSY);
         }
-        if flags & sys::SPA_NODE_BUFFERS_FLAG_ALLOC != 0 {
-            return Err(-libc::ENOTSUP);
-        }
         if n_buffers == 0 {
             state.node.ports_mut()[index].clear_buffers();
             return Ok(0);
@@ -782,13 +802,59 @@ unsafe extern "C" fn node_port_use_buffers<N: Node>(
             .ok_or(-libc::EIO)?
             .packed_bytes()?;
         let supplied = std::slice::from_raw_parts(buffers, n_buffers as usize);
+        if flags & sys::SPA_NODE_BUFFERS_FLAG_ALLOC != 0 {
+            if !state.node.ports()[index].can_allocate_buffers() {
+                return Err(-libc::ENOTSUP);
+            }
+            let other_direction = if direction == sys::SPA_DIRECTION_INPUT {
+                sys::SPA_DIRECTION_OUTPUT
+            } else {
+                sys::SPA_DIRECTION_INPUT
+            };
+            let other_index = port_index(&state.node, other_direction, port_id)?;
+            let other = &state.node.ports()[other_index];
+            if other.n_buffers != supplied.len() {
+                return Err(-libc::EIO);
+            }
+            for (buffer_index, &buffer) in supplied.iter().enumerate() {
+                let destination = buffer.as_ref().ok_or(-libc::EINVAL)?;
+                let source = other.buffers[buffer_index]
+                    .buffer
+                    .as_ref()
+                    .ok_or(-libc::EINVAL)?;
+                if destination.n_datas != 1
+                    || destination.datas.is_null()
+                    || source.n_datas != 1
+                    || source.datas.is_null()
+                {
+                    return Err(-libc::EINVAL);
+                }
+                let data = &*source.datas;
+                if !crate::buffer::is_cpu_mapped(data.type_)
+                    || data.data.is_null()
+                    || data.chunk.is_null()
+                    || (data.maxsize as usize) < minimum_size
+                {
+                    return Err(-libc::EINVAL);
+                }
+            }
+            for (buffer_index, &buffer) in supplied.iter().enumerate() {
+                let source = other.buffers[buffer_index]
+                    .buffer
+                    .as_ref()
+                    .ok_or(-libc::EINVAL)?;
+                let source_data = *source.datas;
+                let destination = buffer.as_mut().ok_or(-libc::EINVAL)?;
+                *destination.datas = source_data;
+            }
+        }
         for &buffer in supplied {
             let buffer = buffer.as_ref().ok_or(-libc::EINVAL)?;
             if buffer.n_datas != 1 || buffer.datas.is_null() {
                 return Err(-libc::EINVAL);
             }
             let data = &*buffer.datas;
-            if data.type_ != sys::SPA_DATA_MemPtr
+            if !crate::buffer::is_cpu_mapped(data.type_)
                 || data.data.is_null()
                 || data.chunk.is_null()
                 || (data.maxsize as usize) < minimum_size

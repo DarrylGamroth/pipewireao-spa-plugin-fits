@@ -108,6 +108,20 @@ impl Port {
         self.configuration
     }
 
+    /// Advertises whether this port can reuse storage from its opposite-direction port.
+    pub fn set_can_allocate_buffers(&mut self, enabled: bool) {
+        if enabled {
+            self.info.flags |= sys::SPA_PORT_FLAG_CAN_ALLOC_BUFFERS as u64;
+        } else {
+            self.info.flags &= !(sys::SPA_PORT_FLAG_CAN_ALLOC_BUFFERS as u64);
+        }
+    }
+
+    /// Returns whether this port can reuse storage from its opposite-direction port.
+    pub const fn can_allocate_buffers(&self) -> bool {
+        self.info.flags & sys::SPA_PORT_FLAG_CAN_ALLOC_BUFFERS as u64 != 0
+    }
+
     /// Returns the input buffer currently offered by the host.
     pub fn input_buffer(&mut self) -> Result<Option<(u32, *mut sys::spa_buffer)>, i32> {
         if self.key.direction != sys::SPA_DIRECTION_INPUT {
@@ -174,6 +188,31 @@ impl Port {
         };
         self.buffers[id].available = false;
         Ok(Some((id as u32, self.buffers[id].buffer)))
+    }
+
+    /// Reserves a particular output buffer for storage shared with the matching input ID.
+    pub fn reserve_output_id(&mut self, id: u32) -> Result<Option<*mut sys::spa_buffer>, i32> {
+        if self.output_pending()? {
+            return Ok(None);
+        }
+        let slot = self
+            .buffers
+            .get_mut(id as usize)
+            .filter(|_| (id as usize) < self.n_buffers)
+            .ok_or(-libc::EINVAL)?;
+        if !slot.available {
+            return Err(-libc::EPIPE);
+        }
+        slot.available = false;
+        Ok(Some(slot.buffer))
+    }
+
+    /// Returns one registered buffer by its port-local ID.
+    pub fn registered_buffer(&self, id: u32) -> Option<*mut sys::spa_buffer> {
+        self.buffers
+            .get(id as usize)
+            .filter(|_| (id as usize) < self.n_buffers)
+            .map(|slot| slot.buffer)
     }
 
     /// Returns a reserved output buffer to this port without publishing it.

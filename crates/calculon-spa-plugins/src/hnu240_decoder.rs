@@ -62,14 +62,54 @@ struct TapPlacement {
 // output image. Rows are reconstructed from the outside toward the centre, so
 // the two overscan rows become output rows 120 and 121.
 const TAP_PLACEMENTS: [TapPlacement; 8] = [
-    TapPlacement { x: 179, dx: -1, y: 0, dy: 1 }, // T0
-    TapPlacement { x: 180, dx: 1, y: 0, dy: 1 },  // T1
-    TapPlacement { x: 180, dx: 1, y: 241, dy: -1 }, // T2
-    TapPlacement { x: 179, dx: -1, y: 241, dy: -1 }, // T3
-    TapPlacement { x: 60, dx: 1, y: 241, dy: -1 }, // T4
-    TapPlacement { x: 59, dx: -1, y: 241, dy: -1 }, // T5
-    TapPlacement { x: 59, dx: -1, y: 0, dy: 1 },  // T6
-    TapPlacement { x: 60, dx: 1, y: 0, dy: 1 },   // T7
+    TapPlacement {
+        x: 179,
+        dx: -1,
+        y: 0,
+        dy: 1,
+    }, // T0
+    TapPlacement {
+        x: 180,
+        dx: 1,
+        y: 0,
+        dy: 1,
+    }, // T1
+    TapPlacement {
+        x: 180,
+        dx: 1,
+        y: 241,
+        dy: -1,
+    }, // T2
+    TapPlacement {
+        x: 179,
+        dx: -1,
+        y: 241,
+        dy: -1,
+    }, // T3
+    TapPlacement {
+        x: 60,
+        dx: 1,
+        y: 241,
+        dy: -1,
+    }, // T4
+    TapPlacement {
+        x: 59,
+        dx: -1,
+        y: 241,
+        dy: -1,
+    }, // T5
+    TapPlacement {
+        x: 59,
+        dx: -1,
+        y: 0,
+        dy: 1,
+    }, // T6
+    TapPlacement {
+        x: 60,
+        dx: 1,
+        y: 0,
+        dy: 1,
+    }, // T7
 ];
 
 /// Decodes one complete HNü240 carrier frame into detector pixels.
@@ -128,7 +168,7 @@ impl Node for Hnu240DecoderNode {
             return Err(-libc::EINVAL);
         }
         let input_format = Format::gray8(RAW_WIDTH as u32, RAW_HEIGHT as u32, rate)?;
-        let output_format = Format::gray16(OUTPUT_WIDTH as u32, OUTPUT_HEIGHT as u32, rate)?;
+        let output_format = Format::gray16_le(OUTPUT_WIDTH as u32, OUTPUT_HEIGHT as u32, rate)?;
         Ok(Self {
             ports: vec![
                 Port::new(
@@ -235,12 +275,16 @@ mod tests {
         decode_frame(&carrier, RAW_WIDTH, &mut decoded, OUTPUT_WIDTH).unwrap();
         assert_eq!(decoded, expected);
         assert!(decoded[..OUTPUT_WIDTH].iter().all(|&pixel| pixel != 0));
-        assert!(decoded[120 * OUTPUT_WIDTH..122 * OUTPUT_WIDTH]
-            .iter()
-            .all(|&pixel| pixel != 0));
-        assert!(decoded[(OUTPUT_HEIGHT - 1) * OUTPUT_WIDTH..]
-            .iter()
-            .all(|&pixel| pixel != 0));
+        assert!(
+            decoded[120 * OUTPUT_WIDTH..122 * OUTPUT_WIDTH]
+                .iter()
+                .all(|&pixel| pixel != 0)
+        );
+        assert!(
+            decoded[(OUTPUT_HEIGHT - 1) * OUTPUT_WIDTH..]
+                .iter()
+                .all(|&pixel| pixel != 0)
+        );
     }
 
     #[test]
@@ -248,7 +292,12 @@ mod tests {
         let carrier = vec![0_u8; RAW_WIDTH * RAW_HEIGHT];
         let mut decoded = vec![0_u16; OUTPUT_WIDTH * OUTPUT_HEIGHT];
         assert_eq!(
-            decode_frame(&carrier[..carrier.len() - 1], RAW_WIDTH, &mut decoded, OUTPUT_WIDTH),
+            decode_frame(
+                &carrier[..carrier.len() - 1],
+                RAW_WIDTH,
+                &mut decoded,
+                OUTPUT_WIDTH
+            ),
             Err(-libc::EINVAL)
         );
         assert_eq!(

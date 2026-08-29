@@ -206,9 +206,12 @@ Pixel calibration emits
 [`org.calculon.ao.calibrated-pixel-row-block/1`](schemas/calibrated-pixel-row-block-1.md)
 with the same shape and rate and `F32_LE` elements.
 
-The calibration source alternatives are exact: a complete `GRAY16_LE` frame,
-or the raw row-block ndarray schema. Format negotiation selects one alternative
-for the stream. A stream does not mix complete frames and blocks.
+The calibration source alternatives are exact: a complete `GRAY8`,
+`GRAY16_LE`, or `GRAY16_BE` frame, or the raw row-block ndarray schema. Format
+negotiation selects one alternative for the stream. A stream does not mix
+complete frames and blocks. Eight-bit values are widened to detector ADU;
+16-bit values are decoded according to the negotiated byte order before the
+same prepared calibration plan runs.
 
 ## Identity and loss
 
@@ -237,13 +240,19 @@ calibrated block per input block.
 
 ## Assembly and observer isolation
 
-`api.calculon.frame-assembly` owns a preallocated frame workspace. It accepts
-only the next offset for one sequence. A gap, overlap, unexpected sequence,
-out-of-range block, or invalid marker abandons the partial frame. Nothing is
-published until a complete frame is assembled. The factory accepts any
+`api.calculon.frame-assembly` accepts either the configured row-block ndarray
+or the exact complete-frame ndarray. For row blocks it owns a preallocated
+frame workspace and accepts only the next offset for one sequence. A gap,
+overlap, unexpected sequence, out-of-range block, or invalid marker abandons
+the partial frame. Nothing is published until a complete frame is assembled.
+A complete-frame input is already a complete artifact, so `offset` and
+`MARKER` are preserved rather than interpreted. Shared SPA storage is
+forwarded without a payload copy when negotiated. The fallback is one direct
+copy and does not touch the assembly workspace. The factory accepts any
 prepared rank-two ndarray using a standard fixed-width element type and either
-native layout. It preserves element bytes, layout, and profile while applying
-the configured row-block-to-frame schema mapping, extent, and rate.
+native layout. It preserves element bytes, layout, profile, and complete-frame
+Header metadata while applying the configured row-block-to-frame schema
+mapping, extent, and rate.
 
 For calibrated detector rows, the corresponding factory information is:
 
@@ -274,6 +283,14 @@ the delivered item.
 The queue is a real asynchronous boundary. Assigning synchronous nodes to two
 threads does not by itself overlap graph cycles or prevent a slow observer from
 affecting pool reuse.
+
+The capacity-one queue bounds observer backlog but does not reduce work before
+the queue. A row-block input is therefore assembled at the acquisition frame
+rate in this topology even when a GUI copies samples at a lower update rate.
+Reducing that cost requires frame-aware rate selection before payload assembly:
+all blocks for a selected Header `seq` are assembled and all blocks for an
+unselected `seq` are discarded as a group. Dropping individual row blocks is
+invalid. No implicit rate conversion is performed by frame assembly or queue.
 
 ## What scheduling does not solve
 

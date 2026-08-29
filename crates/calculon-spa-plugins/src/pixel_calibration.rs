@@ -7,15 +7,15 @@ use calculon_algorithms::schemas::{
 };
 use calculon_algorithms::{InputProgress, PixelCalibrationPlan, ProgressWorkspace};
 use calculon_spa_node::{
-    Factory, Format, FormatClass, FormatConstraint, Header, InputFrame, Node, OutputFrame, PodValue,
-    Port, PortRef, Property, object, parse_props, sys,
+    Factory, Format, FormatClass, FormatConstraint, Header, InputFrame, Node, OutputFrame,
+    PodValue, Port, PortRef, Property, object, parse_props, sys,
 };
 use libspa::utils::Id;
 
-use crate::{CALIBRATED_PIXEL_ROW_BLOCK_V1, RAW_PIXEL_ROW_BLOCK_V1};
 use crate::config::{
     optional_info, parse_positive_usize, parse_rate, parse_size, required_info, valid_profile,
 };
+use crate::{CALIBRATED_PIXEL_ROW_BLOCK_V1, RAW_PIXEL_ROW_BLOCK_V1};
 
 /// Factory name of the complete-frame detector-calibration node.
 pub const PIXEL_CALIBRATION_FACTORY_NAME: &str = "api.calculon.pixel-calibration";
@@ -31,6 +31,138 @@ const INPUT_FLAT: usize = 1;
 const INPUT_BACKGROUND: usize = 2;
 const OUTPUT: usize = 3;
 const SLOT_COUNT: usize = 3;
+
+fn copy_raw_rows(
+    destination: &mut [u16],
+    source: &InputFrame<'_>,
+    class: FormatClass,
+    width: usize,
+    block_rows: usize,
+    start_row: usize,
+    block_input: bool,
+) -> Result<(), i32> {
+    let destination_start = start_row.checked_mul(width).ok_or(-libc::EOVERFLOW)?;
+    let destination_end = destination_start
+        .checked_add(block_rows.checked_mul(width).ok_or(-libc::EOVERFLOW)?)
+        .ok_or(-libc::EOVERFLOW)?;
+    let destination = destination
+        .get_mut(destination_start..destination_end)
+        .ok_or(-libc::EINVAL)?;
+
+    match class {
+        FormatClass::Gray8 => {
+            let (raw, stride) = source.u8();
+            for (local_row, target) in destination.chunks_exact_mut(width).enumerate() {
+                let source_row = start_row + local_row;
+                let source_start = source_row.checked_mul(stride).ok_or(-libc::EOVERFLOW)?;
+                let source_end = source_start.checked_add(width).ok_or(-libc::EOVERFLOW)?;
+                let row = raw.get(source_start..source_end).ok_or(-libc::EINVAL)?;
+                for (target, &value) in target.iter_mut().zip(row) {
+                    *target = u16::from(value);
+                }
+            }
+        }
+        FormatClass::Gray16Le | FormatClass::NdArray => {
+            copy_native_or_little_endian_rows(destination, source, width, start_row, block_input)?;
+        }
+        FormatClass::Gray16Be => {
+            copy_native_or_big_endian_rows(destination, source, width, start_row)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_endian = "little")]
+fn copy_native_or_little_endian_rows(
+    destination: &mut [u16],
+    source: &InputFrame<'_>,
+    width: usize,
+    start_row: usize,
+    block_input: bool,
+) -> Result<(), i32> {
+    let (raw, stride) = source.u16()?;
+    for (local_row, target) in destination.chunks_exact_mut(width).enumerate() {
+        let source_row = if block_input {
+            local_row
+        } else {
+            start_row + local_row
+        };
+        let source_start = source_row.checked_mul(stride).ok_or(-libc::EOVERFLOW)?;
+        let source_end = source_start.checked_add(width).ok_or(-libc::EOVERFLOW)?;
+        target.copy_from_slice(raw.get(source_start..source_end).ok_or(-libc::EINVAL)?);
+    }
+    Ok(())
+}
+
+#[cfg(target_endian = "big")]
+fn copy_native_or_little_endian_rows(
+    destination: &mut [u16],
+    source: &InputFrame<'_>,
+    width: usize,
+    start_row: usize,
+    block_input: bool,
+) -> Result<(), i32> {
+    copy_ordered_u16_rows::<false>(destination, source, width, start_row, block_input)
+}
+
+#[cfg(target_endian = "big")]
+fn copy_native_or_big_endian_rows(
+    destination: &mut [u16],
+    source: &InputFrame<'_>,
+    width: usize,
+    start_row: usize,
+) -> Result<(), i32> {
+    let (raw, stride) = source.u16()?;
+    for (local_row, target) in destination.chunks_exact_mut(width).enumerate() {
+        let source_start = (start_row + local_row)
+            .checked_mul(stride)
+            .ok_or(-libc::EOVERFLOW)?;
+        let source_end = source_start.checked_add(width).ok_or(-libc::EOVERFLOW)?;
+        target.copy_from_slice(raw.get(source_start..source_end).ok_or(-libc::EINVAL)?);
+    }
+    Ok(())
+}
+
+#[cfg(target_endian = "little")]
+fn copy_native_or_big_endian_rows(
+    destination: &mut [u16],
+    source: &InputFrame<'_>,
+    width: usize,
+    start_row: usize,
+) -> Result<(), i32> {
+    copy_ordered_u16_rows::<true>(destination, source, width, start_row, false)
+}
+
+fn copy_ordered_u16_rows<const BIG_ENDIAN: bool>(
+    destination: &mut [u16],
+    source: &InputFrame<'_>,
+    width: usize,
+    start_row: usize,
+    block_input: bool,
+) -> Result<(), i32> {
+    let (raw, stride) = source.u8();
+    let row_bytes = width.checked_mul(2).ok_or(-libc::EOVERFLOW)?;
+    for (local_row, target) in destination.chunks_exact_mut(width).enumerate() {
+        let source_row = if block_input {
+            local_row
+        } else {
+            start_row + local_row
+        };
+        let source_start = source_row.checked_mul(stride).ok_or(-libc::EOVERFLOW)?;
+        let source_end = source_start
+            .checked_add(row_bytes)
+            .ok_or(-libc::EOVERFLOW)?;
+        let row = raw.get(source_start..source_end).ok_or(-libc::EINVAL)?;
+        for (target, bytes) in target.iter_mut().zip(row.chunks_exact(2)) {
+            *target = if BIG_ENDIAN {
+                u16::from_be_bytes([bytes[0], bytes[1]])
+            } else {
+                u16::from_le_bytes([bytes[0], bytes[1]])
+            };
+        }
+    }
+    Ok(())
+}
 
 pub(crate) static FACTORY: Factory =
     Factory::new::<PixelCalibrationNode>(b"api.calculon.pixel-calibration\0");
@@ -278,18 +410,15 @@ impl PixelCalibrationNode {
         };
         let output_format = output.format().ok_or(-libc::EIO)?;
         let result = (|| unsafe {
-            let (raw, source_stride) = source.u16()?;
-            for local_row in 0..self.block_rows {
-                let source_row = if block_input {
-                    local_row
-                } else {
-                    start_row + local_row
-                };
-                let source_start = source_row * source_stride;
-                let destination_start = (start_row + local_row) * self.width;
-                self.raw[destination_start..destination_start + self.width]
-                    .copy_from_slice(&raw[source_start..source_start + self.width]);
-            }
+            copy_raw_rows(
+                &mut self.raw,
+                &source,
+                (*input_format).class,
+                self.width,
+                self.block_rows,
+                start_row,
+                block_input,
+            )?;
             let mut destination = OutputFrame::new(output_buffer, output_format)?;
             let (calibrated, destination_stride) = destination.f32_mut()?;
             if destination_stride != self.width {
@@ -392,14 +521,19 @@ impl Node for PixelCalibrationNode {
             )?
         };
 
-        let raw_frame_format = Format::gray16(width, height, rate)?;
+        let gray16_le_format = Format::gray16_le(width, height, rate)?;
+        let gray8_format = Format::gray8(width, height, rate)?;
+        let gray16_be_format = Format::gray16_be(width, height, rate)?;
         let raw_block_format = (blocks_per_frame > 1)
             .then(|| {
                 Format::ndarray(
                     sys::SPA_ELEMENT_TYPE_U16_LE,
                     RAW_PIXEL_ROW_BLOCK_V1,
                     profile,
-                    [u32::try_from(block_rows).map_err(|_| -libc::EOVERFLOW)?, width],
+                    [
+                        u32::try_from(block_rows).map_err(|_| -libc::EOVERFLOW)?,
+                        width,
+                    ],
                     Some(output_rate),
                 )
             })
@@ -436,8 +570,12 @@ impl Node for PixelCalibrationNode {
                     },
                     true,
                     false,
-                    std::iter::once(FormatConstraint::exact(raw_frame_format))
+                    std::iter::once(FormatConstraint::exact(gray16_le_format))
                         .chain(raw_block_format.map(FormatConstraint::exact))
+                        .chain([
+                            FormatConstraint::exact(gray8_format),
+                            FormatConstraint::exact(gray16_be_format),
+                        ])
                         .collect::<Vec<_>>(),
                 ),
                 Port::new(

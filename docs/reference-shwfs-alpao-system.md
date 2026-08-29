@@ -5,7 +5,7 @@ to an ALPAO deformable-mirror command. It is a reference integration and
 latency oracle, not a telescope-specific control configuration.
 
 ```text
-GRAY16_LE detector frame
+GRAY8, GRAY16_LE, or GRAY16_BE detector frame
   -> ordinary scheduled buffer
   -> api.calculon.pixel-calibration
   -> org.calculon.ao.calibrated-pixels/1 F32 [height, width]
@@ -70,7 +70,7 @@ intersection, so schema, profile, element type, shape, layout, and rate are
 link constraints rather than parallel assumptions. It then shares SPA buffers
 between the negotiated ports and drives this sequence:
 
-1. An asymmetric two-subaperture GRAY16 frame crosses an ordinary buffer link
+1. An asymmetric two-subaperture `GRAY16_LE` frame crosses an ordinary buffer link
    and is calibrated.
 2. The fused controller extracts regions, measures nonzero slopes,
    reconstructs eight physical commands, integrates them, and applies

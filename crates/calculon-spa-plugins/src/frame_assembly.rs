@@ -2,7 +2,7 @@
 
 use calculon_spa_node::{
     Factory, Format, FormatConstraint, Header, InputFrame, Node, OutputFrame, Port, PortRef, Rate,
-    sys,
+    forward_frame, shares_data, sys,
 };
 
 use crate::config::{optional_info, parse_positive_usize, parse_rate, parse_size, required_info};
@@ -109,6 +109,72 @@ impl FrameAssemblyNode {
         Ok(())
     }
 
+    fn copy_input(
+        source: &InputFrame<'_>,
+        format: &Format,
+        destination: &mut OutputFrame<'_>,
+    ) -> Result<(), i32> {
+        let line_bytes = format.packed_stride()?;
+        let lines = format.line_count()?;
+        if source.lines() != lines
+            || source.stride() < line_bytes
+            || destination.lines() != lines
+            || destination.stride() < line_bytes
+        {
+            return Err(-libc::EINVAL);
+        }
+        let destination_stride = destination.stride();
+        let destination_bytes = destination.bytes_mut();
+        for line in 0..lines {
+            destination_bytes[line * destination_stride..line * destination_stride + line_bytes]
+                .copy_from_slice(
+                    &source.bytes()[line * source.stride()..line * source.stride() + line_bytes],
+                );
+        }
+        Ok(())
+    }
+
+    fn publish_frame(
+        &mut self,
+        input_id: u32,
+        input_buffer: *mut sys::spa_buffer,
+        source: &InputFrame<'_>,
+        mut header: Header,
+    ) -> Result<i32, i32> {
+        header.flags |= self.next_flags;
+        self.next_flags = 0;
+
+        let shared = self.ports[OUTPUT]
+            .registered_buffer(input_id)
+            .is_some_and(|output| unsafe { shares_data(input_buffer, output) });
+        let Some((output_id, output_buffer)) = (if shared {
+            self.ports[OUTPUT]
+                .reserve_output_id(input_id)?
+                .map(|buffer| (input_id, buffer))
+        } else {
+            self.ports[OUTPUT].reserve_output()?
+        }) else {
+            return Ok(sys::SPA_STATUS_HAVE_DATA as i32);
+        };
+        let output_format = self.ports[OUTPUT].format().ok_or(-libc::EIO)?;
+        let result = (|| unsafe {
+            if !forward_frame(input_buffer, output_buffer, output_format, Some(header))? {
+                let mut destination = OutputFrame::new(output_buffer, output_format)?;
+                Self::copy_input(source, output_format, &mut destination)?;
+                destination.set_header(Some(header));
+                destination.commit();
+            }
+            Ok::<(), i32>(())
+        })();
+        if let Err(error) = result {
+            self.ports[OUTPUT].cancel_output(output_id)?;
+            return Err(error);
+        }
+        self.ports[INPUT].consume_input()?;
+        self.ports[OUTPUT].publish_output(output_id)?;
+        Ok(sys::SPA_STATUS_HAVE_DATA as i32)
+    }
+
     fn publish_complete(&mut self) -> Result<i32, i32> {
         let Some(mut header) = self.complete_header else {
             return Ok(sys::SPA_STATUS_NEED_DATA as i32);
@@ -197,7 +263,10 @@ impl Node for FrameAssemblyNode {
                     },
                     true,
                     false,
-                    [FormatConstraint::exact(input_format)],
+                    [
+                        FormatConstraint::exact(input_format),
+                        FormatConstraint::exact(output_format.clone()),
+                    ],
                 ),
                 Port::new(
                     PortRef {
@@ -231,6 +300,19 @@ impl Node for FrameAssemblyNode {
         &mut self.ports
     }
 
+    fn format_changed(&mut self, _port: usize) -> Result<(), i32> {
+        let passthrough = matches!(
+            (
+                self.ports[INPUT].format(),
+                self.ports[OUTPUT].format(),
+            ),
+            (Some(input), Some(output)) if input == output
+        );
+        self.ports[INPUT].set_can_allocate_buffers(passthrough);
+        self.ports[OUTPUT].set_can_allocate_buffers(passthrough);
+        Ok(())
+    }
+
     fn pause(&mut self) {
         self.active_seq = None;
         self.next_row = 0;
@@ -246,7 +328,7 @@ impl Node for FrameAssemblyNode {
         if self.ports[OUTPUT].output_pending()? {
             return Ok(sys::SPA_STATUS_HAVE_DATA as i32);
         }
-        let Some((_id, input_buffer)) = self.ports[INPUT].input_buffer()? else {
+        let Some((input_id, input_buffer)) = self.ports[INPUT].input_buffer()? else {
             return Ok(sys::SPA_STATUS_NEED_DATA as i32);
         };
         let Some(input_format) = self.ports[INPUT].format() else {
@@ -267,6 +349,9 @@ impl Node for FrameAssemblyNode {
             self.abandon_frame();
             return Ok(sys::SPA_STATUS_NEED_DATA as i32);
         };
+        if self.ports[OUTPUT].format() == Some(input_format) {
+            return self.publish_frame(input_id, input_buffer, &source, header);
+        }
         let start_row = header.offset as usize;
         let Some(end_row) = start_row.checked_add(self.block_rows) else {
             self.ports[INPUT].consume_input()?;

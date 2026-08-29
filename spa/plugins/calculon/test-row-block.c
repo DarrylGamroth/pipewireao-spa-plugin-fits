@@ -151,13 +151,19 @@ static void init_buffer(struct buffer *buffer, uint32_t size, int32_t stride)
 	buffer->buffer.datas = &buffer->data;
 }
 
-static void use_buffer(struct instance *instance, enum spa_direction direction,
-		struct buffer *buffer)
+static void use_buffer_flags(struct instance *instance,
+		enum spa_direction direction, struct buffer *buffer, uint32_t flags)
 {
 	struct spa_buffer *buffers[] = { &buffer->buffer };
 
-	spa_assert_se(spa_node_port_use_buffers(instance->node, direction, 0, 0,
+	spa_assert_se(spa_node_port_use_buffers(instance->node, direction, 0, flags,
 			buffers, SPA_N_ELEMENTS(buffers)) == 0);
+}
+
+static void use_buffer(struct instance *instance, enum spa_direction direction,
+		struct buffer *buffer)
+{
+	use_buffer_flags(instance, direction, buffer, 0);
 }
 
 static void destroy(struct instance *instance)
@@ -258,6 +264,93 @@ static void test_column_major_u16(const struct spa_handle_factory *factory)
 
 	spa_assert_se(spa_node_send_command(assembly.node, &pause) == 0);
 	destroy(&assembly);
+}
+
+static void test_complete_frame_passthrough(
+		const struct spa_handle_factory *factory)
+{
+	const struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SIZE, "4x4"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_RATE, "1000/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_ROWS, "2"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_ROW_BLOCK_SCHEMA,
+				SPA_CALCULON_SCHEMA_CALIBRATED_PIXEL_ROW_BLOCK),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_FRAME_SCHEMA,
+				"org.calculon.ao.calibrated-pixels/1"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_PROFILE, profile),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_ELEMENT_TYPE,
+				"F32_LE"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_CALCULON_NDARRAY_LAYOUT,
+				"row-major"),
+	};
+	const struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
+	uint32_t shared;
+
+	for (shared = 0; shared < 2; shared++) {
+		struct instance assembly;
+		struct buffer input, output;
+		struct spa_io_buffers input_io = {
+			.status = SPA_STATUS_NEED_DATA,
+			.buffer_id = SPA_ID_INVALID,
+		};
+		struct spa_io_buffers output_io = {
+			.status = SPA_STATUS_NEED_DATA,
+			.buffer_id = SPA_ID_INVALID,
+		};
+		uint32_t i;
+
+		make_node(&assembly, factory, &info);
+		/* The second input alternative is the complete-frame format. */
+		configure(&assembly, SPA_DIRECTION_INPUT, 1);
+		configure(&assembly, SPA_DIRECTION_OUTPUT, 0);
+		init_buffer(&input, FRAME_BYTES, WIDTH * sizeof(float));
+		init_buffer(&output, FRAME_BYTES, WIDTH * sizeof(float));
+		memset(output.payload, 0xa5, sizeof(output.payload));
+		use_buffer(&assembly, SPA_DIRECTION_INPUT, &input);
+		use_buffer_flags(&assembly, SPA_DIRECTION_OUTPUT, &output,
+				shared ? SPA_NODE_BUFFERS_FLAG_ALLOC : 0);
+		spa_assert_se(spa_node_port_set_io(assembly.node,
+				SPA_DIRECTION_INPUT, 0, SPA_IO_Buffers, &input_io,
+				sizeof(input_io)) == 0);
+		spa_assert_se(spa_node_port_set_io(assembly.node,
+				SPA_DIRECTION_OUTPUT, 0, SPA_IO_Buffers, &output_io,
+				sizeof(output_io)) == 0);
+		spa_assert_se(spa_node_send_command(assembly.node, &start) == 0);
+
+		for (i = 0; i < PIXELS; i++)
+			((float *)input.payload)[i] = (float)(i + 1u);
+		input.header.flags = SPA_META_HEADER_FLAG_CORRUPTED;
+		input.header.offset = 7;
+		input.header.seq = 170;
+		input.header.pts = 987654;
+		input.header.dts_offset = 23;
+		input_io.buffer_id = 0;
+		input_io.status = SPA_STATUS_HAVE_DATA;
+		spa_assert_se(spa_node_process(assembly.node) ==
+				SPA_STATUS_HAVE_DATA);
+		spa_assert_se(input_io.status == SPA_STATUS_NEED_DATA);
+		spa_assert_se(output_io.status == SPA_STATUS_HAVE_DATA &&
+				output_io.buffer_id == 0);
+		spa_assert_se(output.header.flags == input.header.flags &&
+				output.header.offset == input.header.offset &&
+				output.header.seq == input.header.seq &&
+				output.header.pts == input.header.pts &&
+				output.header.dts_offset == input.header.dts_offset);
+		spa_assert_se(memcmp(output.data.data, input.payload,
+				FRAME_BYTES) == 0);
+		if (shared) {
+			spa_assert_se(output.data.data == input.data.data);
+			spa_assert_se(output.data.chunk == input.data.chunk);
+			spa_assert_se(output.payload[0] == 0xa5);
+		} else {
+			spa_assert_se(output.data.data == output.payload);
+		}
+
+		spa_assert_se(spa_node_send_command(assembly.node, &pause) == 0);
+		destroy(&assembly);
+	}
 }
 
 int main(int argc, char **argv)
@@ -417,6 +510,7 @@ int main(int argc, char **argv)
 	destroy(&assembly);
 	destroy(&pixel);
 	test_column_major_u16(assembly_factory);
+	test_complete_frame_passthrough(assembly_factory);
 	spa_assert_se(dlclose(library) == 0);
 	return 0;
 }

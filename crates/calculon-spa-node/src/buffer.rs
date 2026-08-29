@@ -6,6 +6,10 @@ use libspa::sys;
 
 use crate::Format;
 
+pub(crate) fn is_cpu_mapped(type_: u32) -> bool {
+    matches!(type_, sys::SPA_DATA_MemPtr | sys::SPA_DATA_MemFd)
+}
+
 /// Copyable standard SPA header metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Header {
@@ -67,7 +71,7 @@ impl<'a> InputFrame<'a> {
         }
         let data = unsafe { &*buffer.datas };
         let chunk = unsafe { data.chunk.as_ref() }.ok_or(-libc::EINVAL)?;
-        if data.type_ != sys::SPA_DATA_MemPtr || data.data.is_null() || data.maxsize == 0 {
+        if !is_cpu_mapped(data.type_) || data.data.is_null() || data.maxsize == 0 {
             return Err(-libc::EINVAL);
         }
         let line_bytes = format.packed_stride()?;
@@ -177,7 +181,7 @@ impl<'a> OutputFrame<'a> {
         }
         let data = unsafe { &mut *buffer.datas };
         let chunk = unsafe { data.chunk.as_mut() }.ok_or(-libc::EINVAL)?;
-        if data.type_ != sys::SPA_DATA_MemPtr || data.data.is_null() {
+        if !is_cpu_mapped(data.type_) || data.data.is_null() {
             return Err(-libc::EINVAL);
         }
         let line_bytes = format.packed_stride()?;
@@ -320,4 +324,72 @@ pub fn overlaps(input: &InputFrame<'_>, output: &OutputFrame<'_>) -> bool {
     let output_start = output.bytes.as_ptr() as usize;
     let output_end = output_start.saturating_add(output.bytes.len());
     input_start < output_end && output_start < input_end
+}
+
+/// Returns whether two registered buffers refer to the same first data block.
+///
+/// # Safety
+///
+/// Both buffer pointers must remain registered for the duration of this call.
+pub unsafe fn shares_data(input: *const sys::spa_buffer, output: *const sys::spa_buffer) -> bool {
+    let Some(input) = (unsafe { input.as_ref() }) else {
+        return false;
+    };
+    let Some(output) = (unsafe { output.as_ref() }) else {
+        return false;
+    };
+    if input.n_datas != 1 || input.datas.is_null() || output.n_datas != 1 || output.datas.is_null()
+    {
+        return false;
+    }
+    let input_data = unsafe { &*input.datas };
+    let output_data = unsafe { &*output.datas };
+    !input_data.data.is_null() && input_data.data == output_data.data
+}
+
+/// Forwards a complete frame when the input and output buffers share data storage.
+///
+/// The payload is not copied. Chunk state and standard Header metadata are made
+/// visible through the output buffer.
+///
+/// # Safety
+///
+/// Both buffers must remain registered and host-owned for the duration of this
+/// call. Their shared storage must have been established by SPA buffer
+/// allocation negotiation.
+pub unsafe fn forward_frame(
+    input: *const sys::spa_buffer,
+    output: *mut sys::spa_buffer,
+    format: &Format,
+    frame_header: Option<Header>,
+) -> Result<bool, i32> {
+    unsafe { InputFrame::new(input, format)? };
+
+    let input = unsafe { input.as_ref() }.ok_or(-libc::EINVAL)?;
+    let output = unsafe { output.as_mut() }.ok_or(-libc::EINVAL)?;
+    if input.n_datas != 1 || input.datas.is_null() || output.n_datas != 1 || output.datas.is_null()
+    {
+        return Err(-libc::EINVAL);
+    }
+    let input_data = unsafe { &*input.datas };
+    let output_data = unsafe { &mut *output.datas };
+    if !is_cpu_mapped(input_data.type_)
+        || !is_cpu_mapped(output_data.type_)
+        || input_data.data.is_null()
+        || output_data.data.is_null()
+        || input_data.data != output_data.data
+    {
+        return Ok(false);
+    }
+
+    let input_chunk = unsafe { input_data.chunk.as_ref() }.ok_or(-libc::EINVAL)?;
+    let chunk = *input_chunk;
+    let output_chunk = unsafe { output_data.chunk.as_mut() }.ok_or(-libc::EINVAL)?;
+    if !std::ptr::eq(input_chunk, output_chunk) {
+        *output_chunk = chunk;
+    }
+    if let (Some(destination), Some(source)) = (unsafe { header_mut(output) }, frame_header) {
+        *destination = source.into();
+    }
+    Ok(true)
 }
