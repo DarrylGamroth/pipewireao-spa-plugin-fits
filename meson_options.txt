@@ -153,6 +153,20 @@ option(
 )
 
 option(
+  'hermes',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the MPD HERMES FrontPanel SPA source',
+)
+
+option(
+  'hermes-prefix',
+  type: 'string',
+  value: '/opt/HERMES/Linux',
+  description: 'HERMES Linux SDK root containing include and lib/64',
+)
+
+option(
   'aravis',
   type: 'feature',
   value: 'disabled',

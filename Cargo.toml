@@ -2,6 +2,7 @@
 members = [
   "crates/calculon-spa-node",
   "crates/calculon-spa-plugins",
+  "crates/hermes-spa-decoder",
 ]
 resolver = "3"
 

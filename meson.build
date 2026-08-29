@@ -277,6 +277,34 @@ if get_option('hamamatsu').allowed()
 endif
 subdir('spa/plugins/hamamatsu')
 
+hermes_found = false
+if get_option('hermes').allowed()
+  hermes_prefix = get_option('hermes-prefix')
+  hermes_include_dir = hermes_prefix / 'include'
+  hermes_library_dir = hermes_prefix / 'lib/64'
+  hermes_library = cc.find_library(
+    'Hermes',
+    dirs: [hermes_library_dir],
+    required: get_option('hermes'),
+  )
+  hermes_frontpanel_library = cc.find_library(
+    'okFrontPanel',
+    dirs: [hermes_library_dir],
+    required: get_option('hermes'),
+  )
+  hermes_dep = declare_dependency(
+    compile_args: ['-isystem' + hermes_include_dir],
+    dependencies: [hermes_library, hermes_frontpanel_library],
+  )
+  hermes_found = (hermes_library.found() and
+    hermes_frontpanel_library.found() and cc.has_header(
+      'Hermes_SDK.h',
+      dependencies: hermes_dep,
+      required: get_option('hermes'),
+    ))
+endif
+subdir('spa/plugins/hermes')
+
 aravis_dep = dependency(
   'aravis-0.10',
   required: get_option('aravis'),
@@ -309,5 +337,6 @@ summary('EDT PDV plugin', edtpdv_found, section: 'SPA plugins')
 summary('FliSdk plugin', flisdk_found, section: 'SPA plugins')
 summary('Andor SDK3 plugin', andor3_found, section: 'SPA plugins')
 summary('Hamamatsu DCAM-API plugin', hamamatsu_found, section: 'SPA plugins')
+summary('MPD HERMES FrontPanel plugin', hermes_found, section: 'SPA plugins')
 summary('Aravis experimental plugin', aravis_found, section: 'SPA plugins')
 summary('FITS cube source', fits_found, section: 'SPA plugins')

@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--profile", choices=("debug", "release"), required=True)
     parser.add_argument("--spa-include", type=pathlib.Path, required=True)
     parser.add_argument("--pkg-config-path")
+    parser.add_argument("--package", default="calculon-spa-plugins")
     args = parser.parse_args()
 
     command = [
@@ -28,7 +29,7 @@ def main() -> None:
         "--manifest-path",
         str(args.manifest),
         "--package",
-        "calculon-spa-plugins",
+        args.package,
         "--target-dir",
         str(args.target_dir),
     ]
@@ -40,7 +41,7 @@ def main() -> None:
         environment["PKG_CONFIG_PATH"] = args.pkg_config_path
     subprocess.run(command, check=True, env=environment)
 
-    library = args.target_dir / args.profile / "libcalculon_spa_plugins.so"
+    library = args.target_dir / args.profile / f"lib{args.package.replace('-', '_')}.so"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(library, args.output)
 
