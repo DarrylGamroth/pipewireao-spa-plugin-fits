@@ -252,11 +252,29 @@ document for the ownership split and frame-assembly properties.
 
 The `api.hnu240.decoder` factory keeps the Nüvü pixel unpacking downstream of
 the camera driver. It accepts the exact raw Camera Link carrier as `GRAY8`,
-1408 by 131, and publishes `GRAY16_LE`, 240 by 242. The two extra output rows
-are the detector overscan rows. Construction requires
+1408 by 131, discards the ten leading pipeline rows and final per-tap overscan
+line, and publishes the active `GRAY16_LE` detector area as 240 by 240.
+Construction requires
 `api.hnu240.frame-rate` and
 `api.hnu240.transport-profile=hnu240-cl-full-8x8-v1`; the profile prevents the
 decoder from silently accepting a different tap layout.
+
+The progressive path will consume carrier row blocks from the native Aravis
+GigE Vision receiver and publish acquisition-ordered U16 detector readout
+blocks with shape `[8, N, 60]`. The Nüvü transform owns carrier-byte decoding,
+pipeline removal, overscan removal, and tap order. The prepared detector
+readout mapping owns placement and direction in the active 240 by 240 detector
+area; complete-frame assembly remains optional downstream.
+
+The carrier row block is device-native encoded data, not a raw detector-pixel
+row block. Aravis must therefore preserve a Nüvü-owned carrier schema and
+profile until the decoder produces the raw-pixel detector readout block. If
+the iPORT advertises the complete 131-row carrier, Aravis's current fixed block
+height can only be one row because it must divide the height. Production use
+needs either an iPORT carrier-row window or an admitted Aravis row-selection
+and batching contract. In either case, the decoder withholds its final active
+block until terminal carrier validity is known, then discards the overscan
+content rather than publishing it.
 
 The corresponding `CLProtocol_hnu240` project supplies camera control and the
 GenApi node map. The `EDTpdvGenTL` producer supplies raw EDT DMA frames to the

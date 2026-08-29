@@ -112,7 +112,7 @@ int main(int argc, char **argv)
 	spa_assert_se(spa_format_video_raw_parse(enum_format(node, &capture,
 			SPA_DIRECTION_OUTPUT), &raw) >= 0);
 	spa_assert_se(raw.format == SPA_VIDEO_FORMAT_GRAY16_LE);
-	spa_assert_se(raw.size.width == 240 && raw.size.height == 242);
+	spa_assert_se(raw.size.width == 240 && raw.size.height == 240);
 	spa_assert_se(raw.framerate.num == 3015 && raw.framerate.denom == 1);
 	spa_hook_remove(&listener);
 	spa_assert_se(handle->clear(handle) == 0);

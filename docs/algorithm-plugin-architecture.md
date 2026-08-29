@@ -83,11 +83,34 @@ values.
 
 `api.hnu240.decoder` remains a camera-specific native SPA transform. It accepts
 the exact `hnu240-cl-full-8x8-v1` carrier profile as `GRAY8` 1408 by 131 and
-publishes `GRAY16_LE` 240 by 242, including two overscan rows. The decoder owns
-pixel rearrangement only. Camera control remains in `CLProtocol_hnu240`, and
-the camera or frame-grabber driver publishes the raw carrier unchanged.
+discards the ten leading pipeline rows and final per-tap overscan line before
+publishing the active detector area as `GRAY16_LE` 240 by 240. The decoder owns
+carrier-byte decoding and pixel rearrangement only. Camera control remains in
+`CLProtocol_hnu240`, and the camera or frame-grabber driver publishes the raw
+carrier unchanged.
 `api.ndarray.video-view` then provides the raw-detector ndarray schema and
 profile expected by Calculon FGN pixel calibration.
+
+The progressive form consumes immutable carrier row blocks from the native
+Aravis GigE Vision receiver and converts each admitted active-row quantum into
+one U16 detector readout block with logical shape `[8, N, 60]`. Carrier rows
+and detector readout regions are different representations: the Aravis source
+owns committed GVSP payload progress, the Nüvü transform owns carrier decoding
+and removal of pipeline and overscan content, and the prepared detector
+readout mapping owns detector-coordinate placement and direction. The
+scientific graph never receives overscan pixels.
+
+An HNü240 carrier row block is not a raw detector-pixel row block. The Aravis
+source must retain an exact Nüvü-owned carrier schema and profile until this
+transform produces `org.calculon.ao.raw-pixel-readout-block/1`. The current
+Aravis fixed block height must divide the advertised carrier height; a complete
+131-row carrier therefore permits only one-row blocks. A production profile
+must either configure an iPORT carrier-row window or admit an exact Aravis
+row-selection and batching contract. The converter may process active rows as
+they arrive, but it must withhold the terminal active output until the camera
+frame is known to be complete and valid. It then consumes and discards the
+overscan row. The carrier schema's exact public identifier remains to be
+admitted with that format contract; this document does not invent one.
 
 ## ALPAO command boundary
 

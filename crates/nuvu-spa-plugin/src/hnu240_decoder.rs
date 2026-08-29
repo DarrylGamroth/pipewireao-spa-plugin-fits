@@ -3,8 +3,8 @@
 //! The byte mapping follows Tables 3 and 4 of Beaulieu et al.,
 //! "Electron multiplying CCDs for sensitive wavefront sensing at 3k frames
 //! per second" (SPIE 2022). The transport contains ten leading pipeline rows
-//! and six leading samples per tap. The final sample row in each detector half
-//! is the per-output overscan row.
+//! and six leading samples per tap. The final carrier row contains one
+//! overscan line from every tap and is discarded.
 
 use pipewireao_spa_node::{
     Factory, Format, FormatConstraint, InputFrame, Node, OutputFrame, Port, PortRef, sys,
@@ -19,11 +19,13 @@ pub const HNU240_DECODER_FACTORY_NAME: &str = "api.hnu240.decoder";
 pub const HNU240_CL_FULL_PROFILE: &str = "hnu240-cl-full-8x8-v1";
 
 pub(crate) const RAW_WIDTH: usize = 1408;
-pub(crate) const RAW_HEIGHT: usize = 131;
 pub(crate) const OUTPUT_WIDTH: usize = 240;
-pub(crate) const OUTPUT_HEIGHT: usize = 242;
+pub(crate) const OUTPUT_HEIGHT: usize = 240;
 
 const PIPELINE_ROWS: usize = 10;
+const ACTIVE_LINES_PER_TAP: usize = 120;
+const CARRIER_LINES_PER_TAP: usize = ACTIVE_LINES_PER_TAP + 1;
+pub(crate) const RAW_HEIGHT: usize = PIPELINE_ROWS + CARRIER_LINES_PER_TAP;
 const GROUP_BYTES: usize = 64;
 const GROUPS_PER_ROW: usize = RAW_WIDTH / GROUP_BYTES;
 const LEADING_GROUPS: usize = 2;
@@ -59,8 +61,8 @@ struct TapPlacement {
 }
 
 // The CCD220 view in the paper is rotated clockwise into the conventional
-// output image. Rows are reconstructed from the outside toward the centre, so
-// the two overscan rows become output rows 120 and 121.
+// active-pixel image. Rows are reconstructed from the outside toward the
+// centre. The carrier's final per-tap line is overscan and is never mapped.
 const TAP_PLACEMENTS: [TapPlacement; 8] = [
     TapPlacement {
         x: 179,
@@ -77,25 +79,25 @@ const TAP_PLACEMENTS: [TapPlacement; 8] = [
     TapPlacement {
         x: 180,
         dx: 1,
-        y: 241,
+        y: 239,
         dy: -1,
     }, // T2
     TapPlacement {
         x: 179,
         dx: -1,
-        y: 241,
+        y: 239,
         dy: -1,
     }, // T3
     TapPlacement {
         x: 60,
         dx: 1,
-        y: 241,
+        y: 239,
         dy: -1,
     }, // T4
     TapPlacement {
         x: 59,
         dx: -1,
-        y: 241,
+        y: 239,
         dy: -1,
     }, // T5
     TapPlacement {
@@ -133,7 +135,7 @@ fn decode_frame(
         return Err(-libc::EINVAL);
     }
 
-    for carrier_row in PIPELINE_ROWS..RAW_HEIGHT {
+    for carrier_row in PIPELINE_ROWS..PIPELINE_ROWS + ACTIVE_LINES_PER_TAP {
         let detector_row = carrier_row - PIPELINE_ROWS;
         let row_start = carrier_row * source_stride;
         for group in LEADING_GROUPS..GROUPS_PER_ROW {
@@ -247,9 +249,10 @@ mod tests {
     }
 
     #[test]
-    fn published_carrier_mapping_reconstructs_all_taps_and_overscan_rows() {
+    fn published_carrier_mapping_reconstructs_active_pixels_and_discards_overscan() {
         let mut carrier = vec![0xa5; RAW_WIDTH * RAW_HEIGHT];
         let mut expected = vec![0_u16; OUTPUT_WIDTH * OUTPUT_HEIGHT];
+        let mut overscan = Vec::with_capacity(8 * TAP_WIDTH);
         for carrier_row in PIPELINE_ROWS..RAW_HEIGHT {
             let detector_row = carrier_row - PIPELINE_ROWS;
             for group in LEADING_GROUPS..GROUPS_PER_ROW {
@@ -264,6 +267,10 @@ mod tests {
                         let bytes = value.to_le_bytes();
                         carrier[group_start + low] = bytes[0];
                         carrier[group_start + high] = bytes[1];
+                        if detector_row == ACTIVE_LINES_PER_TAP {
+                            overscan.push(value);
+                            continue;
+                        }
                         let x = (placement.x + placement.dx * sample as isize) as usize;
                         expected[y * OUTPUT_WIDTH + x] = value;
                     }
@@ -274,17 +281,8 @@ mod tests {
         let mut decoded = vec![0_u16; OUTPUT_WIDTH * OUTPUT_HEIGHT];
         decode_frame(&carrier, RAW_WIDTH, &mut decoded, OUTPUT_WIDTH).unwrap();
         assert_eq!(decoded, expected);
-        assert!(decoded[..OUTPUT_WIDTH].iter().all(|&pixel| pixel != 0));
-        assert!(
-            decoded[120 * OUTPUT_WIDTH..122 * OUTPUT_WIDTH]
-                .iter()
-                .all(|&pixel| pixel != 0)
-        );
-        assert!(
-            decoded[(OUTPUT_HEIGHT - 1) * OUTPUT_WIDTH..]
-                .iter()
-                .all(|&pixel| pixel != 0)
-        );
+        assert!(decoded.iter().all(|&pixel| pixel != 0));
+        assert!(overscan.iter().all(|value| !decoded.contains(value)));
     }
 
     #[test]
