@@ -6,6 +6,16 @@ alpao_sources = [
 alpao_dependencies = [spa_dep, m_dep]
 alpao_c_args = ['-Wno-pedantic']
 
+alpao_fgn_lib = shared_library(
+  'alpao-fgn',
+  'fgn-command-normalization.c',
+  dependencies: [spa_dep, m_dep],
+  include_directories: plugin_include,
+  gnu_symbol_visibility: 'hidden',
+  install: true,
+  install_dir: get_option('libdir') / 'pipewire-ao/filter-graph',
+)
+
 alpao_sdk = get_option('alpao-sdk')
 alpao_sdk_root = get_option('alpao-sdk-root')
 alpao_sdk_enabled = false
@@ -70,6 +80,20 @@ else
 endif
 
 if get_option('tests').allowed()
+  alpao_fgn_test = executable(
+    'spa-alpao-fgn-test',
+    'test-fgn-command-normalization.c',
+    dependencies: [spa_dep, dl_dep],
+    include_directories: plugin_include,
+    c_args: ['-Wno-pedantic'],
+  )
+  test(
+    'spa-alpao-fgn-command-normalization',
+    alpao_fgn_test,
+    args: [alpao_fgn_lib.full_path()],
+    depends: alpao_fgn_lib,
+  )
+
   alpao_mock_lib = shared_library(
     'spa-alpao-mock',
     ['backend.c', 'plugin.c', 'sink.c'],

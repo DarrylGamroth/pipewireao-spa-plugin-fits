@@ -180,6 +180,33 @@ The mock is required for contract tests, but it is compiled only into a
 non-installed test plugin. The installed hardware plugin does not silently
 discard actuator commands when ASDK is absent or unavailable.
 
+The ALPAO-owned FGN library installs as
+`pipewire-ao/filter-graph/libalpao-fgn.so`. Its
+`command-normalization-f32-f64` operator converts physical F32 demanded PDM
+commands into the normalized F64 command schema consumed by the sink. The
+construction object requires `actuator_count`, positive `command_scale`, the
+exact lowercase SHA-256 `profile`, and positive `rate_numerator` and
+`rate_denominator` values. Both ports expose the same immutable profile; only
+the demanded-command input exposes the graph activation rate. Processing
+rejects non-finite values and normalized results outside `[-1,+1]`.
+
+Example FGN node declaration:
+
+```ini
+{ type = ndarray
+  name = alpao-normalization
+  plugin = /usr/local/lib/pipewire-ao/filter-graph/libalpao-fgn.so
+  label = command-normalization-f32-f64
+  config = {
+    actuator_count = 468
+    command_scale = 1.0
+    profile = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    rate_numerator = 2000
+    rate_denominator = 1
+  }
+}
+```
+
 ## Ownership boundary
 
 - PipeWireAO owns generic transport and execution contracts, including native

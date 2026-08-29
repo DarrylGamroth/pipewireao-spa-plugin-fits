@@ -15,5 +15,10 @@
 
 #define SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND \
 	"org.pipewireao.alpao.normalized-actuator-command/1"
+#define SPA_ALPAO_SCHEMA_DEMANDED_PDM_COMMAND \
+	"org.calculon.ao.demanded-pdm-command/1"
+
+#define SPA_FGN_ALPAO_LABEL_COMMAND_NORMALIZATION \
+	"command-normalization-f32-f64"
 
 #endif /* PIPEWIREAO_PLUGINS_ALPAO_H */
