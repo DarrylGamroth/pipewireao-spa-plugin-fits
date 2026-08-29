@@ -83,13 +83,19 @@ values.
 
 `api.hnu240.decoder` remains a camera-specific native SPA transform. It accepts
 the exact `hnu240-cl-full-8x8-v1` carrier profile as `GRAY8` 1408 by 131 and
-discards the ten leading pipeline rows and final per-tap overscan line before
-publishing the active detector area as `GRAY16_LE` 240 by 240. The decoder owns
-carrier-byte decoding and pixel rearrangement only. Camera control remains in
-`CLProtocol_hnu240`, and the camera or frame-grabber driver publishes the raw
-carrier unchanged.
+discards the ten leading non-active carrier rows and final per-tap overscan line
+before publishing the active detector area as `GRAY16_LE` 240 by 240. The
+decoder owns carrier-byte decoding and pixel rearrangement only. Camera control
+remains in `CLProtocol_hnu240`, and the camera or frame-grabber driver publishes
+the raw carrier unchanged.
 `api.ndarray.video-view` then provides the raw-detector ndarray schema and
 profile expected by Calculon FGN pixel calibration.
+
+The detector has eight 16-bit outputs, but its Camera Link Full transport is a
+custom eight-tap, 8-bit packing with the Z channel unused. A generic Mono16 tap
+geometry therefore cannot replace the Nüvü transform. The exact packing,
+frame-grabber implications, and hardware acceptance checks are maintained in
+the [HNü240 Camera Link carrier note](hnu240-camera-link-carrier.md).
 
 The progressive form consumes immutable carrier row blocks from the native
 Aravis GigE Vision receiver and converts each admitted active-row quantum into

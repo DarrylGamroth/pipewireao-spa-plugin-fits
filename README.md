@@ -252,19 +252,27 @@ document for the ownership split and frame-assembly properties.
 
 The `api.hnu240.decoder` factory keeps the Nüvü pixel unpacking downstream of
 the camera driver. It accepts the exact raw Camera Link carrier as `GRAY8`,
-1408 by 131, discards the ten leading pipeline rows and final per-tap overscan
-line, and publishes the active `GRAY16_LE` detector area as 240 by 240.
+1408 by 131, discards the ten leading non-active carrier rows and final per-tap
+overscan line, and publishes the active `GRAY16_LE` detector area as 240 by 240.
 Construction requires
 `api.hnu240.frame-rate` and
 `api.hnu240.transport-profile=hnu240-cl-full-8x8-v1`; the profile prevents the
 decoder from silently accepting a different tap layout.
 
+The eight CCD220 outputs do not appear on Camera Link as conventional 16-bit
+taps. The camera uses a custom eight-tap, 8-bit carrier with 16 unused bytes in
+every 64-byte packing group. Standard `1X8` plus `Mono16` frame-grabber
+configuration cannot replace the camera-specific unpacker. The
+[HNü240 Camera Link carrier note](docs/hnu240-camera-link-carrier.md) records
+the packing authority, EDT and iPORT implications, comparison with camstack's
+OCAM configuration, and hardware validation checklist.
+
 The progressive path will consume carrier row blocks from the native Aravis
 GigE Vision receiver and publish acquisition-ordered U16 detector readout
 blocks with shape `[8, N, 60]`. The Nüvü transform owns carrier-byte decoding,
-pipeline removal, overscan removal, and tap order. The prepared detector
-readout mapping owns placement and direction in the active 240 by 240 detector
-area; complete-frame assembly remains optional downstream.
+non-active carrier removal, overscan removal, and tap order. The prepared
+detector readout mapping owns placement and direction in the active 240 by 240
+detector area; complete-frame assembly remains optional downstream.
 
 The carrier row block is device-native encoded data, not a raw detector-pixel
 row block. Aravis must therefore preserve a Nüvü-owned carrier schema and
