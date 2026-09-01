@@ -20,6 +20,7 @@
 #include <spa/param/buffers.h>
 #include <spa/param/ndarray-utils.h>
 #include <spa/param/video/raw-utils.h>
+#include <spa/pod/filter.h>
 #include <spa/pod/parser.h>
 #include <spa/support/plugin.h>
 
@@ -247,6 +248,17 @@ static const char *format_string(const struct spa_pod *format, uint32_t key)
 	return value;
 }
 
+static struct spa_pod *negotiate_with_self(const struct spa_pod *format,
+		uint8_t *storage, size_t size)
+{
+	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, size);
+	struct spa_pod *negotiated = NULL;
+
+	spa_assert_se(spa_pod_filter(&builder, &negotiated, format, format) == 0);
+	spa_assert_se(negotiated != NULL);
+	return negotiated;
+}
+
 static int init_node(const struct spa_handle_factory *factory,
 		const struct source_case *test, const char *readiness,
 		const struct spa_support *support, uint32_t n_support,
@@ -336,6 +348,7 @@ static void run_source(const struct spa_handle_factory *factory,
 	struct spa_handle *handle;
 	struct spa_node *node;
 	struct spa_pod *format, *buffers_param;
+	uint8_t negotiated_storage[2048];
 	int32_t payload_size = 0;
 	uint32_t cycle, id, i, second_pass = 0;
 	int res;
@@ -376,6 +389,8 @@ static void run_source(const struct spa_handle_factory *factory,
 					SPA_NODE_FLAG_POLL_DRIVER : 0));
 	format = enum_one(node, &capture, SPA_PARAM_EnumFormat, test->format_index);
 	if (test->sample_rank == 1) {
+		const char *schema = NULL, *profile = NULL;
+
 		spa_assert_se(spa_format_ndarray_parse(format, &ndarray) == 0);
 		spa_assert_se(ndarray.element_type == test->expected_element);
 		spa_assert_se(ndarray.n_dimensions == 1 && ndarray.shape[0] == 4);
@@ -384,6 +399,14 @@ static void run_source(const struct spa_handle_factory *factory,
 				SPA_FORMAT_NDARRAY_schema), TEST_SCHEMA));
 		spa_assert_se(spa_streq(format_string(format,
 				SPA_FORMAT_NDARRAY_profile), TEST_PROFILE));
+		format = negotiate_with_self(format, negotiated_storage,
+				sizeof(negotiated_storage));
+		spa_assert_se(spa_format_ndarray_parse_string(format,
+				SPA_FORMAT_NDARRAY_schema, &schema) == 0);
+		spa_assert_se(spa_format_ndarray_parse_string(format,
+				SPA_FORMAT_NDARRAY_profile, &profile) == 0);
+		spa_assert_se(spa_streq(schema, TEST_SCHEMA));
+		spa_assert_se(spa_streq(profile, TEST_PROFILE));
 	} else if (test->format_index == 1) {
 		spa_assert_se(spa_format_video_raw_parse(format, &video) >= 0);
 		spa_assert_se(video.format == SPA_VIDEO_FORMAT_GRAY16_LE);
