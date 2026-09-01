@@ -16,6 +16,8 @@ readiness;
 proprietary SDKs and CFITSIO remain optional build dependencies.
 The optional `api.imagestreamio.source` and `api.imagestreamio.sink` factories
 bridge ordinary ndarray buffers to milk ImageStreamIO shared-memory streams.
+The `api.pyrtc.source` and `api.pyrtc.sink` factories bridge CPU-backed pyRTC
+`ImageSHM` streams without embedding Python or NumPy.
 Proprietary SDKs, drivers, device configuration files, calibration files, and
 redistributable binaries do not belong in this repository.
 
@@ -123,6 +125,11 @@ outside `/usr/local` is selected with `-Dimagestreamio-prefix=PATH`. See the
 [ImageStreamIO bridge](spa/plugins/imagestreamio/README.md) for stream
 ownership, ndarray type and shape mapping, semaphore behavior, and the
 intentional copy boundary.
+
+The pyRTC bridge is built by default. See the
+[pyRTC shared-memory bridge](spa/plugins/pyrtc/README.md) for `ImageSHM`
+metadata compatibility, ownership, dtype and shape mapping, and pyRTC's CPU
+snapshot-coherence limit.
 
 Optional Camera Link control through Grablink, CLProtocol, and the GenICam
 Reference Implementation is enabled with `-Dgenicam-root=PATH`. It supplies
@@ -352,6 +359,7 @@ spa/plugins/fits/             CFITSIO vector and image-sequence source factory
 spa/plugins/imagestreamio/    ImageStreamIO ndarray source and sink factories
 spa/plugins/ndarray/          generic video-view and frame-assembly factories
 spa/plugins/nuvu/             Nüvü camera decoder SPA factory and tests
+spa/plugins/pyrtc/            pyRTC ImageSHM ndarray source and sink factories
 crates/pipewireao-spa-node/   reusable Rust SPA ABI adapter
 crates/ndarray-spa-plugin/    generic ndarray transport transform
 crates/nuvu-spa-plugin/       HNü240 carrier decoder

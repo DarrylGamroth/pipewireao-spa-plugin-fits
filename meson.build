@@ -50,6 +50,7 @@ install_headers(
   'include/pipewireao-plugins/ndarray.h',
   'include/pipewireao-plugins/nuvu.h',
   'include/pipewireao-plugins/pod.h',
+  'include/pipewireao-plugins/pyrtc.h',
   subdir: 'pipewireao-plugins-0.1/pipewireao-plugins',
 )
 
@@ -73,6 +74,7 @@ subdir('spa/plugins/alpao')
 subdir('spa/plugins/discard')
 subdir('spa/plugins/ndarray')
 subdir('spa/plugins/nuvu')
+subdir('spa/plugins/pyrtc')
 subdir('src/modules/queue')
 
 egrabber_found = false
