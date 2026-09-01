@@ -40,6 +40,7 @@ struct param_result {
 	const char *output_mode;
 	const char *row_block_rows;
 	const char *simulated_readout_time_ns;
+	const char *node_name;
 };
 
 struct test_buffer {
@@ -52,6 +53,7 @@ struct test_buffer {
 };
 
 struct source_case {
+	const char *node_name;
 	const char *path;
 	const char *rate;
 	const char *schema;
@@ -116,6 +118,8 @@ static void on_info(void *data, const struct spa_node_info *info)
 		capture->readiness = spa_dict_lookup(info->props,
 				SPA_KEY_API_FITS_READINESS);
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS) {
+		capture->node_name = spa_dict_lookup(info->props,
+				PW_KEY_NODE_NAME);
 		capture->output_mode = spa_dict_lookup(info->props,
 				SPA_KEY_API_FITS_OUTPUT_MODE);
 		capture->row_block_rows = spa_dict_lookup(info->props,
@@ -236,7 +240,7 @@ static int init_node(const struct spa_handle_factory *factory,
 		struct spa_handle **handle, struct spa_node **node)
 {
 	char rank_text[8];
-	struct spa_dict_item items[11];
+	struct spa_dict_item items[12];
 	struct spa_dict info;
 	uint32_t n_items = 0;
 	int res;
@@ -244,6 +248,8 @@ static int init_node(const struct spa_handle_factory *factory,
 	snprintf(rank_text, sizeof(rank_text), "%u", test->sample_rank);
 	#define ADD_ITEM(key, value) \
 		items[n_items++] = SPA_DICT_ITEM_INIT((key), (value))
+	if (test->node_name != NULL)
+		ADD_ITEM(PW_KEY_NODE_NAME, test->node_name);
 	ADD_ITEM(SPA_KEY_API_FITS_PATH, test->path);
 	ADD_ITEM(SPA_KEY_API_FITS_SAMPLE_RANK, rank_text);
 	ADD_ITEM(SPA_KEY_API_FITS_RATE,
@@ -341,6 +347,9 @@ static void run_source(const struct spa_handle_factory *factory,
 
 	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
 			&capture) == 0);
+	spa_assert_se(capture.node_name != NULL &&
+			spa_streq(capture.node_name,
+				test->node_name == NULL ? "fits_source" : test->node_name));
 	spa_assert_se(capture.readiness != NULL &&
 			spa_streq(capture.readiness, readiness));
 	spa_assert_se(capture.output_mode != NULL &&
@@ -653,6 +662,45 @@ static void assert_init_fails(const struct spa_handle_factory *factory,
 	spa_assert_se(handle == NULL && node == NULL);
 }
 
+static void test_distinct_node_names(const struct spa_handle_factory *factory,
+		const char *image_path)
+{
+	const struct source_case first = {
+		.node_name = "fits.test.first",
+		.path = image_path,
+		.sample_rank = 2,
+	};
+	const struct source_case second = {
+		.node_name = "fits.test.second",
+		.path = image_path,
+		.sample_rank = 2,
+	};
+	struct param_result first_capture = { .expected = SPA_ID_INVALID };
+	struct param_result second_capture = { .expected = SPA_ID_INVALID };
+	struct spa_handle *first_handle, *second_handle;
+	struct spa_hook first_listener, second_listener;
+	struct spa_node *first_node, *second_node;
+
+	first_node = make_node(factory, &first, "poll", NULL, 0, &first_handle);
+	second_node = make_node(factory, &second, "poll", NULL, 0, &second_handle);
+	spa_assert_se(spa_node_add_listener(first_node, &first_listener,
+			&node_events, &first_capture) == 0);
+	spa_assert_se(spa_node_add_listener(second_node, &second_listener,
+			&node_events, &second_capture) == 0);
+	spa_assert_se(first_capture.node_name != NULL &&
+			spa_streq(first_capture.node_name, first.node_name));
+	spa_assert_se(second_capture.node_name != NULL &&
+			spa_streq(second_capture.node_name, second.node_name));
+	spa_assert_se(!spa_streq(first_capture.node_name,
+			second_capture.node_name));
+	spa_hook_remove(&second_listener);
+	spa_hook_remove(&first_listener);
+	spa_assert_se(second_handle->clear(second_handle) == 0);
+	spa_assert_se(first_handle->clear(first_handle) == 0);
+	free(second_handle);
+	free(first_handle);
+}
+
 static void test_row_options(const struct spa_handle_factory *factory,
 		const char *vector_path, const char *image_path)
 {
@@ -733,6 +781,7 @@ int main(int argc, char *argv[])
 	run_row_source(factory, image_path, "poll", true, false);
 	run_row_source(factory, image_path, "poll", false, true);
 	test_row_options(factory, vector_path, image_path);
+	test_distinct_node_names(factory, image_path);
 	spa_assert_se(dlclose(library) == 0);
 	spa_assert_se(unlink(vector_path) == 0);
 	spa_assert_se(unlink(image_path) == 0);

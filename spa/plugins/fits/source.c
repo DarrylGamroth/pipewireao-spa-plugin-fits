@@ -1320,7 +1320,6 @@ static void configure_props(struct impl *self)
 {
 	uint32_t n = 0;
 
-	snprintf(self->node_name, sizeof(self->node_name), "fits_source");
 	if (self->cube_info.sample_rank == 1)
 		snprintf(self->description, sizeof(self->description),
 				"FITS vector sequence %u (%" PRIu64 " samples)",
@@ -1390,6 +1389,10 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 			SPA_TYPE_INTERFACE_DataLoop);
 	self->data_system = spa_support_find(support, n_support,
 			SPA_TYPE_INTERFACE_DataSystem);
+	value = info == NULL ? NULL : spa_dict_lookup(info, SPA_KEY_NODE_NAME);
+	if (copy_text(self->node_name, sizeof(self->node_name),
+			value == NULL ? "fits_source" : value) < 0)
+		return -EINVAL;
 	value = info == NULL ? NULL : spa_dict_lookup(info, SPA_KEY_API_FITS_PATH);
 	if (copy_text(self->path, sizeof(self->path), value) < 0)
 		return -EINVAL;

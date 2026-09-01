@@ -42,6 +42,8 @@ struct node_watch {
 	uint32_t input_ports;
 	uint32_t output_ports;
 	bool info_seen;
+	const char *expected_name;
+	bool expected_name_seen;
 	bool discard;
 	bool metrics_seen;
 	uint64_t buffers;
@@ -135,9 +137,13 @@ static void sync_core(struct test_data *test)
 static void on_node_info(void *data, const struct pw_node_info *info)
 {
 	struct node_watch *watch = data;
+	const char *node_name = info->props == NULL ? NULL :
+			spa_dict_lookup(info->props, PW_KEY_NODE_NAME);
 
 	watch->input_ports = info->n_input_ports;
 	watch->output_ports = info->n_output_ports;
+	watch->expected_name_seen = node_name != NULL &&
+			spa_streq(node_name, watch->expected_name);
 	watch->info_seen = true;
 }
 
@@ -333,6 +339,7 @@ static void wait_for_nodes(struct test_data *test)
 	CHECK(global_visible(test, test->source.global_id));
 	CHECK(global_visible(test, test->sink.global_id));
 	CHECK(test->source.info_seen && test->sink.info_seen);
+	CHECK(test->source.expected_name_seen && test->sink.expected_name_seen);
 	CHECK(test->source.input_ports == 0 && test->source.output_ports == 1);
 	CHECK(test->sink.input_ports == 1 && test->sink.output_ports == 0);
 }
@@ -441,6 +448,8 @@ int main(int argc, char **argv)
 	pw_registry_add_listener(test.registry, &test.registry_listener,
 			&registry_events, &test);
 	test.sink.discard = true;
+	test.sink.expected_name = SINK_NAME;
+	test.source.expected_name = SOURCE_NAME;
 	pw_loop_enter(pw_main_loop_get_loop(test.main_loop));
 	sync_core(&test);
 	create_node(&test, &test.sink, sink_properties());
