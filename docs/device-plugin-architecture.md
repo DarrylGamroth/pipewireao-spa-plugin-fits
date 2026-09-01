@@ -40,6 +40,8 @@ PipeWireAO core continues to own:
 This repository owns:
 
 - vendor device and node factories;
+- small explicitly non-actuating development endpoints, such as the generic
+  discard sink, which add no transport or scientific interpretation;
 - device discovery, selection, controls, and lifecycle;
 - translation between SPA buffers and the vendor SDK ABI;
 - vendor-native semantic schemas and profile definitions;

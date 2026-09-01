@@ -44,6 +44,7 @@ genicam_feature_dep = declare_dependency(
 
 install_headers(
   'include/pipewireao-plugins/alpao.h',
+  'include/pipewireao-plugins/discard.h',
   'include/pipewireao-plugins/fits.h',
   'include/pipewireao-plugins/imagestreamio.h',
   'include/pipewireao-plugins/ndarray.h',
@@ -69,6 +70,7 @@ if get_option('tests').allowed()
 endif
 
 subdir('spa/plugins/alpao')
+subdir('spa/plugins/discard')
 subdir('spa/plugins/ndarray')
 subdir('spa/plugins/nuvu')
 subdir('src/modules/queue')
@@ -361,6 +363,7 @@ if imagestreamio_found
   subdir('spa/plugins/imagestreamio')
 endif
 
+summary('Format-agnostic discard sink', true, section: 'SPA plugins')
 summary('eGrabber plugin', egrabber_found, section: 'SPA plugins')
 summary('BGAPI2 plugin', bgapi2_found, section: 'SPA plugins')
 summary('EDT PDV plugin', edtpdv_found, section: 'SPA plugins')

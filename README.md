@@ -1,8 +1,9 @@
 # PipeWireAO SPA plugins
 
-This repository is the out-of-tree home for native SPA hardware plugins built
-for PipeWireAO. Each plugin is a loadable shared object that exports ordinary
-SPA factories and uses PipeWireAO's installed public SPA interfaces.
+This repository is the out-of-tree home for native SPA hardware plugins and
+small development endpoints built for PipeWireAO. Each plugin is a loadable
+shared object that exports ordinary SPA factories and uses PipeWireAO's
+installed public SPA interfaces.
 
 The supported device integrations are `api.alpao.sink`,
 `api.egrabber.source`, `api.bgapi2.source`, `api.edtpdv.source`, and
@@ -17,6 +18,10 @@ The optional `api.imagestreamio.source` and `api.imagestreamio.sink` factories
 bridge ordinary ndarray buffers to milk ImageStreamIO shared-memory streams.
 Proprietary SDKs, drivers, device configuration files, calibration files, and
 redistributable binaries do not belong in this repository.
+
+The SDK-independent `api.pipewireao.discard` factory is a format-agnostic,
+non-actuating follower for development and integration graphs. It is not a
+simulated hardware device.
 
 The accepted repository and interface boundary is recorded in
 [Device plugin architecture](docs/device-plugin-architecture.md).
@@ -41,7 +46,7 @@ meson test -C build --print-errorlogs
 
 The default build also produces the Rust `api.ndarray.video-view`,
 `api.ndarray.frame-assembly`, and `api.hnu240.decoder` SPA factories plus the
-C ALPAO FGN operator. Scientific
+C `api.pipewireao.discard` sink and ALPAO FGN operator. Scientific
 Calculon operators are built from the adjacent `calculon-algorithms`
 repository as `libcalculon-fgn.so`; this repository no longer compiles a
 second native SPA implementation of them. Cargo builds the Rust transport
@@ -216,6 +221,35 @@ Example FGN node declaration:
   }
 }
 ```
+
+## Format-agnostic discard sink
+
+`api.pipewireao.discard` is a one-port, non-driving SPA sink analogous to
+`/dev/null`. Its `in` port accepts any fixated SPA `Format` object. It accepts
+standard PipeWire buffer pools with any number of data blocks and any standard
+memory type; the processing callback does not map, read, copy, or interpret
+payload memory. Each `SPA_STATUS_HAVE_DATA` buffer is returned immediately as
+`SPA_STATUS_NEED_DATA`.
+
+The sink starts only after a format, buffer pool, and `SPA_IO_Buffers` area are
+installed. `Pause` and `Suspend` stop consumption without discarding the
+negotiated resources, so a later `Start` resumes processing. The sink has no
+timer, driver, queue, background thread, or hardware authority.
+
+The node exposes these cumulative, read-only `SPA_PARAM_Props` counters:
+
+| Property name | Meaning |
+| --- | --- |
+| `discard.buffers` | Buffers returned since node construction. |
+| `discard.data-blocks` | Data blocks described by those buffers. |
+| `discard.bytes` | Sum of the chunk sizes advertised by those data blocks. |
+| `discard.protocol-errors` | Invalid input buffer references rejected by the processing callback. |
+| `discard.process-calls` | Processing callback calls, including calls with no input available. |
+
+The counters saturate at `INT64_MAX` and are not reset by pause or restart.
+They are snapshots obtained by ordinary parameter enumeration; the processing
+callback does not emit metric events, and observing metrics cannot pace the
+sink.
 
 ## Ownership boundary
 
