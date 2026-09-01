@@ -64,6 +64,12 @@ state to the capture benchmark, and it does not qualify ASDK as leak-free.
 | CAMERA-011 | Make layout-changing controls failure-atomic relative to the advertised format. | Andor3, Aravis, and BGAPI2 retain the old feature value, validate before publishing a new layout, restore and verify after failure, and fail closed if rollback cannot be established. | Andor3 mock test forces an unrepresentable post-write layout, observes the original negotiated format, and passes under sanitizers. Aravis and BGAPI2 compile against their SDKs; equivalent fault injection is open. | Andor3 verified; Aravis and BGAPI2 source-reviewed |
 | CAMERA-012 | Leave BGAPI2 producer buffers reusable after a failed start. | The shared discard path clears every local `camera_queued` marker after discarding the producer queue. | Source review and SDK build; a start-failure/retry injection test is open. | Implemented; fault injection open |
 
+## Shared-memory interoperability
+
+| ID | Requirement | Implementation | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| INTEROP-001 | Import and export milk ImageStreamIO streams without making its shared-memory ABI part of PipeWireAO. | Optional upstream-linked `api.imagestreamio.source` and `api.imagestreamio.sink`; ImageStreamIO remains behind an ndarray copy boundary. The source attaches and consumes a claimed semaphore. The sink either creates and owns a new stream or attaches to an exact compatible stream. | Factory test, real ImageStreamIO transport round trip, and direct SPA source/sink test cover format negotiation, initial and updated source publication, sink writes, counters, semaphore wakeup, ownership teardown, and refusal to replace an existing stream. | Functionally verified on CPU-backed rank-one/rank-two arrays and temporal rank-three input; deployment latency qualification open |
+
 ## Scientific graph and structural transforms
 
 The native Calculon SPA factories covered by `CAL-001` through `CAL-012` were

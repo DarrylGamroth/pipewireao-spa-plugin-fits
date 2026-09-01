@@ -179,3 +179,17 @@ option(
   value: 'auto',
   description: 'Build the CFITSIO-backed FITS cube source',
 )
+
+option(
+  'imagestreamio',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the ImageStreamIO ndarray source and sink',
+)
+
+option(
+  'imagestreamio-prefix',
+  type: 'string',
+  value: '/usr/local',
+  description: 'ImageStreamIO installation prefix',
+)

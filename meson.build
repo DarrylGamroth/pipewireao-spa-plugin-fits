@@ -45,6 +45,7 @@ genicam_feature_dep = declare_dependency(
 install_headers(
   'include/pipewireao-plugins/alpao.h',
   'include/pipewireao-plugins/fits.h',
+  'include/pipewireao-plugins/imagestreamio.h',
   'include/pipewireao-plugins/ndarray.h',
   'include/pipewireao-plugins/nuvu.h',
   'include/pipewireao-plugins/pod.h',
@@ -333,6 +334,33 @@ if fits_found
   subdir('spa/plugins/fits')
 endif
 
+imagestreamio_found = false
+if get_option('imagestreamio').allowed()
+  imagestreamio_prefix = get_option('imagestreamio-prefix')
+  imagestreamio_include_root = imagestreamio_prefix / 'include'
+  imagestreamio_library = cc.find_library(
+    'ImageStreamIO',
+    dirs: [imagestreamio_prefix / 'lib', imagestreamio_prefix / 'lib64'],
+    required: get_option('imagestreamio'),
+  )
+  imagestreamio_dep = declare_dependency(
+    compile_args: ['-isystem' + imagestreamio_include_root],
+    dependencies: [imagestreamio_library, threads_dep],
+  )
+  imagestreamio_install_rpath = ':'.join([
+    imagestreamio_prefix / 'lib',
+    imagestreamio_prefix / 'lib64',
+  ])
+  imagestreamio_found = imagestreamio_library.found() and cc.has_header(
+    'ImageStreamIO/ImageStreamIO.h',
+    dependencies: imagestreamio_dep,
+    required: get_option('imagestreamio'),
+  )
+endif
+if imagestreamio_found
+  subdir('spa/plugins/imagestreamio')
+endif
+
 summary('eGrabber plugin', egrabber_found, section: 'SPA plugins')
 summary('BGAPI2 plugin', bgapi2_found, section: 'SPA plugins')
 summary('EDT PDV plugin', edtpdv_found, section: 'SPA plugins')
@@ -342,3 +370,4 @@ summary('Hamamatsu DCAM-API plugin', hamamatsu_found, section: 'SPA plugins')
 summary('MPD HERMES FrontPanel plugin', hermes_found, section: 'SPA plugins')
 summary('Aravis experimental plugin', aravis_found, section: 'SPA plugins')
 summary('FITS cube source', fits_found, section: 'SPA plugins')
+summary('ImageStreamIO source/sink', imagestreamio_found, section: 'SPA plugins')

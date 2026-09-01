@@ -13,6 +13,8 @@ image buffers and regular graph scheduling. eGrabber uses a configured polling
 data loop; BGAPI2 and FITS can instead select ordinary eventfd or timerfd
 readiness;
 proprietary SDKs and CFITSIO remain optional build dependencies.
+The optional `api.imagestreamio.source` and `api.imagestreamio.sink` factories
+bridge ordinary ndarray buffers to milk ImageStreamIO shared-memory streams.
 Proprietary SDKs, drivers, device configuration files, calibration files, and
 redistributable binaries do not belong in this repository.
 
@@ -110,6 +112,12 @@ pool buffer. Its row mode preloads U16 frames and publishes scheduled ordinary
 row-block ndarrays for camera-pipeline qualification. See
 [FITS sequence source](spa/plugins/fits/README.md) for axis, schema, cadence,
 `GRAY16_LE`, simulated readout, and optional mmap behavior.
+
+Enable the ImageStreamIO bridge with `-Dimagestreamio=enabled`. An installation
+outside `/usr/local` is selected with `-Dimagestreamio-prefix=PATH`. See the
+[ImageStreamIO bridge](spa/plugins/imagestreamio/README.md) for stream
+ownership, ndarray type and shape mapping, semaphore behavior, and the
+intentional copy boundary.
 
 Optional Camera Link control through Grablink, CLProtocol, and the GenICam
 Reference Implementation is enabled with `-Dgenicam-root=PATH`. It supplies
@@ -307,6 +315,7 @@ spa/plugins/flisdk/           First Light Imaging FliSdk camera source factory
 spa/plugins/andor3/           Andor SDK3 camera source factory
 spa/plugins/aravis/           experimental Aravis GenTL/native-GV comparison source
 spa/plugins/fits/             CFITSIO vector and image-sequence source factory
+spa/plugins/imagestreamio/    ImageStreamIO ndarray source and sink factories
 spa/plugins/ndarray/          generic video-view and frame-assembly factories
 spa/plugins/nuvu/             Nüvü camera decoder SPA factory and tests
 crates/pipewireao-spa-node/   reusable Rust SPA ABI adapter
