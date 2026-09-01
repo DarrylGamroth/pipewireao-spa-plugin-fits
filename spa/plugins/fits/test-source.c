@@ -41,6 +41,7 @@ struct param_result {
 	const char *row_block_rows;
 	const char *simulated_readout_time_ns;
 	const char *node_name;
+	const char *port_name;
 };
 
 struct test_buffer {
@@ -129,9 +130,21 @@ static void on_info(void *data, const struct spa_node_info *info)
 	}
 }
 
+static void on_port_info(void *data, enum spa_direction direction,
+		uint32_t port_id, const struct spa_port_info *info)
+{
+	struct param_result *capture = data;
+
+	if (direction != SPA_DIRECTION_OUTPUT || port_id != 0 || info == NULL ||
+			info->props == NULL)
+		return;
+	capture->port_name = spa_dict_lookup(info->props, PW_KEY_PORT_NAME);
+}
+
 static const struct spa_node_events node_events = {
 	.version = SPA_VERSION_NODE_EVENTS,
 	.info = on_info,
+	.port_info = on_port_info,
 	.result = on_result,
 };
 
@@ -350,6 +363,8 @@ static void run_source(const struct spa_handle_factory *factory,
 	spa_assert_se(capture.node_name != NULL &&
 			spa_streq(capture.node_name,
 				test->node_name == NULL ? "fits_source" : test->node_name));
+	spa_assert_se(capture.port_name != NULL &&
+			spa_streq(capture.port_name, "output"));
 	spa_assert_se(capture.readiness != NULL &&
 			spa_streq(capture.readiness, readiness));
 	spa_assert_se(capture.output_mode != NULL &&

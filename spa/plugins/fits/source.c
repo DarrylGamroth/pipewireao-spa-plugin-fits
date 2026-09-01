@@ -66,6 +66,8 @@ struct port {
 	uint64_t info_all;
 	struct spa_port_info info;
 	struct spa_param_info params[5];
+	struct spa_dict props;
+	struct spa_dict_item prop_items[1];
 	enum output_kind output;
 	struct spa_io_buffers *io;
 	struct buffer buffers[MAX_BUFFERS];
@@ -1547,9 +1549,13 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	configure_props(self);
 	self->info.props = &self->props;
 	self->port.info_all = SPA_PORT_CHANGE_MASK_FLAGS |
-			SPA_PORT_CHANGE_MASK_PARAMS;
+			SPA_PORT_CHANGE_MASK_PROPS | SPA_PORT_CHANGE_MASK_PARAMS;
 	self->port.info = SPA_PORT_INFO_INIT();
 	self->port.info.flags = SPA_PORT_FLAG_LIVE;
+	self->port.prop_items[0] = SPA_DICT_ITEM_INIT(SPA_KEY_PORT_NAME, "output");
+	self->port.props = SPA_DICT_INIT(self->port.prop_items,
+			SPA_N_ELEMENTS(self->port.prop_items));
+	self->port.info.props = &self->port.props;
 	self->port.params[0] = (struct spa_param_info) {
 		.id = SPA_PARAM_EnumFormat,
 		.flags = SPA_PARAM_INFO_READ,
