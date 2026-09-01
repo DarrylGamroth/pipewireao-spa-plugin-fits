@@ -3,6 +3,12 @@
 This ledger records what this repository implements and what its automated
 evidence can support.
 
+## Live plugin integration
+
+| ID | Requirement | Implementation | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| INTEGRATION-001 | In an isolated private PipeWireAO core, publish one complete FITS image directly into the generic discard sink and clean up every fixture-owned object and process. | Maintained `spa-fits-discard-live` fixture creates an exact FITS source -> discard link through public native-protocol factories in a unique runtime and core. | The live test reaches an Active link, observes exactly one buffer, one data block, and 24 bytes with no discard protocol error, then observes removal of both nodes and the link before terminating and reaping the private core. | Functionally verified for one 4 by 3 U16 FITS ndarray image; no latency or broader live-format claim |
+
 ## Generic discard sink
 
 | ID | Requirement | Implementation | Evidence | Status |
@@ -10,7 +16,7 @@ evidence can support.
 | DISCARD-001 | Expose one ordinary non-actuating SPA sink that accepts any fixated SPA format. | `api.pipewireao.discard` with one input port and format-preserving negotiation | DSO test negotiates audio, video, and ndarray formats, including a mandatory producer property, and rejects an unresolved choice. | Verified synthetically |
 | DISCARD-002 | Return buffers without depending on their media type, block layout, memory type, mapping, or payload contents. | Standard `SPA_IO_Buffers` follower; processing reads descriptors and chunk sizes but never payload memory. | DSO test returns a zero-block buffer and an unmapped two-block DMA-BUF/MemId buffer; source review confirms no payload access. | Verified synthetically |
 | DISCARD-003 | Expose bounded cumulative metrics without making observation part of processing progress. | Lock-free saturating counters enumerated as read-only `SPA_PARAM_Props`; processing emits no metric events. | DSO test verifies buffer, block, advertised-byte, protocol-error, and process-call counters across processing and restart. | Verified synthetically |
-| DISCARD-004 | Pause, restart, suspend, and destroy without a driver, queue, background work, or hardware action. | Direct follower lifecycle in `sink.c` | DSO test covers readiness admission, pause/start, suspend, resource withdrawal, and destruction. | Verified synthetically; live graph integration open |
+| DISCARD-004 | Pause, restart, suspend, and destroy without a driver, queue, background work, or hardware action. | Direct follower lifecycle plus the ordinary `SPA_IO_Position` scheduling handshake in `sink.c` | DSO test covers readiness admission, pause/start, suspend, resource withdrawal, and destruction. The FITS integration test covers first live graph admission and owned-object teardown. | Synthetic lifecycle verified; live pause/restart remains open |
 
 ## Bounded queue module
 

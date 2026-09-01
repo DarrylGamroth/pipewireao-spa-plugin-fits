@@ -290,10 +290,13 @@ static void exercise(const struct spa_handle_factory *factory)
 	uint8_t unfixed_storage[1024];
 	uint8_t props_storage[1024];
 	struct spa_pod *audio, *mandatory_audio, *video, *ndarray, *unfixed;
-	struct spa_pod *props;
+	struct spa_pod *props, *node_io;
+	uint32_t node_io_id = SPA_ID_INVALID;
+	int32_t node_io_size = 0;
 	struct test_buffer storage[2];
 	struct spa_buffer *buffers[2];
 	struct spa_io_buffers io = SPA_IO_BUFFERS_INIT;
+	struct spa_io_position position = { 0 };
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
 	struct spa_command suspend = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Suspend);
@@ -318,6 +321,21 @@ static void exercise(const struct spa_handle_factory *factory)
 	spa_assert_se(spa_streq(capture.port_name, "in"));
 	spa_assert_se(capture.port_flags ==
 			(SPA_PORT_FLAG_NO_REF | SPA_PORT_FLAG_TERMINAL));
+	node_io = enum_node_one(node, &capture, SPA_PARAM_IO, 0);
+	spa_assert_se(node_io != NULL);
+	spa_assert_se(spa_pod_parse_object(node_io,
+			SPA_TYPE_OBJECT_ParamIO, NULL,
+			SPA_PARAM_IO_id, SPA_POD_Id(&node_io_id),
+			SPA_PARAM_IO_size, SPA_POD_Int(&node_io_size)) >= 0);
+	spa_assert_se(node_io_id == SPA_IO_Position);
+	spa_assert_se(node_io_size == (int32_t)sizeof(struct spa_io_position));
+	spa_assert_se(enum_node_one(node, &capture, SPA_PARAM_IO, 1) == NULL);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position, &position,
+			sizeof(position) - 1u) == -EINVAL);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position, &position,
+			sizeof(position)) == 0);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position, NULL, 0) == 0);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Clock, NULL, 0) == -ENOENT);
 
 	advertised = enum_port_one(node, &capture, SPA_PARAM_EnumFormat, NULL);
 	spa_assert_se(advertised != NULL);
