@@ -3,6 +3,15 @@
 This ledger records what this repository implements and what its automated
 evidence can support.
 
+## Generic discard sink
+
+| ID | Requirement | Implementation | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| DISCARD-001 | Expose one ordinary non-actuating SPA sink that accepts any fixated SPA format. | `api.pipewireao.discard` with one input port and format-preserving negotiation | DSO test negotiates audio, video, and ndarray formats, including a mandatory producer property, and rejects an unresolved choice. | Verified synthetically |
+| DISCARD-002 | Return buffers without depending on their media type, block layout, memory type, mapping, or payload contents. | Standard `SPA_IO_Buffers` follower; processing reads descriptors and chunk sizes but never payload memory. | DSO test returns a zero-block buffer and an unmapped two-block DMA-BUF/MemId buffer; source review confirms no payload access. | Verified synthetically |
+| DISCARD-003 | Expose bounded cumulative metrics without making observation part of processing progress. | Lock-free saturating counters enumerated as read-only `SPA_PARAM_Props`; processing emits no metric events. | DSO test verifies buffer, block, advertised-byte, protocol-error, and process-call counters across processing and restart. | Verified synthetically |
+| DISCARD-004 | Pause, restart, suspend, and destroy without a driver, queue, background work, or hardware action. | Direct follower lifecycle in `sink.c` | DSO test covers readiness admission, pause/start, suspend, resource withdrawal, and destruction. | Verified synthetically; live graph integration open |
+
 ## Bounded queue module
 
 | ID | Requirement | Implementation | Evidence | Status |
