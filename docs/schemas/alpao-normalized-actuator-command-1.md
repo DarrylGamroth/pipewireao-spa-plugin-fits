@@ -54,10 +54,11 @@ it does not replace the separately admitted command mapping.
 ## Buffer and lifecycle behavior
 
 The payload SHALL be one contiguous, naturally aligned block. The chunk size
-SHALL be exactly `8 * actuator-count` bytes and its stride SHALL be either zero
-or eight bytes. A sink SHALL reject a malformed, non-finite, or out-of-range
-command without passing it to ASDK and SHALL still return the claimed buffer
-lease.
+SHALL be exactly `8 * actuator-count` bytes. Its canonical rank-one ndarray
+stride is the complete vector size. The sink also accepts zero and the legacy
+eight-byte element stride from direct producers. A sink SHALL reject a
+malformed, non-finite, or out-of-range command without passing it to ASDK and
+SHALL still return the claimed buffer lease.
 
 The sink uses ordinary PipeWire `SPA_IO_Buffers` input and consumes one complete
 command when its graph dependency is released. Buffer-pool exhaustion therefore

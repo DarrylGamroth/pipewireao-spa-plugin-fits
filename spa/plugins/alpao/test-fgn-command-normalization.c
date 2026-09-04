@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
 	assert(descriptor->get_port_format(instance, 0, &input_format) == 0);
 	assert(descriptor->get_port_format(instance, 1, &output_format) == 0);
 	assert(input_format->element_type == SPA_ELEMENT_TYPE_F32_LE);
-	assert(input_format->layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR);
+	assert(input_format->layout == SPA_NDARRAY_LAYOUT_COLUMN_MAJOR);
 	assert(input_format->rate_num == 2000 && input_format->rate_denom == 1);
 	assert(input_format->n_dimensions == 1 && input_format->shape[0] == 3);
 	assert(strcmp(input_format->schema,

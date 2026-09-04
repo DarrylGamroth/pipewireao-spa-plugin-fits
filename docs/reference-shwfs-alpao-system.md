@@ -34,7 +34,8 @@ The final ALPAO operator is loaded from
 | `rate_numerator` | Positive demanded-command rate numerator. |
 | `rate_denominator` | Positive demanded-command rate denominator. |
 
-The operator consumes `org.calculon.ao.demanded-pdm-command/1` F32 values and
+The operator consumes column-major
+`org.calculon.ao.demanded-pdm-command/1` F32 values and
 publishes `org.pipewireao.alpao.normalized-actuator-command/1` F64 values. The
 profile remains immutable construction data and is not carried by either
 ndarray port. The normalized output has no declared rate because the ALPAO sink

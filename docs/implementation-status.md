@@ -39,22 +39,30 @@ evidence can support.
 | --- | --- | --- | --- | --- |
 | ALPAO-001 | Expose one ordinary SPA sink factory. | `plugin.c`, `sink.c` | Production and mock factory tests load and enumerate `api.alpao.sink`. | Verified |
 | ALPAO-002 | Require exact schema, structural format, actuator count, and a valid configured command-profile identity before start. | `validate_format()` and construction validation in `read_options()` | Mock test rejects unequal schema plus missing and malformed profile configuration, then accepts the advertised schema-only format. | Verified; cross-node profile admission remains outside the sink |
-| ALPAO-003 | Consume one ordinary scheduled input without a private queue. | Standard `SPA_IO_Buffers` input in `sink.c` | Mock test submits, processes, and reclaims fixed-pool buffers. | Verified |
-| ALPAO-004 | Reject malformed or non-normalized commands before the backend and return their leases. | `process_command()` and `process()` | Mock test rejects `1.5` with `-ERANGE` and reclaims the same buffer. | Verified |
+| ALPAO-003 | Consume one ordinary scheduled input without a private queue. | Standard `SPA_IO_Position` follower handshake and `SPA_IO_Buffers` input in `sink.c` | Mock test verifies node IO admission, submits, processes, and reclaims fixed-pool buffers; a connected HIP Graph test drives the normalization operator into the sink. | Verified |
+| ALPAO-004 | Reject malformed or non-normalized commands before the backend and return their leases. | `process_command()` and `process()` latch the first terminal process error, log through SPA, and publish a node error on the main loop. | Mock test rejects `1.5` with `-ERANGE`, reclaims the same buffer, and observes one node-error event. | Verified |
 | ALPAO-005 | Make proprietary SDK integration optional. | `alpao-sdk` Meson feature | SDK-disabled build and test contain no `libasdk` dependency. | Verified |
 | ALPAO-006 | Open ASDK only on start, verify `NbOfActuator`, reset, send, reset, and release. | `backend-asdk.c` | ASDK simulator test with synthetic `SIM001` configuration. | Simulator verified |
 | ALPAO-007 | Do not redistribute SDK or mirror configuration. | Build options and generated test fixture | Repository inspection and ignored build trees. | Verified for current tree |
-| ALPAO-008 | Keep the repeated wrapper bounded and allocation-free. | Fixed pool, fixed scan, direct payload validation | Source review; no allocator or logging call in `process()` or `process_command()`. ASDK internals are not qualified. | Wrapper reviewed |
-| ALPAO-009 | Provide a safe physical-device lifecycle and strict RTC qualification. | Reset lifecycle is implemented. | Requires connected-device failure and timing tests. | Not verified |
+| ALPAO-008 | Keep the repeated wrapper bounded and allocation-free. | Fixed pool, fixed scan, direct payload validation, and one-shot fault reporting outside the successful repeated path | Source review; the successful process path contains no allocator or logging call. Terminal error publication uses the PipeWire main loop. ASDK internals are not qualified. | Wrapper reviewed |
+| ALPAO-009 | Provide a safe physical-device lifecycle and strict RTC qualification. | Reset lifecycle and terminal sink-fault publication are implemented. | Disposable capture-interface testing verifies fault visibility, no retry, teardown reset, and reconstruction; physical-device failure and timing tests remain required. | Synthetic lifecycle verified; physical device open |
 | ALPAO-010 | Define canonical profile serialization and fingerprints. | Plugins validate the local opaque identifier syntax; ndarray negotiation does not carry or compare it. | Requires a normative manifest, byte-stable vectors, and deployment-level comparison evidence. | Open |
 | ALPAO-011 | Allow a deployment to set the DEv7 `daqFreq` interface conversion rate without advertising it as command cadence. | Optional `api.alpao.daq-frequency` startup property and `asdkSet("daqFreq", ...)` | Mock contract test covers accepted and out-of-range configuration. The ASDK simulator does not implement `daqFreq`; connected-interface verification remains required. | Implemented; hardware not verified |
 | ALPAO-012 | Qualify host latency through the ASDK command-packing boundary without requiring a network or physical mirror. | Optional 468-actuator capture-interface integration test and benchmark | Correlates SPA process timestamps with sequenced `AITC` capture timestamps, checks frame size/order/loss, and supports closed-loop, fixed-rate, burst, affinity, memory locking, and `SCHED_FIFO` runs. | Host harness implemented; controlled-host results required |
-| ALPAO-013 | Keep physical-to-normalized command conversion in an ALPAO-owned explicit graph operator. | FGN `command-normalization-f32-f64` operator with exact demanded and normalized schemas, actuator extent, rate, scale, and a construction-profile identity outside the port formats. | Direct DSO test verifies ABI admission, formats, metadata, boundary values, range failure, and malformed construction rejection. | Verified for the direct FGN boundary; scheduled graph-to-sink integration and profile-identity admission remain open |
+| ALPAO-013 | Keep physical-to-normalized command conversion in an ALPAO-owned explicit graph operator. | FGN `command-normalization-f32-f64` operator with exact demanded and normalized schemas, actuator extent, rate, scale, and a construction-profile identity outside the port formats. | Direct DSO tests verify ABI admission, formats, metadata, boundary values, range failure, and malformed construction rejection. The companion `JuliaFilterGraph.jl` captured-ALPAO harness admits matching profile identities and verifies the scheduled operator-to-sink boundary through ASDK capture. | Verified synthetically; physical mapping remains deployment-owned |
 
 The ASDK simulator uses a synthetic eight-actuator binary configuration created
 by `alpao-binary-config` and the ASDK `sim` interface. It discards commands and
 therefore cannot support claims about electronics, actuator order, physical
 motion, command latency, or timing bounds.
+
+The connected captured-ALPAO proof uses a disposable two-actuator `CAP002`
+configuration and `libait_capture.so`. It observes the packed command sent to
+the interface, injects one `Sender::Send` failure, verifies that the sink enters
+PipeWire's terminal error state without retrying the command, tears the graph
+down through the ASDK reset/release lifecycle, and reconstructs a fresh graph.
+It does not establish whether a physical mirror applied the failed command or
+qualify a physical safe-state procedure.
 
 With ASDK 4.01.12, LeakSanitizer reports the same 1,200-byte, three-allocation
 retention for both the simulator test and the capture-interface test.

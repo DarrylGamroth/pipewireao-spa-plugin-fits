@@ -11,6 +11,7 @@
 
 #include <spa/monitor/device.h>
 #include <spa/node/command.h>
+#include <spa/node/event.h>
 #include <spa/node/io.h>
 #include <spa/node/keys.h>
 #include <spa/node/node.h>
@@ -19,8 +20,10 @@
 #include <spa/param/ndarray-utils.h>
 #include <spa/pod/filter.h>
 #include <spa/support/log.h>
+#include <spa/support/loop.h>
 #include <spa/support/plugin.h>
 #include <spa/utils/keys.h>
+#include <spa/utils/result.h>
 #include <spa/utils/string.h>
 
 #include <pipewireao-plugins/alpao.h>
@@ -61,10 +64,12 @@ struct impl {
 	struct spa_handle handle;
 	struct spa_node node;
 	struct spa_log *log;
+	struct spa_loop *main_loop;
 	struct spa_hook_list hooks;
 	struct spa_callbacks callbacks;
 	uint64_t info_all;
 	struct spa_node_info info;
+	struct spa_param_info params[1];
 	struct spa_dict node_props;
 	struct spa_dict_item node_items[10];
 	char backend_name[BACKEND_NAME_SIZE];
@@ -78,7 +83,9 @@ struct impl {
 	uint32_t actuator_count;
 	uint32_t daq_frequency;
 	size_t command_bytes;
+	int process_error;
 	bool started;
+	bool error_event_queued;
 };
 
 static int copy_string(char *destination, size_t size, const char *source)
@@ -209,13 +216,37 @@ static int set_callbacks(void *object,
 static int enum_params(void *object, int seq, uint32_t id, uint32_t start,
 		uint32_t num, const struct spa_pod *filter)
 {
-	(void)object;
-	(void)seq;
-	(void)id;
-	(void)start;
-	(void)num;
-	(void)filter;
-	return -ENOENT;
+	struct impl *self = object;
+	uint8_t storage[256];
+	uint32_t count = 0;
+	struct spa_result_node_params result = { 0 };
+
+	spa_return_val_if_fail(self != NULL && num > 0, -EINVAL);
+	if (id != SPA_PARAM_IO)
+		return -ENOENT;
+	result.id = id;
+	result.next = start;
+	while (count < num) {
+		struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
+				sizeof(storage));
+		struct spa_pod *param;
+
+		result.index = result.next++;
+		param = result.index > 0 ? NULL :
+				spa_pod_builder_add_object(&builder,
+					SPA_TYPE_OBJECT_ParamIO, SPA_PARAM_IO,
+					SPA_PARAM_IO_id, SPA_POD_Id(SPA_IO_Position),
+					SPA_PARAM_IO_size,
+					SPA_POD_Int(sizeof(struct spa_io_position)));
+		if (param == NULL)
+			return 0;
+		if (spa_pod_filter(&builder, &result.param, param, filter) < 0)
+			continue;
+		spa_node_emit_result(&self->hooks, seq, 0,
+				SPA_RESULT_TYPE_NODE_PARAMS, &result);
+		count++;
+	}
+	return 0;
 }
 
 static int set_param(void *object, uint32_t id, uint32_t flags,
@@ -230,11 +261,19 @@ static int set_param(void *object, uint32_t id, uint32_t flags,
 
 static int set_io(void *object, uint32_t id, void *data, size_t size)
 {
-	(void)object;
-	(void)id;
-	(void)data;
-	(void)size;
-	return -ENOENT;
+	struct impl *self = object;
+
+	spa_return_val_if_fail(self != NULL, -EINVAL);
+	if (id != SPA_IO_Position)
+		return -ENOENT;
+	if (data != NULL && size < sizeof(struct spa_io_position))
+		return -EINVAL;
+	/*
+	 * Accepting the graph position is the follower-side scheduling handshake.
+	 * PipeWire publishes the current driver identity through this IO before it
+	 * admits the ALPAO sink to a cycle. The sink does not inspect the position.
+	 */
+	return 0;
 }
 
 static int add_port(void *object, enum spa_direction direction,
@@ -290,7 +329,8 @@ static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 						(int32_t)MAX_BUFFERS),
 				SPA_PARAM_BUFFERS_blocks, SPA_POD_Int(1),
 				SPA_PARAM_BUFFERS_size, SPA_POD_Int((int32_t)self->command_bytes),
-				SPA_PARAM_BUFFERS_stride, SPA_POD_Int(sizeof(double)),
+				SPA_PARAM_BUFFERS_stride,
+				SPA_POD_Int((int32_t)self->command_bytes),
 				SPA_PARAM_BUFFERS_align, SPA_POD_Int(_Alignof(double)),
 				SPA_PARAM_BUFFERS_dataType,
 				SPA_POD_CHOICE_FLAGS_Int((1u << SPA_DATA_MemPtr) |
@@ -523,7 +563,8 @@ static int process_command(struct impl *self, uint32_t buffer_id)
 	if (data->data == NULL || data->chunk == NULL || data->maxsize == 0 ||
 			data->chunk->size != self->command_bytes ||
 			(data->chunk->stride != 0 &&
-				data->chunk->stride != (int32_t)sizeof(double)) ||
+				data->chunk->stride != (int32_t)sizeof(double) &&
+				data->chunk->stride != (int32_t)self->command_bytes) ||
 			(data->chunk->flags & SPA_CHUNK_FLAG_CORRUPTED) != 0)
 		return -EINVAL;
 	offset = data->chunk->offset % data->maxsize;
@@ -538,6 +579,43 @@ static int process_command(struct impl *self, uint32_t buffer_id)
 	return alpao_backend_send(self->backend, command, self->actuator_count);
 }
 
+static int emit_process_error(struct spa_loop *loop, bool async, uint32_t seq,
+		const void *data, size_t size, void *user_data)
+{
+	struct impl *self = user_data;
+	struct spa_event event = SPA_NODE_EVENT_INIT(SPA_NODE_EVENT_Error);
+
+	(void)loop;
+	(void)async;
+	(void)seq;
+	(void)data;
+	(void)size;
+	spa_node_emit_event(&self->hooks, &event);
+	return 0;
+}
+
+static void report_process_error(struct impl *self, int result)
+{
+	int queued;
+
+	if (self->error_event_queued)
+		return;
+	self->process_error = result;
+	self->error_event_queued = true;
+	spa_log_error(self->log, "ALPAO command delivery failed: %s",
+			spa_strerror(result));
+	if (self->main_loop == NULL) {
+		(void)emit_process_error(NULL, false, 0, NULL, 0, self);
+		return;
+	}
+	queued = spa_loop_invoke(self->main_loop, emit_process_error, 0, NULL, 0,
+			false, self);
+	if (queued < 0)
+		spa_log_error(self->log,
+				"could not publish ALPAO node error: %s",
+				spa_strerror(queued));
+}
+
 static int process(void *object)
 {
 	struct impl *self = object;
@@ -548,6 +626,8 @@ static int process(void *object)
 	spa_return_val_if_fail(self != NULL, -EINVAL);
 	if (!self->started)
 		return SPA_STATUS_OK;
+	if (self->process_error < 0)
+		return self->process_error;
 	if ((io = self->input.io) == NULL)
 		return -EIO;
 	if (io->status != SPA_STATUS_HAVE_DATA)
@@ -555,8 +635,10 @@ static int process(void *object)
 	buffer_id = io->buffer_id;
 	sent = process_command(self, buffer_id);
 	io->status = sent < 0 ? sent : SPA_STATUS_NEED_DATA;
-	if (sent < 0)
+	if (sent < 0) {
+		report_process_error(self, sent);
 		return sent;
+	}
 	return SPA_STATUS_NEED_DATA;
 }
 
@@ -657,22 +739,29 @@ static int init(const struct spa_handle_factory *factory,
 	self->handle.get_interface = get_interface;
 	self->handle.clear = clear;
 	self->log = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
+	self->main_loop = spa_support_find(support, n_support,
+			SPA_TYPE_INTERFACE_Loop);
 	spa_hook_list_init(&self->hooks);
 	if ((res = read_options(self, info)) < 0)
 		return res;
 
 	self->node.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Node,
 			SPA_VERSION_NODE, &node_methods, self);
-	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS;
+	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |
+			SPA_NODE_CHANGE_MASK_PARAMS;
 	self->info = SPA_NODE_INFO_INIT();
 	self->info.max_input_ports = 1;
 	self->info.flags = SPA_NODE_FLAG_RT;
+	self->params[0] = SPA_PARAM_INFO(SPA_PARAM_IO, SPA_PARAM_INFO_READ);
+	self->info.params = self->params;
+	self->info.n_params = SPA_N_ELEMENTS(self->params);
 	configure_node_props(self);
 	self->info.props = &self->node_props;
 
 	self->input.info_all = SPA_PORT_CHANGE_MASK_FLAGS |
 			SPA_PORT_CHANGE_MASK_PARAMS;
 	self->input.info = SPA_PORT_INFO_INIT();
+	self->input.info.flags = SPA_PORT_FLAG_NO_REF | SPA_PORT_FLAG_TERMINAL;
 	self->input.params[0] = (struct spa_param_info) {
 		.id = SPA_PARAM_EnumFormat,
 		.flags = SPA_PARAM_INFO_READ,

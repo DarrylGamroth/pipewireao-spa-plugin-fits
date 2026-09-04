@@ -25,7 +25,18 @@ struct param_capture {
 	uint32_t expected;
 	uint8_t storage[4096];
 	struct spa_pod *param;
+	uint64_t port_flags;
+	uint32_t error_events;
 };
+
+static void on_port_info(void *data, enum spa_direction direction,
+		uint32_t port_id, const struct spa_port_info *info)
+{
+	struct param_capture *capture = data;
+
+	if (direction == SPA_DIRECTION_INPUT && port_id == 0 && info != NULL)
+		capture->port_flags = info->flags;
+}
 
 static void on_result(void *data, int seq, int result, uint32_t type,
 		const void *value)
@@ -47,9 +58,19 @@ static void on_result(void *data, int seq, int result, uint32_t type,
 	capture->param = (struct spa_pod *)capture->storage;
 }
 
+static void on_event(void *data, const struct spa_event *event)
+{
+	struct param_capture *capture = data;
+
+	if (SPA_NODE_EVENT_ID(event) == SPA_NODE_EVENT_Error)
+		capture->error_events++;
+}
+
 static const struct spa_node_events node_events = {
 	.version = SPA_VERSION_NODE_EVENTS,
+	.port_info = on_port_info,
 	.result = on_result,
+	.event = on_event,
 };
 
 static struct spa_pod *enum_one(struct spa_node *node,
@@ -60,6 +81,15 @@ static struct spa_pod *enum_one(struct spa_node *node,
 	spa_assert_se(spa_node_port_enum_params(node, 1, SPA_DIRECTION_INPUT, 0,
 			id, 0, 1, NULL) == 0);
 	spa_assert_se(capture->param != NULL);
+	return capture->param;
+}
+
+static struct spa_pod *enum_node_one(struct spa_node *node,
+		struct param_capture *capture, uint32_t id, uint32_t start)
+{
+	capture->expected = id;
+	capture->param = NULL;
+	spa_assert_se(spa_node_enum_params(node, 1, id, start, 1, NULL) == 0);
 	return capture->param;
 }
 
@@ -127,8 +157,12 @@ static int exercise(const struct spa_handle_factory *factory,
 	struct test_buffer storage[2];
 	struct spa_buffer *buffers[2];
 	struct spa_io_buffers io = SPA_IO_BUFFERS_INIT;
+	struct spa_io_position position = { 0 };
 	struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
+	struct spa_pod *node_io;
+	uint32_t node_io_id = SPA_ID_INVALID;
+	int32_t node_io_size = 0;
 	int initialized;
 
 	if (spa_streq(backend, "mock"))
@@ -148,6 +182,23 @@ static int exercise(const struct spa_handle_factory *factory,
 			(void **)&node) == 0);
 	spa_assert_se(spa_node_add_listener(node, &listener, &node_events,
 			&capture) == 0);
+	spa_assert_se(capture.port_flags ==
+			(SPA_PORT_FLAG_NO_REF | SPA_PORT_FLAG_TERMINAL));
+	node_io = enum_node_one(node, &capture, SPA_PARAM_IO, 0);
+	spa_assert_se(node_io != NULL);
+	spa_assert_se(spa_pod_parse_object(node_io,
+			SPA_TYPE_OBJECT_ParamIO, NULL,
+			SPA_PARAM_IO_id, SPA_POD_Id(&node_io_id),
+			SPA_PARAM_IO_size, SPA_POD_Int(&node_io_size)) >= 0);
+	spa_assert_se(node_io_id == SPA_IO_Position);
+	spa_assert_se(node_io_size == (int32_t)sizeof(struct spa_io_position));
+	spa_assert_se(enum_node_one(node, &capture, SPA_PARAM_IO, 1) == NULL);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position, &position,
+			sizeof(position) - 1u) == -EINVAL);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position, &position,
+			sizeof(position)) == 0);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position, NULL, 0) == 0);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Clock, NULL, 0) == -ENOENT);
 
 	format = enum_one(node, &capture, SPA_PARAM_EnumFormat);
 	spa_assert_se(spa_format_ndarray_parse(format, &ndarray) == 0);
@@ -183,7 +234,7 @@ static int exercise(const struct spa_handle_factory *factory,
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
 	spa_assert_se(spa_node_process(node) == SPA_STATUS_NEED_DATA);
 	storage[0].chunk.size = sizeof(storage[0].command);
-	storage[0].chunk.stride = sizeof(double);
+	storage[0].chunk.stride = sizeof(storage[0].command);
 	io.buffer_id = 0;
 	io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(node) == SPA_STATUS_NEED_DATA);
@@ -196,6 +247,7 @@ static int exercise(const struct spa_handle_factory *factory,
 	io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(node) == -ERANGE);
 	spa_assert_se(io.status == -ERANGE);
+	spa_assert_se(capture.error_events == 1);
 
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_INPUT, 0,

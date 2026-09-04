@@ -123,7 +123,7 @@ static int instantiate(const struct spa_fgn_descriptor *descriptor,
 	instance->shape[0] = instance->actuator_count;
 	instance->formats[0] = (struct spa_fgn_format) {
 		.element_type = SPA_ELEMENT_TYPE_F32_LE,
-		.layout = SPA_NDARRAY_LAYOUT_ROW_MAJOR,
+		.layout = SPA_NDARRAY_LAYOUT_COLUMN_MAJOR,
 		.rate_num = rate_num,
 		.rate_denom = rate_denom,
 		.n_dimensions = 1,
