@@ -1313,9 +1313,10 @@ static int prepare_output_slot(struct impl *impl,
 	int result;
 
 	if (slot == NULL || slot->playback == NULL ||
-			slot->index >= impl->n_capture_buffers)
+			(impl->storage == STORAGE_LEASE &&
+			 slot->index >= impl->n_capture_buffers))
 		return -EINVAL;
-	input = &impl->inputs[slot->index];
+	input = &impl->inputs[impl->storage == STORAGE_LEASE ? slot->index : 0];
 	if (input->capture == NULL)
 		return -EINVAL;
 	result = pwao_queue_buffer_validate_layout(input->capture->buffer,
@@ -1340,10 +1341,11 @@ static void maybe_activate_playback_generation(struct impl *impl)
 	uint64_t generation = impl->playback_requested_generation;
 
 	if (generation == 0 || generation != impl->capture_generation ||
-			impl->format == NULL ||
-			impl->n_playback_present != impl->n_capture_buffers)
+			impl->format == NULL || impl->n_playback_present == 0 ||
+			(impl->storage == STORAGE_LEASE &&
+			 impl->n_playback_present != impl->n_capture_buffers))
 		return;
-	for (i = 0; i < impl->n_capture_buffers; i++)
+	for (i = 0; i < impl->n_playback_buffers; i++)
 		if (impl->outputs[i].playback == NULL ||
 				impl->outputs[i].generation != generation)
 			return;
@@ -1382,8 +1384,9 @@ static void playback_add_buffer(void *data, struct pw_buffer *buffer)
 	impl->n_playback_buffers = SPA_MAX(impl->n_playback_buffers, index + 1u);
 	if (impl->playback_requested_generation != 0 &&
 			impl->playback_requested_generation == impl->capture_generation &&
-			index < impl->n_capture_buffers &&
-			impl->inputs[index].capture != NULL) {
+			(impl->storage == STORAGE_COPY ||
+			 (index < impl->n_capture_buffers &&
+			  impl->inputs[index].capture != NULL))) {
 		int result = prepare_output_slot(impl, slot);
 
 		if (result < 0) {
@@ -1457,30 +1460,23 @@ static int update_capture_params(struct impl *impl)
 	uint8_t buffer[1024];
 	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer,
 			sizeof(buffer));
-	struct spa_pod_frame acquisition;
-	const struct spa_pod *params[3];
+	const struct spa_pod *params[2];
 	uint32_t n_params = 0;
+	uint32_t data_types = impl->storage == STORAGE_LEASE ?
+			((1u << SPA_DATA_MemFd) | (1u << SPA_DATA_DmaBuf)) :
+			((1u << SPA_DATA_MemPtr) | (1u << SPA_DATA_MemFd));
 
 	params[n_params++] = spa_pod_builder_add_object(&builder,
 			SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
 			SPA_PARAM_BUFFERS_buffers,
-			SPA_POD_Int((int32_t)(impl->max_buffers + 2u)));
+			SPA_POD_Int((int32_t)(impl->max_buffers + 2u)),
+			SPA_PARAM_BUFFERS_dataType,
+			SPA_POD_CHOICE_FLAGS_Int(data_types));
 	params[n_params++] = spa_pod_builder_add_object(&builder,
 			SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 			SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
 			SPA_PARAM_META_size,
 			SPA_POD_Int((int32_t)sizeof(struct spa_meta_header)));
-	spa_pod_builder_push_object(&builder, &acquisition,
-			SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta);
-	spa_pod_builder_add(&builder,
-			SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Acquisition),
-			SPA_PARAM_META_size,
-			SPA_POD_Int((int32_t)sizeof(struct spa_meta_acquisition)),
-			0);
-	spa_pod_builder_prop(&builder, SPA_PARAM_META_features,
-			SPA_POD_PROP_FLAG_MANDATORY);
-	spa_pod_builder_int(&builder, SPA_META_FEATURE_ACQUISITION_CURRENT);
-	params[n_params++] = spa_pod_builder_pop(&builder, &acquisition);
 	return pw_stream_update_params(impl->capture, params, n_params);
 }
 
@@ -1589,6 +1585,7 @@ done:
 
 static void maybe_configure_playback(struct impl *impl)
 {
+	enum pw_stream_state capture_state;
 	int result;
 
 	if (atomic_load_explicit(&impl->destroying, memory_order_acquire) ||
@@ -1596,15 +1593,18 @@ static void maybe_configure_playback(struct impl *impl)
 			impl->capture == NULL || impl->playback == NULL ||
 			impl->format == NULL || impl->capture_pool_withdrawing ||
 			impl->playback_requested_generation == impl->capture_generation ||
-			impl->n_capture_present < impl->max_buffers + 2u ||
-			pw_stream_get_state(impl->capture, NULL) !=
-				PW_STREAM_STATE_PAUSED)
+			impl->n_capture_present < impl->max_buffers + 2u)
 		return;
 	result = configure_playback(impl);
 	if (result < 0)
 		(void)pw_stream_set_error(impl->capture, result,
 				"queue output configuration failed: %s",
 				spa_strerror(result));
+	else {
+		capture_state = pw_stream_get_state(impl->capture, NULL);
+		if (capture_state == PW_STREAM_STATE_STREAMING)
+			(void)pw_stream_set_active(impl->playback, true);
+	}
 }
 
 static int setup_playback_endpoint(struct impl *impl)
@@ -1690,6 +1690,7 @@ static void stream_state_changed(void *data, enum pw_stream_state old,
 		return;
 	}
 	if (state == PW_STREAM_STATE_STREAMING && impl->playback != NULL) {
+		maybe_configure_playback(impl);
 		(void)pw_stream_set_active(impl->playback, true);
 		return;
 	}
@@ -1802,6 +1803,10 @@ static void update_stats(void *data, uint64_t expirations)
 				memory_order_acquire) ? "true" : "false");
 	items[count++] = SPA_DICT_ITEM_INIT("queue.state.input-format",
 			impl->format != NULL ? "negotiated" : "none");
+	items[count++] = SPA_DICT_ITEM_INIT("queue.state.input-stream",
+			pw_stream_state_as_string(pw_stream_get_state(impl->capture, NULL)));
+	items[count++] = SPA_DICT_ITEM_INIT("queue.state.output-stream",
+			pw_stream_state_as_string(pw_stream_get_state(impl->playback, NULL)));
 	items[count++] = SPA_DICT_ITEM_INIT("queue.state.ownership-transition",
 			ownership_transition_name(impl));
 	items[count++] = SPA_DICT_ITEM_INIT("queue.state.output-generation",
