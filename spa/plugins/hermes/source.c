@@ -366,9 +366,7 @@ static struct spa_pod *build_format(struct impl *self,
 			SPA_POD_Array(sizeof(int32_t), SPA_TYPE_Int, 3, shape),
 			SPA_FORMAT_NDARRAY_layout,
 			SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR),
-			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&self->rate),
-			SPA_FORMAT_NDARRAY_profile,
-			SPA_POD_String(self->camera_info.profile));
+			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&self->rate));
 }
 
 static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
@@ -475,7 +473,7 @@ static int validate_format(struct impl *self, const struct spa_pod *param,
 	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
 			sizeof(storage));
 	const struct spa_pod *fixed;
-	const char *schema, *profile;
+	const char *schema;
 
 	fixed = pipewireao_pod_unwrap_fixed_choices(&builder, param);
 	if (fixed == NULL || spa_format_ndarray_parse(fixed, format) < 0 ||
@@ -489,12 +487,8 @@ static int validate_format(struct impl *self, const struct spa_pod *param,
 			format->rate.denom != self->rate.denom ||
 			spa_ndarray_format_key_count(fixed,
 					SPA_FORMAT_NDARRAY_schema) != 1 ||
-			spa_ndarray_format_key_count(fixed,
-					SPA_FORMAT_NDARRAY_profile) != 1 ||
 			string_property(fixed, SPA_FORMAT_NDARRAY_schema, &schema) < 0 ||
-			string_property(fixed, SPA_FORMAT_NDARRAY_profile, &profile) < 0 ||
-			!spa_streq(schema, SPA_HERMES_RAW_BATCH_SCHEMA) ||
-			!spa_streq(profile, self->camera_info.profile))
+			!spa_streq(schema, SPA_HERMES_RAW_BATCH_SCHEMA))
 		return -EINVAL;
 	return 0;
 }

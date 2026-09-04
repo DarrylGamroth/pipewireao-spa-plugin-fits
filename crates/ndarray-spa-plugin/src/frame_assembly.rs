@@ -16,7 +16,6 @@ const KEY_SIZE: &[u8] = b"api.ndarray.frame-size\0";
 const KEY_RATE: &[u8] = b"api.ndarray.frame-rate\0";
 const KEY_BLOCK_SCHEMA: &[u8] = b"api.ndarray.row-block-schema\0";
 const KEY_FRAME_SCHEMA: &[u8] = b"api.ndarray.frame-schema\0";
-const KEY_PROFILE: &[u8] = b"api.ndarray.profile\0";
 const KEY_ELEMENT_TYPE: &[u8] = b"api.ndarray.element-type\0";
 const KEY_LAYOUT: &[u8] = b"api.ndarray.layout\0";
 const KEY_BLOCK_ROWS: &[u8] = b"api.ndarray.row-block-rows\0";
@@ -216,7 +215,6 @@ impl Node for FrameAssemblyNode {
             .transpose()?;
         let block_schema = optional_nonempty(info, KEY_BLOCK_SCHEMA)?.map(Into::into);
         let frame_schema = optional_nonempty(info, KEY_FRAME_SCHEMA)?.map(Into::into);
-        let profile: Option<Box<str>> = optional_nonempty(info, KEY_PROFILE)?.map(Into::into);
         let element_type = parse_element_type(required_info(info, KEY_ELEMENT_TYPE)?)?;
         let layout = parse_layout(required_info(info, KEY_LAYOUT)?)?;
         let block_rows = parse_positive_usize(required_info(info, KEY_BLOCK_ROWS)?)?;
@@ -238,7 +236,6 @@ impl Node for FrameAssemblyNode {
         let input_format = Format::ndarray_format(
             element_type,
             block_schema,
-            profile.clone(),
             [
                 u32::try_from(block_rows).map_err(|_| -libc::EOVERFLOW)?,
                 width,
@@ -249,7 +246,6 @@ impl Node for FrameAssemblyNode {
         let output_format = Format::ndarray_format(
             element_type,
             frame_schema,
-            profile,
             [height, width],
             layout,
             frame_rate,

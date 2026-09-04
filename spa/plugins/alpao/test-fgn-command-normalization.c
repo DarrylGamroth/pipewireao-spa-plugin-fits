@@ -116,12 +116,10 @@ int main(int argc, char *argv[])
 	assert(input_format->n_dimensions == 1 && input_format->shape[0] == 3);
 	assert(strcmp(input_format->schema,
 			SPA_ALPAO_SCHEMA_DEMANDED_PDM_COMMAND) == 0);
-	assert(strcmp(input_format->profile, PROFILE) == 0);
 	assert(output_format->element_type == SPA_ELEMENT_TYPE_F64_LE);
 	assert(output_format->rate_num == 0 && output_format->rate_denom == 0);
 	assert(strcmp(output_format->schema,
 			SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND) == 0);
-	assert(strcmp(output_format->profile, PROFILE) == 0);
 
 	init_buffer(&input, 3 * sizeof(float));
 	init_buffer(&output, 0);

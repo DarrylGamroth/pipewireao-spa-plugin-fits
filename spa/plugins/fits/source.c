@@ -710,9 +710,6 @@ static struct spa_pod *build_ndarray_format(struct impl *self,
 					SPA_TYPE_Int, n_dimensions, shape),
 			SPA_FORMAT_NDARRAY_layout, SPA_POD_Id(layout),
 			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&self->output_rate), 0);
-	if (self->profile[0] != '\0')
-		spa_pod_builder_add(builder, SPA_FORMAT_NDARRAY_profile,
-				SPA_POD_String(self->profile), 0);
 	return spa_pod_builder_pop(builder, &object);
 }
 
@@ -845,7 +842,7 @@ static int validate_ndarray_format(struct impl *self,
 		const struct spa_pod *param)
 {
 	struct spa_ndarray_info format = SPA_NDARRAY_INFO_INIT();
-	const char *schema, *profile;
+	const char *schema;
 	enum spa_element_type element_type;
 	enum spa_ndarray_layout layout;
 	uint32_t n_dimensions;
@@ -877,13 +874,9 @@ static int validate_ndarray_format(struct impl *self,
 			(n_dimensions == 2 && format.shape[1] != shape[1]) ||
 			spa_format_ndarray_parse_string(param,
 					SPA_FORMAT_NDARRAY_schema, &schema) < 0 ||
-			schema == NULL || !spa_streq(schema, self->schema) ||
-			spa_format_ndarray_parse_string(param,
-					SPA_FORMAT_NDARRAY_profile, &profile) < 0)
+			schema == NULL || !spa_streq(schema, self->schema))
 		return -EINVAL;
-	if (self->profile[0] == '\0')
-		return profile == NULL ? 0 : -EINVAL;
-	return profile != NULL && spa_streq(profile, self->profile) ? 0 : -EINVAL;
+	return 0;
 }
 
 static int validate_video_format(struct impl *self,

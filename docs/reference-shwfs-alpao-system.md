@@ -30,20 +30,23 @@ The final ALPAO operator is loaded from
 | --- | --- |
 | `actuator_count` | Positive actuator-vector extent. |
 | `command_scale` | Positive physical-command value corresponding to normalized magnitude one. |
-| `profile` | Exact lowercase SHA-256 ALPAO interpretation profile. |
+| `profile` | Exact lowercase SHA-256 deployment identity for the admitted ALPAO command mapping. |
 | `rate_numerator` | Positive demanded-command rate numerator. |
 | `rate_denominator` | Positive demanded-command rate denominator. |
 
 The operator consumes `org.calculon.ao.demanded-pdm-command/1` F32 values and
-publishes `org.pipewireao.alpao.normalized-actuator-command/1` F64 values. Both
-ports carry the same immutable profile. The normalized output has no declared
-rate because the ALPAO sink treats command arrival and the interface's DEv7
-`daqFreq` conversion setting as separate concepts.
+publishes `org.pipewireao.alpao.normalized-actuator-command/1` F64 values. The
+profile remains immutable construction data and is not carried by either
+ndarray port. The normalized output has no declared rate because the ALPAO sink
+treats command arrival and the interface's DEv7 `daqFreq` conversion setting as
+separate concepts.
 
-The sink then validates schema, vector extent, profile, finiteness, and the
-`[-1,+1]` range before calling ASDK. The mock sink and direct FGN test are the
-deterministic host-side gates. Physical mirror timing and failure recovery
-still require hardware qualification.
+The sink validates schema, vector extent, its configured profile identity,
+finiteness, and the `[-1,+1]` range before calling ASDK. Deployment admission,
+not ndarray negotiation, must prove that the normalization and sink profile
+identities match. The mock sink and direct FGN test are deterministic host-side
+gates; cross-node admission, physical mirror timing, and failure recovery still
+require qualification.
 
 The former `spa-calculon-full-system` executable and native Calculon SPA
 factories were retired when this graph moved to FGN. Historical profiling

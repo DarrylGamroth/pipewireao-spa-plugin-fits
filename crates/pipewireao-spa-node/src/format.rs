@@ -50,8 +50,6 @@ pub struct Format {
     pub rate: Option<Rate>,
     /// Scientific schema for ndarrays.
     pub schema: Option<Box<str>>,
-    /// Exact interpretation profile for ndarrays.
-    pub profile: Option<Box<str>>,
 }
 
 impl Format {
@@ -64,7 +62,6 @@ impl Format {
             layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
             rate: Some(rate),
             schema: None,
-            profile: None,
         };
         format.validate()?;
         Ok(format)
@@ -79,7 +76,6 @@ impl Format {
             layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
             rate: Some(rate),
             schema: None,
-            profile: None,
         };
         format.validate()?;
         Ok(format)
@@ -97,7 +93,6 @@ impl Format {
             layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
             rate: Some(rate),
             schema: None,
-            profile: None,
         };
         format.validate()?;
         Ok(format)
@@ -106,7 +101,6 @@ impl Format {
     /// Constructs an exact row-major F32 scientific image ndarray.
     pub fn f32_image(
         schema: impl Into<Box<str>>,
-        profile: impl Into<Box<str>>,
         width: u32,
         height: u32,
         rate: Option<Rate>,
@@ -118,7 +112,6 @@ impl Format {
             layout: sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
             rate,
             schema: Some(schema.into()),
-            profile: Some(profile.into()),
         };
         format.validate()?;
         Ok(format)
@@ -128,14 +121,12 @@ impl Format {
     pub fn ndarray(
         element_type: u32,
         schema: impl Into<Box<str>>,
-        profile: impl Into<Box<str>>,
         shape: impl Into<Box<[u32]>>,
         rate: Option<Rate>,
     ) -> Result<Self, i32> {
         Self::ndarray_with_layout(
             element_type,
             schema,
-            profile,
             shape,
             sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
             rate,
@@ -146,26 +137,17 @@ impl Format {
     pub fn ndarray_with_layout(
         element_type: u32,
         schema: impl Into<Box<str>>,
-        profile: impl Into<Box<str>>,
         shape: impl Into<Box<[u32]>>,
         layout: u32,
         rate: Option<Rate>,
     ) -> Result<Self, i32> {
-        Self::ndarray_format(
-            element_type,
-            Some(schema.into()),
-            Some(profile.into()),
-            shape,
-            layout,
-            rate,
-        )
+        Self::ndarray_format(element_type, Some(schema.into()), shape, layout, rate)
     }
 
-    /// Constructs an exact ndarray with optional semantic identity fields.
+    /// Constructs an exact ndarray with an optional semantic schema.
     pub fn ndarray_format(
         element_type: u32,
         schema: Option<Box<str>>,
-        profile: Option<Box<str>>,
         shape: impl Into<Box<[u32]>>,
         layout: u32,
         rate: Option<Rate>,
@@ -177,7 +159,6 @@ impl Format {
             layout,
             rate,
             schema,
-            profile,
         };
         format.validate()?;
         Ok(format)
@@ -274,7 +255,6 @@ impl Format {
                     || self.layout != sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR
                     || self.rate.is_none()
                     || self.schema.is_some()
-                    || self.profile.is_some()
                 {
                     return Err(-libc::EINVAL);
                 }
@@ -286,7 +266,6 @@ impl Format {
                         NdArrayLayout::RowMajor | NdArrayLayout::ColumnMajor
                     )
                     || self.schema.as_deref().is_some_and(str::is_empty)
-                    || self.profile.as_deref().is_some_and(str::is_empty)
                 {
                     return Err(-libc::EINVAL);
                 }

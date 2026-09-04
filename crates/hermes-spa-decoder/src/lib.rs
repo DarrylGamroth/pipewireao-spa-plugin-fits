@@ -19,11 +19,6 @@ pub const HERMES_RAW_BATCH_SCHEMA: &str = "org.pipewireao.hermes.frontpanel-raw-
 /// Exact semantic schema of decoded counter-frame batches.
 pub const HERMES_DECODED_BATCH_SCHEMA: &str = "org.pipewireao.hermes.counter-frame-batch/1";
 
-const FULL_U8_PROFILE: &str = "hermes-full-frontpanel-u8-v1";
-const FULL_U16_PROFILE: &str = "hermes-full-frontpanel-u16le-v1";
-const HALF_U8_PROFILE: &str = "hermes-half-frontpanel-u8-v1";
-const HALF_U16_PROFILE: &str = "hermes-half-frontpanel-u16le-v1";
-
 const KEY_FRAMES: &[u8] = b"api.hermes.frames-per-buffer\0";
 const KEY_COUNTERS: &[u8] = b"api.hermes.counters\0";
 const KEY_BITS: &[u8] = b"api.hermes.bits-per-pixel\0";
@@ -82,16 +77,6 @@ fn rate(info: Option<&sys::spa_dict>) -> Result<Rate, i32> {
         num.parse::<u32>().map_err(|_| -libc::EINVAL)?,
         denom.parse::<u32>().map_err(|_| -libc::EINVAL)?,
     )
-}
-
-fn profile(half_array: bool, bits: u32) -> Result<&'static str, i32> {
-    match (half_array, bits) {
-        (false, 8) => Ok(FULL_U8_PROFILE),
-        (false, 16) => Ok(FULL_U16_PROFILE),
-        (true, 8) => Ok(HALF_U8_PROFILE),
-        (true, 16) => Ok(HALF_U16_PROFILE),
-        _ => Err(-libc::EINVAL),
-    }
 }
 
 fn decode_u8(
@@ -192,12 +177,10 @@ impl Node for HermesDecoderNode {
             16 => 2,
             _ => return Err(-libc::EINVAL),
         };
-        let profile = profile(half_array, bits)?;
         let rate = rate(info)?;
         let input = Format::ndarray(
             sys::SPA_ELEMENT_TYPE_U8,
             HERMES_RAW_BATCH_SCHEMA,
-            profile,
             [frames, counters, pixels * bytes_per_pixel],
             Some(rate),
         )?;
@@ -208,7 +191,6 @@ impl Node for HermesDecoderNode {
                 sys::SPA_ELEMENT_TYPE_U16_LE
             },
             HERMES_DECODED_BATCH_SCHEMA,
-            profile,
             [frames, counters, height, width],
             Some(rate),
         )?;
@@ -404,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn decoder_rejects_truncated_or_non_profile_planes() {
+    fn decoder_rejects_truncated_or_structurally_invalid_planes() {
         let mut output = vec![0_u8; 2048];
         let invalid_source = [0_u8; 65];
         let mut invalid_output = [0_u8; 65];

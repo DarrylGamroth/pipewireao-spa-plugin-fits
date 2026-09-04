@@ -6,8 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "hermes.h"
-
 struct hermes_camera_buffer {
 	void *memory;
 	uint64_t size;
@@ -23,15 +21,6 @@ struct hermes_camera {
 	uint64_t batch_id;
 	bool started;
 };
-
-static const char *profile_for(const struct hermes_camera_options *options)
-{
-	if (options->half_array)
-		return options->bits_per_pixel == 8 ? SPA_HERMES_HALF_U8_PROFILE :
-				SPA_HERMES_HALF_U16_PROFILE;
-	return options->bits_per_pixel == 8 ? SPA_HERMES_FULL_U8_PROFILE :
-			SPA_HERMES_FULL_U16_PROFILE;
-}
 
 int hermes_camera_open(struct hermes_camera **camera_ptr,
 		const struct hermes_camera_options *options)
@@ -66,8 +55,6 @@ int hermes_camera_open(struct hermes_camera **camera_ptr,
 	};
 	memcpy(camera->info.model, "Synthetic MPD HERMES", 21);
 	memcpy(camera->info.serial, "mock", 5);
-	(void)snprintf(camera->info.profile, sizeof(camera->info.profile), "%s",
-			profile_for(options));
 	*camera_ptr = camera;
 	return 0;
 }

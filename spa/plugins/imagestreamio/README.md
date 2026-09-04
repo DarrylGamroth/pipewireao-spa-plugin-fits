@@ -37,7 +37,7 @@ Both factories require:
 | --- | --- |
 | `api.imagestreamio.name` | ImageStreamIO stream name, not a filesystem path. |
 | `api.imagestreamio.schema` | Exact ndarray semantic schema published or accepted by the node. |
-| `api.imagestreamio.profile` | Optional exact ndarray profile. |
+| `api.imagestreamio.profile` | Optional deployment annotation published on the node; it does not participate in ndarray format negotiation. |
 
 The source always attaches. It additionally accepts
 `api.imagestreamio.semaphore=auto` or a non-negative explicit semaphore index.

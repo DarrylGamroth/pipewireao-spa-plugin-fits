@@ -5,7 +5,7 @@ use pipewireao_spa_node::{
     forward_frame, shares_data, sys,
 };
 
-use crate::config::{optional_nonempty, parse_rate, parse_size, required_info};
+use crate::config::{parse_rate, parse_size, required_info};
 
 /// Factory name of the packed raw-video to ndarray adapter.
 pub const VIDEO_VIEW_FACTORY_NAME: &str = "api.ndarray.video-view";
@@ -13,7 +13,6 @@ pub const VIDEO_VIEW_FACTORY_NAME: &str = "api.ndarray.video-view";
 const KEY_SIZE: &[u8] = b"api.ndarray.frame-size\0";
 const KEY_RATE: &[u8] = b"api.ndarray.frame-rate\0";
 const KEY_SCHEMA: &[u8] = b"api.ndarray.schema\0";
-const KEY_PROFILE: &[u8] = b"api.ndarray.profile\0";
 const KEY_VIDEO_FORMAT: &[u8] = b"api.ndarray.video-format\0";
 const INPUT: usize = 0;
 const OUTPUT: usize = 1;
@@ -61,7 +60,6 @@ impl Node for VideoViewNode {
         if schema.is_empty() {
             return Err(-libc::EINVAL);
         }
-        let profile: Option<Box<str>> = optional_nonempty(info, KEY_PROFILE)?.map(Into::into);
         let (input_format, element_type) = match required_info(info, KEY_VIDEO_FORMAT)? {
             "GRAY8" => (
                 Format::gray8(width, height, rate)?,
@@ -76,7 +74,6 @@ impl Node for VideoViewNode {
         let output_format = Format::ndarray_format(
             element_type,
             Some(schema),
-            profile,
             [height, width],
             sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
             Some(rate),

@@ -19,9 +19,12 @@ schema       = org.calculon.ao.raw-pixel-row-block/1
 elementType  = U16_LE
 shape        = [N, width]
 layout       = ROW_MAJOR
-profile      = detector profile
 rate         = frame_rate * height / N
 ```
+
+The schema is the complete payload-interpretation identifier. Detector and
+transport identity belongs to source node properties and the admitted
+deployment manifest; calibration identity belongs to parameters or artifacts.
 
 `N` is positive, smaller than `height`, divides `height`, and remains fixed
 for the negotiated stream. The payload contains `N * width` U16 values in

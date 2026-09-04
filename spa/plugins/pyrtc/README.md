@@ -17,7 +17,7 @@ Both factories require:
 | --- | --- |
 | `api.pyrtc.name` | pyRTC `ImageSHM` name, without a slash. |
 | `api.pyrtc.schema` | Exact ndarray semantic schema published or accepted by the node. |
-| `api.pyrtc.profile` | Optional exact ndarray profile. |
+| `api.pyrtc.profile` | Optional deployment annotation published on the node; it does not participate in ndarray format negotiation. |
 
 The source always attaches to an existing stream. The sink accepts
 `api.pyrtc.access=create|attach`:

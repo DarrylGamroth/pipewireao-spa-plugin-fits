@@ -274,8 +274,7 @@ static struct spa_pod *build_format(uint8_t *storage, size_t size)
 			SPA_FORMAT_NDARRAY_shape, SPA_POD_Array(sizeof(int32_t),
 					SPA_TYPE_Int, SPA_N_ELEMENTS(shape), shape),
 			SPA_FORMAT_NDARRAY_layout,
-			SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR),
-			SPA_FORMAT_NDARRAY_profile, SPA_POD_String(profile));
+			SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR));
 }
 
 static uint64_t next_random(uint64_t *state)

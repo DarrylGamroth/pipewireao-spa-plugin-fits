@@ -70,13 +70,9 @@ The decoder accepts that exact schema and publishes
 ```
 
 The decoded element type is U8 or U16_LE. The full-array shape is 32 by 64; the
-half-array shape is 32 by 32. Input and output must use the same one of these
-profiles:
-
-- `hermes-full-frontpanel-u8-v1`
-- `hermes-full-frontpanel-u16le-v1`
-- `hermes-half-frontpanel-u8-v1`
-- `hermes-half-frontpanel-u16le-v1`
+half-array shape is 32 by 32. The configured bit depth and half-array setting
+are fully represented by the input extent, output extent, element type, and
+schemas. No opaque ndarray profile string is required.
 
 ## SDK compatibility
 

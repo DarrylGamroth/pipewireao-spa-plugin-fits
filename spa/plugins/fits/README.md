@@ -21,7 +21,7 @@ every file page during construction.
 | `api.fits.sample-rank` | default `2` | FITS axes in one sample: `1` for vectors or `2` for images |
 | `api.fits.rate` | required | positive `numerator/denominator` frame or vector rate |
 | `api.fits.schema` | required | exact ndarray semantic schema |
-| `api.fits.profile` | optional in frame mode, required in row mode | exact ndarray interpretation profile |
+| `api.fits.profile` | optional in frame mode, required in row mode | source deployment identity published as a node property; not part of ndarray negotiation |
 | `api.fits.io-mode` | default `file` | `file` or private read-only `mmap` backing |
 | `api.fits.prefault` | default `false` | touch mapped pages before startup; valid only with `mmap` |
 | `api.fits.loop` | default `true` | wrap after the final plane |
@@ -40,8 +40,10 @@ The file axes define repeated values without a separate shape property:
   ndarray and also offers raw `GRAY16_LE` video; CFITSIO converts directly into
   the selected output buffer.
 
-Element type, shape, layout, rate, schema, and profile are exact constraints.
-A mismatched consumer is rejected during negotiation rather than at playback.
+Element type, shape, layout, rate, and schema are exact constraints. A
+mismatched consumer is rejected during negotiation rather than at playback.
+The configured profile is available to orchestration as node identity and must
+be checked by deployment admission when compatibility depends on it.
 
 ## Simulated camera row readout
 
@@ -65,7 +67,7 @@ across that readout time; the advertised ndarray rate is
 `frame_rate * height / row_block_rows`.
 
 Row mode requires a rank-two image, the exact raw-pixel-row-block schema, a
-nonempty detector profile, and a positive block height smaller than and
+nonempty source deployment identity, and a positive block height smaller than and
 dividing the detector height. It publishes U16 little-endian row-major
 `[row_block_rows, width]` ndarrays. Every block has standard Header metadata:
 

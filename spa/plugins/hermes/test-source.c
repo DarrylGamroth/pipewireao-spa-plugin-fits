@@ -187,8 +187,6 @@ int main(int argc, char *argv[])
 	spa_assert_se(ndarray.rate.num == 2000 && ndarray.rate.denom == 1);
 	spa_assert_se(spa_streq(format_string(format, SPA_FORMAT_NDARRAY_schema),
 			SPA_HERMES_RAW_BATCH_SCHEMA));
-	spa_assert_se(spa_streq(format_string(format, SPA_FORMAT_NDARRAY_profile),
-			SPA_HERMES_FULL_U8_PROFILE));
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_PARAM_Format, 0, format) == 0);
 	for (i = 0; i < N_BUFFERS; i++) {

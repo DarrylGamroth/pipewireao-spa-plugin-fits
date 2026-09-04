@@ -389,7 +389,7 @@ static void run_source(const struct spa_handle_factory *factory,
 					SPA_NODE_FLAG_POLL_DRIVER : 0));
 	format = enum_one(node, &capture, SPA_PARAM_EnumFormat, test->format_index);
 	if (test->sample_rank == 1) {
-		const char *schema = NULL, *profile = NULL;
+		const char *schema = NULL;
 
 		spa_assert_se(spa_format_ndarray_parse(format, &ndarray) == 0);
 		spa_assert_se(ndarray.element_type == test->expected_element);
@@ -397,16 +397,11 @@ static void run_source(const struct spa_handle_factory *factory,
 		spa_assert_se(ndarray.layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR);
 		spa_assert_se(spa_streq(format_string(format,
 				SPA_FORMAT_NDARRAY_schema), TEST_SCHEMA));
-		spa_assert_se(spa_streq(format_string(format,
-				SPA_FORMAT_NDARRAY_profile), TEST_PROFILE));
 		format = negotiate_with_self(format, negotiated_storage,
 				sizeof(negotiated_storage));
 		spa_assert_se(spa_format_ndarray_parse_string(format,
 				SPA_FORMAT_NDARRAY_schema, &schema) == 0);
-		spa_assert_se(spa_format_ndarray_parse_string(format,
-				SPA_FORMAT_NDARRAY_profile, &profile) == 0);
 		spa_assert_se(spa_streq(schema, TEST_SCHEMA));
-		spa_assert_se(spa_streq(profile, TEST_PROFILE));
 	} else if (test->format_index == 1) {
 		spa_assert_se(spa_format_video_raw_parse(format, &video) >= 0);
 		spa_assert_se(video.format == SPA_VIDEO_FORMAT_GRAY16_LE);
@@ -564,8 +559,6 @@ static void run_row_source(const struct spa_handle_factory *factory,
 	spa_assert_se(spa_streq(format_string(format,
 			SPA_FORMAT_NDARRAY_schema),
 			SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK));
-	spa_assert_se(spa_streq(format_string(format,
-			SPA_FORMAT_NDARRAY_profile), TEST_PROFILE));
 	capture.expected = SPA_PARAM_EnumFormat;
 	capture.param = NULL;
 	spa_assert_se(spa_node_port_enum_params(node, 1, SPA_DIRECTION_OUTPUT, 0,

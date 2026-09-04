@@ -55,8 +55,8 @@ second native SPA implementation of them. Cargo builds the Rust transport
 transforms, while Meson remains the build and installation entry point.
 
 `libspa-ao-0.2` and `libpipewire-ao-0.3` must resolve to a PipeWireAO
-installation. The SPA package must include the ndarray `schema` and `profile`
-keys. Enable a development SDK tree explicitly:
+installation. The SPA package must include the ndarray `schema` key. Enable a
+development SDK tree explicitly:
 
 ```console
 meson setup build-asdk \
@@ -208,16 +208,17 @@ The ALPAO-owned FGN library installs as
 commands into the normalized F64 command schema consumed by the sink. The
 construction object requires `actuator_count`, positive `command_scale`, the
 exact lowercase SHA-256 `profile`, and positive `rate_numerator` and
-`rate_denominator` values. Both ports expose the same immutable profile; only
-the demanded-command input exposes the graph activation rate. Processing
-rejects non-finite values and normalized results outside `[-1,+1]`.
+`rate_denominator` values. The profile is deployment configuration shared with
+the sink, not an ndarray format field. Only the demanded-command input exposes
+the graph activation rate. Processing rejects non-finite values and normalized
+results outside `[-1,+1]`.
 
 Example FGN node declaration:
 
 ```ini
 { type = ndarray
   name = alpao-normalization
-  plugin = /usr/local/lib/pipewire-ao/filter-graph/libalpao-fgn.so
+  plugin = /path/to/libalpao-fgn.so
   label = command-normalization-f32-f64
   config = {
     actuator_count = 468
@@ -261,8 +262,8 @@ sink.
 ## Ownership boundary
 
 - PipeWireAO owns generic transport and execution contracts, including native
-  ndarray formats, acquisition metadata, semantic-schema and profile
-  negotiation, ordinary graph I/O, and selectable data-loop idle policies.
+  ndarray formats, acquisition metadata, semantic-schema negotiation, ordinary
+  graph I/O, and selectable data-loop idle policies.
 - This repository owns the optional `libpipewire-module-queue` topology adapter
   that applies an explicit finite capacity, overflow policy, and copy or lease
   storage boundary between producer and observer graphs.
@@ -277,7 +278,7 @@ sink.
 ## Raw-video ndarray view
 
 `api.ndarray.video-view` exposes an exact packed `GRAY8` or `GRAY16_LE` frame
-as a row-major U8 or U16 ndarray with configured schema and profile. Compatible
+as a row-major U8 or U16 ndarray with a configured schema. Compatible
 SPA allocation uses the same storage; otherwise the adapter copies each packed
 row once. It performs no pixel conversion. This is the structural bridge from
 complete-frame camera sources and `api.hnu240.decoder` to Calculon FGN pixel
@@ -288,7 +289,7 @@ calibration.
 `api.ndarray.frame-assembly` reconstructs complete frames from immutable
 row-block ndarrays. It is schema-configured and byte-preserving, accepts every
 standard fixed-width SPA element type in row-major or column-major layout, and
-supports unclocked arrays with no semantic schema or interpretation profile.
+supports unclocked arrays with no semantic schema.
 Complete input frames use shared-storage forwarding when available; row-block
 assembly uses one preallocated workspace. Processing performs no steady-state
 heap allocation.
@@ -324,8 +325,9 @@ detector readout mapping owns placement and direction in the active 240 by 240
 detector area; complete-frame assembly remains optional downstream.
 
 The carrier row block is device-native encoded data, not a raw detector-pixel
-row block. Aravis must therefore preserve a Nüvü-owned carrier schema and
-profile until the decoder produces the raw-pixel detector readout block. If
+row block. Aravis must therefore preserve a Nüvü-owned carrier schema until the
+decoder produces the raw-pixel detector readout block; the selected transport
+configuration remains deployment identity outside the ndarray format. If
 the iPORT advertises the complete 131-row carrier, Aravis's current fixed block
 height can only be one row because it must divide the height. Production use
 needs either an iPORT carrier-row window or an admitted Aravis row-selection

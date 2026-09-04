@@ -142,15 +142,6 @@ static int sdk_error(HermesReturn result)
 	}
 }
 
-static const char *profile_for(bool half_array, uint32_t bits_per_pixel)
-{
-	if (half_array)
-		return bits_per_pixel == 8 ? SPA_HERMES_HALF_U8_PROFILE :
-				SPA_HERMES_HALF_U16_PROFILE;
-	return bits_per_pixel == 8 ? SPA_HERMES_FULL_U8_PROFILE :
-			SPA_HERMES_FULL_U16_PROFILE;
-}
-
 static okFrontPanel_HANDLE frontpanel_from_hermes(Hermes_H hermes)
 {
 	uint8_t *interface;
@@ -250,8 +241,6 @@ int hermes_camera_open(struct hermes_camera **camera_ptr,
 			"MPD HERMES 64x32");
 	(void)snprintf(camera->info.serial, sizeof(camera->info.serial), "%s",
 			serial[0] != '\0' ? serial : camera_id);
-	(void)snprintf(camera->info.profile, sizeof(camera->info.profile), "%s",
-			profile_for(options->half_array, options->bits_per_pixel));
 	*camera_ptr = camera;
 	return 0;
 

@@ -12,7 +12,6 @@
 #define SPA_KEY_API_NDARRAY_ROW_BLOCK_ROWS "api.ndarray.row-block-rows"
 #define SPA_KEY_API_NDARRAY_ROW_BLOCK_SCHEMA "api.ndarray.row-block-schema"
 #define SPA_KEY_API_NDARRAY_FRAME_SCHEMA "api.ndarray.frame-schema"
-#define SPA_KEY_API_NDARRAY_PROFILE "api.ndarray.profile"
 #define SPA_KEY_API_NDARRAY_ELEMENT_TYPE "api.ndarray.element-type"
 #define SPA_KEY_API_NDARRAY_LAYOUT "api.ndarray.layout"
 #define SPA_KEY_API_NDARRAY_SCHEMA "api.ndarray.schema"

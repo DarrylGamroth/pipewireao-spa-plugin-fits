@@ -22,9 +22,6 @@
 #define BLOCK_BYTES (WIDTH * BLOCK_ROWS * sizeof(float))
 #define FRAME_BYTES (PIXELS * sizeof(float))
 
-static const char profile[] =
-		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
 struct capture {
 	uint32_t expected;
 	uint8_t storage[4096];
@@ -272,7 +269,6 @@ static void test_complete_frame_passthrough(
 				"org.calculon.ao.calibrated-pixel-row-block/1"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SCHEMA,
 				"org.calculon.ao.calibrated-pixels/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_PROFILE, profile),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ELEMENT_TYPE,
 				"F32_LE"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_LAYOUT,
@@ -355,7 +351,6 @@ static void test_video_view(const struct spa_handle_factory *factory)
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_RATE, "1000/1"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_SCHEMA,
 				"org.calculon.ao.raw-detector-pixels/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_PROFILE, profile),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_VIDEO_FORMAT,
 				"GRAY16_LE"),
 	};
@@ -398,8 +393,6 @@ static void test_video_view(const struct spa_handle_factory *factory)
 		spa_assert_se(spa_streq(format_string(format,
 				SPA_FORMAT_NDARRAY_schema),
 				"org.calculon.ao.raw-detector-pixels/1"));
-		spa_assert_se(spa_streq(format_string(format,
-				SPA_FORMAT_NDARRAY_profile), profile));
 		configure(&view, SPA_DIRECTION_OUTPUT, 0);
 
 		init_buffer(&input, PIXELS * sizeof(uint16_t),
@@ -488,8 +481,6 @@ static void test_video_view_gray8(const struct spa_handle_factory *factory)
 	spa_assert_se(ndarray.rate.num == 500 && ndarray.rate.denom == 1);
 	spa_assert_se(spa_streq(format_string(format,
 			SPA_FORMAT_NDARRAY_schema), "test.raw-u8/1"));
-	spa_assert_se(spa_pod_find_prop(format, NULL,
-			SPA_FORMAT_NDARRAY_profile) == NULL);
 	configure(&view, SPA_DIRECTION_OUTPUT, 0);
 
 	init_buffer(&input, PIXELS, WIDTH);
@@ -526,7 +517,6 @@ int main(int argc, char **argv)
 				"org.calculon.ao.calibrated-pixel-row-block/1"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_FRAME_SCHEMA,
 				"org.calculon.ao.calibrated-pixels/1"),
-		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_PROFILE, profile),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_ELEMENT_TYPE,
 				"F32_LE"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_API_NDARRAY_LAYOUT,

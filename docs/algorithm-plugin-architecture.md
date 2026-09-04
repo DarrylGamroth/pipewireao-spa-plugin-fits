@@ -34,9 +34,10 @@ does not make them scientific Calculon algorithms.
 ## Exact formats
 
 Every ndarray boundary matches element type, shape, packed layout, optional
-rate, optional semantic schema, and optional interpretation profile exactly.
-Absence is significant. Profiles are immutable per-port compatibility
-identities, not node-wide labels or runtime parameters.
+rate, and optional semantic schema exactly. Absence is significant. Device,
+transport, calibration, and deployment identities are carried by node
+properties, parameters, artifacts, and deployment manifests rather than an
+opaque format field.
 
 The FGN ABI carries scientific operations inside one filter-chain node. This
 avoids a separate PipeWire buffer handoff for every Calculon operation while
@@ -54,7 +55,6 @@ construction keys are:
 | `api.ndarray.row-block-rows` | Positive block height smaller than and dividing `HEIGHT`. |
 | `api.ndarray.row-block-schema` | Optional exact input semantic schema. |
 | `api.ndarray.frame-schema` | Optional exact output semantic schema. |
-| `api.ndarray.profile` | Optional exact interpretation profile retained on both ports. |
 | `api.ndarray.element-type` | Any standard fixed-width SPA ndarray element type. |
 | `api.ndarray.layout` | `row-major` or `column-major`. |
 
@@ -74,7 +74,7 @@ uses one preallocated workspace and publishes nothing until the final block.
 `api.ndarray.video-view` is the complete-frame bridge into FGN. It accepts an
 exact packed `GRAY8` or `GRAY16_LE` frame and publishes the identical bytes as
 a row-major U8 or U16 ndarray. Construction fixes the frame size, frame rate,
-output schema, optional output profile, and video format. Compatible SPA buffer
+output schema, and video format. Compatible SPA buffer
 allocation forwards shared storage; the fallback copies each packed row once.
 The adapter does not normalize, calibrate, byte-swap, unpack, or change pixel
 values.
@@ -88,8 +88,8 @@ before publishing the active detector area as `GRAY16_LE` 240 by 240. The
 decoder owns carrier-byte decoding and pixel rearrangement only. Camera control
 remains in `CLProtocol_hnu240`, and the camera or frame-grabber driver publishes
 the raw carrier unchanged.
-`api.ndarray.video-view` then provides the raw-detector ndarray schema and
-profile expected by Calculon FGN pixel calibration.
+`api.ndarray.video-view` then provides the raw-detector ndarray schema expected
+by Calculon FGN pixel calibration.
 
 The detector has eight 16-bit outputs, but its Camera Link Full transport is a
 custom eight-tap, 8-bit packing with the Z channel unused. A generic Mono16 tap
@@ -107,8 +107,9 @@ readout mapping owns detector-coordinate placement and direction. The
 scientific graph never receives overscan pixels.
 
 An HNü240 carrier row block is not a raw detector-pixel row block. The Aravis
-source must retain an exact Nüvü-owned carrier schema and profile until this
-transform produces `org.calculon.ao.raw-pixel-readout-block/1`. The current
+source must retain an exact Nüvü-owned carrier schema until this transform
+produces `org.calculon.ao.raw-pixel-readout-block/1`; transport identity stays
+in source and decoder configuration. The current
 Aravis fixed block height must divide the advertised carrier height; a complete
 131-row carrier therefore permits only one-row blocks. A production profile
 must either configure an iPORT carrier-row window or admit an exact Aravis
@@ -123,8 +124,9 @@ admitted with that format contract; this document does not invent one.
 The ALPAO-owned FGN operator consumes
 `org.calculon.ao.demanded-pdm-command/1` F32 vectors and publishes
 `org.pipewireao.alpao.normalized-actuator-command/1` F64 vectors. Its
-construction profile appears on both ports and must match the sink. The
-operator divides by the positive configured command scale and rejects
+construction profile is deployment identity and must match the sink's
+configured identity before the graph is admitted; it is not part of either
+port format. The operator divides by the positive configured command scale and rejects
 non-finite or out-of-range normalized values. A future calibrated conversion
 can replace the scalar implementation without transferring ownership to
 Calculon.

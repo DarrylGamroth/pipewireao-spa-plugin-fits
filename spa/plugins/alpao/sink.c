@@ -66,7 +66,7 @@ struct impl {
 	uint64_t info_all;
 	struct spa_node_info info;
 	struct spa_dict node_props;
-	struct spa_dict_item node_items[9];
+	struct spa_dict_item node_items[10];
 	char backend_name[BACKEND_NAME_SIZE];
 	char serial[SERIAL_SIZE];
 	char profile[PROFILE_SIZE];
@@ -278,8 +278,7 @@ static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 				SPA_POD_Array(sizeof(int32_t), SPA_TYPE_Int,
 						SPA_N_ELEMENTS(shape), shape),
 				SPA_FORMAT_NDARRAY_layout,
-				SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR),
-				SPA_FORMAT_NDARRAY_profile, SPA_POD_String(self->profile));
+				SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR));
 		return *param == NULL ? -ENOSPC : 1;
 	}
 	case SPA_PARAM_Buffers:
@@ -352,9 +351,7 @@ static int validate_format(struct impl *self, const struct spa_pod *param)
 	const struct spa_pod *fixed;
 	struct spa_ndarray_info format = SPA_NDARRAY_INFO_INIT();
 	const struct spa_pod_prop *schema_property;
-	const struct spa_pod_prop *profile_property;
 	const char *schema = NULL;
-	const char *profile = NULL;
 
 	fixed = pipewireao_pod_unwrap_fixed_choices(&fixed_builder, param);
 	if (fixed == NULL || spa_format_ndarray_parse(fixed, &format) < 0 ||
@@ -362,18 +359,13 @@ static int validate_format(struct impl *self, const struct spa_pod *param)
 			format.layout != SPA_NDARRAY_LAYOUT_ROW_MAJOR ||
 			format.n_dimensions != 1 ||
 			format.shape[0] != self->actuator_count ||
-			spa_ndarray_format_key_count(fixed, SPA_FORMAT_NDARRAY_schema) != 1 ||
-			spa_ndarray_format_key_count(fixed, SPA_FORMAT_NDARRAY_profile) != 1)
+			spa_ndarray_format_key_count(fixed, SPA_FORMAT_NDARRAY_schema) != 1)
 		return -EINVAL;
 	schema_property = spa_pod_find_prop(fixed, NULL,
 			SPA_FORMAT_NDARRAY_schema);
-	profile_property = spa_pod_find_prop(fixed, NULL,
-			SPA_FORMAT_NDARRAY_profile);
-	if (schema_property == NULL || profile_property == NULL ||
+	if (schema_property == NULL ||
 			spa_pod_get_string(&schema_property->value, &schema) < 0 ||
-			spa_pod_get_string(&profile_property->value, &profile) < 0 ||
-			!spa_streq(schema, SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND) ||
-			!spa_streq(profile, self->profile))
+			!spa_streq(schema, SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND))
 		return -EINVAL;
 	return 0;
 }
@@ -641,6 +633,7 @@ static void configure_node_props(struct impl *self)
 			"ALPAO normalized actuator command sink");
 	ADD_ITEM(SPA_KEY_API_ALPAO_BACKEND, self->backend_name);
 	ADD_ITEM(SPA_KEY_API_ALPAO_ACTUATOR_COUNT, self->actuator_count_text);
+	ADD_ITEM(SPA_KEY_API_ALPAO_PROFILE, self->profile);
 	if (self->daq_frequency != 0)
 		ADD_ITEM(SPA_KEY_API_ALPAO_DAQ_FREQUENCY,
 				self->daq_frequency_text);

@@ -65,7 +65,8 @@ api.egrabber.detector-profile = detector-profile-id
 
 Row-block mode requires:
 
-- a detector profile;
+- a detector-profile deployment identity, published on the source node but not
+  carried in the ndarray format;
 - positive `row-block-rows` that divides the detector height;
 - qualified `StartOfCameraReadout` and filled-size observations; and
 - CPU-readable host camera storage.

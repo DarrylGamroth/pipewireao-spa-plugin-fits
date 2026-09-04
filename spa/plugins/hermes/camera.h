@@ -31,7 +31,6 @@ struct hermes_camera_info {
 	uint32_t raw_plane_bytes;
 	char model[64];
 	char serial[64];
-	char profile[64];
 };
 
 struct hermes_camera_buffer;

@@ -129,7 +129,6 @@ static int instantiate(const struct spa_fgn_descriptor *descriptor,
 		.n_dimensions = 1,
 		.shape = instance->shape,
 		.schema = SPA_ALPAO_SCHEMA_DEMANDED_PDM_COMMAND,
-		.profile = instance->profile,
 	};
 	instance->formats[1] = (struct spa_fgn_format) {
 		.element_type = SPA_ELEMENT_TYPE_F64_LE,
@@ -137,7 +136,6 @@ static int instantiate(const struct spa_fgn_descriptor *descriptor,
 		.n_dimensions = 1,
 		.shape = instance->shape,
 		.schema = SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND,
-		.profile = instance->profile,
 	};
 	*result = instance;
 	return 0;

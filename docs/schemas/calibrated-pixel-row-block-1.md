@@ -8,8 +8,8 @@ Schema identifier:
 ## Meaning and format
 
 A buffer contains one complete immutable contiguous group of calibrated
-detector rows. Values have the same scientific meaning and profile as the
-corresponding rows of a complete
+detector rows. Values have the same scientific meaning as the corresponding
+rows of a complete
 `org.calculon.ao.calibrated-pixels/1` frame. Row-block granularity changes
 scheduling and artifact size, not the calibration equation.
 
@@ -22,9 +22,12 @@ schema       = org.calculon.ao.calibrated-pixel-row-block/1
 elementType  = F32_LE
 shape        = [N, width]
 layout       = ROW_MAJOR
-profile      = detector profile
 rate         = frame_rate * height / N
 ```
+
+The schema is the complete payload-interpretation identifier. The active
+calibration generation is parameter or artifact state and is recorded outside
+the ndarray format.
 
 `N` is positive, smaller than `height`, divides `height`, and remains fixed
 for the negotiated stream. The payload contains `N * width` F32 values in

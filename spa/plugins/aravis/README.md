@@ -48,7 +48,8 @@ bulk transfers complete. Asynchronous USB completion order is tracked, so a
 later transfer cannot make an earlier hole visible. The SPA node copies
 complete rows from its private camera allocation into ordinary
 immutable `org.calculon.ao.raw-pixel-row-block/1` buffers. The receive thread
-does no image processing.
+does no image processing. `api.aravis.detector-profile` is retained as source
+node identity for deployment admission; it is not an ndarray format field.
 
 The progressive implementation was derived from the existing Aravis packet
 tracker, buffer ownership, fake camera, and tests. It does not depend on EMVA

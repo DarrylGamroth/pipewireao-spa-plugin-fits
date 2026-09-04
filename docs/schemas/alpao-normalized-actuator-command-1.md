@@ -1,7 +1,7 @@
 # ALPAO normalized actuator command schema, version 1
 
 Status: experimental; the payload contract is implemented, while canonical
-profile construction remains to be specified
+command-profile construction and deployment admission remain to be specified
 
 Schema identifier:
 `org.pipewireao.alpao.normalized-actuator-command/1`
@@ -22,7 +22,6 @@ schema       = org.pipewireao.alpao.normalized-actuator-command/1
 elementType  = F64_LE
 shape        = [actuator-count]
 layout       = ROW_MAJOR
-profile      = sha256:<64 lowercase hexadecimal digits>
 ```
 
 `shape` SHALL have rank one. Its extent SHALL equal the configured actuator
@@ -34,12 +33,14 @@ An ALPAO interface `daqFreq` setting controls digital to analog conversion and
 does not state how frequently a producer submits command buffers. It is exposed
 as device configuration and SHALL NOT be encoded as this format's `rate`.
 
-## Profile
+## Command profile
 
-The profile fixes the association between vector index and physical actuator,
-including every calibration or configuration choice needed to interpret the
-normalized vector. A consumer SHALL compare the complete profile string and
-SHALL reject a missing or unequal value before opening the device.
+The `api.alpao.profile` construction and node property identifies the admitted
+association between vector index and physical actuator, including every
+calibration or configuration choice needed to interpret the normalized vector.
+It is not an ndarray format field. A deployment authority SHALL compare the
+complete identity configured for the normalization operator and sink and SHALL
+reject a missing or unequal value before opening the device.
 
 Version 1 currently treats the supplied `sha256:` value as an exact, trusted,
 opaque identifier. The canonical profile manifest, byte serialization, and
@@ -48,7 +49,7 @@ deployment SHALL NOT claim that independently computed fingerprints are
 interoperable merely because both use SHA-256.
 
 The mirror serial is not the profile. A serial may select configuration, but
-it does not replace a negotiated command interpretation.
+it does not replace the separately admitted command mapping.
 
 ## Buffer and lifecycle behavior
 

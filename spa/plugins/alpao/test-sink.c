@@ -83,7 +83,7 @@ static void init_test_buffer(struct test_buffer *storage)
 }
 
 static struct spa_pod *build_format(uint8_t *storage, size_t size,
-		const char *schema, const char *selected_profile, uint32_t object_id)
+		const char *schema, uint32_t object_id)
 {
 	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
 			(uint32_t)size);
@@ -101,29 +101,7 @@ static struct spa_pod *build_format(uint8_t *storage, size_t size,
 					SPA_TYPE_Int, SPA_N_ELEMENTS(shape), shape),
 			SPA_FORMAT_NDARRAY_layout,
 			SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR),
-			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&rate),
-			SPA_FORMAT_NDARRAY_profile, SPA_POD_String(selected_profile));
-}
-
-static struct spa_pod *build_format_without_profile(uint8_t *storage,
-		size_t size)
-{
-	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
-			(uint32_t)size);
-	const int32_t shape[] = { (int32_t)ACTUATOR_COUNT };
-
-	return spa_pod_builder_add_object(&builder,
-			SPA_TYPE_OBJECT_Format, SPA_PARAM_Format,
-			SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_application),
-			SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_ndarray),
-			SPA_FORMAT_NDARRAY_schema,
-			SPA_POD_String(SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND),
-			SPA_FORMAT_NDARRAY_elementType,
-			SPA_POD_Id(SPA_ELEMENT_TYPE_F64_LE),
-			SPA_FORMAT_NDARRAY_shape, SPA_POD_Array(sizeof(int32_t),
-					SPA_TYPE_Int, SPA_N_ELEMENTS(shape), shape),
-			SPA_FORMAT_NDARRAY_layout,
-			SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR));
+			SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&rate));
 }
 
 static int exercise(const struct spa_handle_factory *factory,
@@ -145,7 +123,7 @@ static int exercise(const struct spa_handle_factory *factory,
 	struct param_capture capture = { .expected = SPA_ID_INVALID };
 	struct spa_ndarray_info ndarray = SPA_NDARRAY_INFO_INIT();
 	uint8_t format_storage[1024];
-	struct spa_pod *format, *missing_profile, *wrong_schema, *wrong_profile;
+	struct spa_pod *format, *wrong_schema;
 	struct test_buffer storage[2];
 	struct spa_buffer *buffers[2];
 	struct spa_io_buffers io = SPA_IO_BUFFERS_INIT;
@@ -179,30 +157,18 @@ static int exercise(const struct spa_handle_factory *factory,
 	spa_assert_se(ndarray.shape[0] == ACTUATOR_COUNT);
 
 	wrong_schema = build_format(format_storage, sizeof(format_storage),
-			"org.pipewireao.test.wrong/1", profile, SPA_PARAM_EnumFormat);
+			"org.pipewireao.test.wrong/1", SPA_PARAM_EnumFormat);
 	capture.expected = SPA_PARAM_EnumFormat;
 	capture.param = NULL;
 	spa_assert_se(spa_node_port_enum_params(node, 1, SPA_DIRECTION_INPUT, 0,
 			SPA_PARAM_EnumFormat, 0, 1, wrong_schema) == 0);
 	spa_assert_se(capture.param == NULL);
 	wrong_schema = build_format(format_storage, sizeof(format_storage),
-			"org.pipewireao.test.wrong/1", profile, SPA_PARAM_Format);
+			"org.pipewireao.test.wrong/1", SPA_PARAM_Format);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_INPUT, 0,
 			SPA_PARAM_Format, 0, wrong_schema) == -EINVAL);
-	wrong_profile = build_format(format_storage, sizeof(format_storage),
-			SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND,
-			"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			SPA_PARAM_Format);
-	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_INPUT, 0,
-			SPA_PARAM_Format, 0, wrong_profile) == -EINVAL);
-	missing_profile = build_format_without_profile(format_storage,
-			sizeof(format_storage));
-	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_INPUT, 0,
-			SPA_PARAM_Format, 0, missing_profile) == -EINVAL);
-
 	format = build_format(format_storage, sizeof(format_storage),
-			SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND, profile,
-			SPA_PARAM_Format);
+			SPA_ALPAO_SCHEMA_NORMALIZED_ACTUATOR_COMMAND, SPA_PARAM_Format);
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_INPUT, 0,
 			SPA_PARAM_Format, 0, format) == 0);
 	init_test_buffer(&storage[0]);
@@ -263,6 +229,35 @@ static void expect_invalid_daq_frequency(
 	free(handle);
 }
 
+static void expect_invalid_profile(const struct spa_handle_factory *factory)
+{
+	const struct spa_dict_item invalid_items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_BACKEND, "mock"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_ACTUATOR_COUNT, "8"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_PROFILE, "sha256:bad"),
+	};
+	const struct spa_dict invalid =
+			SPA_DICT_INIT(invalid_items, SPA_N_ELEMENTS(invalid_items));
+	const struct spa_dict_item missing_items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_BACKEND, "mock"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_ALPAO_ACTUATOR_COUNT, "8"),
+	};
+	const struct spa_dict missing =
+			SPA_DICT_INIT(missing_items, SPA_N_ELEMENTS(missing_items));
+	struct spa_handle *handle;
+
+	handle = calloc(1, spa_handle_factory_get_size(factory, &invalid));
+	spa_assert_se(handle != NULL);
+	spa_assert_se(spa_handle_factory_init(factory, handle, &invalid,
+			NULL, 0) == -EINVAL);
+	free(handle);
+	handle = calloc(1, spa_handle_factory_get_size(factory, &missing));
+	spa_assert_se(handle != NULL);
+	spa_assert_se(spa_handle_factory_init(factory, handle, &missing,
+			NULL, 0) == -EINVAL);
+	free(handle);
+}
+
 static void expect_mock_unavailable(const struct spa_handle_factory *factory)
 {
 	const struct spa_dict_item items[] = {
@@ -299,6 +294,7 @@ int main(int argc, char **argv)
 	spa_assert_se(factory != NULL);
 	spa_assert_se(spa_streq(factory->name, SPA_NAME_API_ALPAO_SINK));
 	spa_assert_se(enumerate(&factory, &index) == 0);
+	expect_invalid_profile(factory);
 	if (spa_streq(argv[2], "factory"))
 		expect_mock_unavailable(factory);
 	else {

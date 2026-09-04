@@ -135,12 +135,6 @@ fn format_value(format: &Format, object_id: u32) -> Value {
                     Value::String(schema.to_string()),
                 ));
             }
-            if let Some(profile) = &format.profile {
-                properties.push(property(
-                    sys::SPA_FORMAT_NDARRAY_profile,
-                    Value::String(profile.to_string()),
-                ));
-            }
             object(sys::SPA_TYPE_OBJECT_Format, object_id, properties)
         }
     }
@@ -270,17 +264,9 @@ fn parse_ndarray(properties: &[Property]) -> Result<Format, i32> {
         None => None,
         _ => return Err(-libc::EINVAL),
     };
-    let profile = match unique(properties, sys::SPA_FORMAT_NDARRAY_profile)? {
-        Some(Value::String(profile)) if !profile.is_empty() => {
-            Some(profile.clone().into_boxed_str())
-        }
-        None => None,
-        _ => return Err(-libc::EINVAL),
-    };
     Format::ndarray_format(
         native.element_type().as_raw(),
         schema,
-        profile,
         native.shape().to_vec(),
         native.layout().as_raw(),
         native.rate().map(|rate| Rate {
@@ -365,11 +351,9 @@ mod tests {
     use super::*;
     use libspa::pod::ValueArray;
 
-    const PROFILE: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
     #[test]
     fn fixed_native_ndarray_round_trips() {
-        let format = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
+        let format = Format::f32_image("org.calculon.test/1", 4, 3, None).unwrap();
         let constraint = FormatConstraint::exact(format.clone());
         let value = format_value(&format, sys::SPA_PARAM_Format);
         let parsed = unsafe {
@@ -387,7 +371,6 @@ mod tests {
         let format = Format::ndarray(
             sys::SPA_ELEMENT_TYPE_F64_LE,
             "org.pipewireao.test-vector/1",
-            PROFILE,
             vec![8],
             None,
         )
@@ -440,7 +423,6 @@ mod tests {
             let format = Format::ndarray_with_layout(
                 element_type.as_raw(),
                 "org.pipewireao.test.matrix/1",
-                "test-basis",
                 [3, 5],
                 NdArrayLayout::ColumnMajor.as_raw(),
                 Some(Rate::new(30, 1).unwrap()),
@@ -462,7 +444,7 @@ mod tests {
 
     #[test]
     fn fixated_choice_is_unwrapped_before_exact_format_validation() {
-        let format = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
+        let format = Format::f32_image("org.calculon.test/1", 4, 3, None).unwrap();
         let constraint = FormatConstraint::exact(format.clone());
         let Value::Object(mut object) = format_value(&format, sys::SPA_PARAM_Format) else {
             unreachable!();
@@ -488,7 +470,7 @@ mod tests {
 
     #[test]
     fn unresolved_choice_is_rejected_before_format_validation() {
-        let format = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
+        let format = Format::f32_image("org.calculon.test/1", 4, 3, None).unwrap();
         let Value::Object(mut object) = format_value(&format, sys::SPA_PARAM_Format) else {
             unreachable!();
         };
@@ -513,20 +495,16 @@ mod tests {
     }
 
     #[test]
-    fn optional_schema_and_profile_may_be_absent() {
-        let format = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
+    fn optional_schema_may_be_absent() {
+        let format = Format::f32_image("org.calculon.test/1", 4, 3, None).unwrap();
         let Value::Object(mut object) = format_value(&format, sys::SPA_PARAM_Format) else {
             unreachable!();
         };
-        object.properties.retain(|property| {
-            !matches!(
-                property.key,
-                sys::SPA_FORMAT_NDARRAY_schema | sys::SPA_FORMAT_NDARRAY_profile
-            )
-        });
+        object
+            .properties
+            .retain(|property| property.key != sys::SPA_FORMAT_NDARRAY_schema);
         let expected = Format::ndarray_format(
             sys::SPA_ELEMENT_TYPE_F32_LE,
-            None,
             None,
             [3, 4],
             sys::SPA_NDARRAY_LAYOUT_ROW_MAJOR,
@@ -543,16 +521,9 @@ mod tests {
     }
 
     #[test]
-    fn wrong_profile_is_rejected_by_exact_constraint() {
-        let expected = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
-        let candidate = Format::f32_image(
-            "org.calculon.test/1",
-            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            4,
-            3,
-            None,
-        )
-        .unwrap();
+    fn wrong_schema_is_rejected_by_exact_constraint() {
+        let expected = Format::f32_image("org.calculon.test/1", 4, 3, None).unwrap();
+        let candidate = Format::f32_image("org.calculon.other/1", 4, 3, None).unwrap();
         let value = format_value(&candidate, sys::SPA_PARAM_Format);
         assert_eq!(
             parse_format(value, &[FormatConstraint::exact(expected)]),
@@ -562,7 +533,7 @@ mod tests {
 
     #[test]
     fn ndarray_shape_is_height_then_width() {
-        let format = Format::f32_image("org.calculon.test/1", PROFILE, 4, 3, None).unwrap();
+        let format = Format::f32_image("org.calculon.test/1", 4, 3, None).unwrap();
         let Value::Object(object) = format_value(&format, sys::SPA_PARAM_Format) else {
             unreachable!();
         };

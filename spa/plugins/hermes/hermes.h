@@ -25,10 +25,6 @@
 	"org.pipewireao.hermes.frontpanel-raw-batch/1"
 #define SPA_HERMES_DECODED_BATCH_SCHEMA \
 	"org.pipewireao.hermes.counter-frame-batch/1"
-#define SPA_HERMES_FULL_U8_PROFILE "hermes-full-frontpanel-u8-v1"
-#define SPA_HERMES_FULL_U16_PROFILE "hermes-full-frontpanel-u16le-v1"
-#define SPA_HERMES_HALF_U8_PROFILE "hermes-half-frontpanel-u8-v1"
-#define SPA_HERMES_HALF_U16_PROFILE "hermes-half-frontpanel-u16le-v1"
 
 extern const struct spa_handle_factory spa_hermes_source_factory;
 

@@ -30,7 +30,7 @@ headers or source-tree-relative files.
 PipeWireAO core continues to own:
 
 - the `application/ndarray` structural format;
-- generic negotiated semantic-schema and profile properties;
+- the generic negotiated semantic-schema property;
 - fixed buffer-pool and ordinary graph ownership contracts;
 - regular graph scheduling, data-loop idle policies, and activation wake policies;
 - metadata ABIs and generic SPA format utilities; and
@@ -44,7 +44,7 @@ This repository owns:
   discard sink, which add no transport or scientific interpretation;
 - device discovery, selection, controls, and lifecycle;
 - translation between SPA buffers and the vendor SDK ABI;
-- vendor-native semantic schemas and profile definitions;
+- vendor-native semantic schemas and deployment-identity definitions;
 - optional SDK discovery at build and runtime; and
 - SDK-independent, simulator, and connected-hardware qualification.
 
@@ -91,7 +91,6 @@ schema       = org.pipewireao.alpao.normalized-actuator-command/1
 elementType  = F64_LE
 shape        = [468]
 layout       = ROW_MAJOR
-profile      = sha256:<command-profile-fingerprint>
 rate         = ...
 ```
 
@@ -103,22 +102,25 @@ This contract has the following interpretation:
 | `elementType`, `shape`, `layout`, `rate` | PipeWireAO ndarray ABI | Scalar representation, logical extent, storage order, and optional negotiated cadence. |
 | `schema` property | PipeWireAO generic ABI | Exact semantic contract identifier used during format negotiation. |
 | schema value | This repository | Each element is one ALPAO SDK normalized actuator command in the interval `[-1,+1]`, under schema version 1. |
-| `profile` property | PipeWireAO generic ABI | Exact negotiated identity of a command interpretation that is not determined by structural format and schema alone. |
-| profile value | This repository and deployment configuration | Fingerprint of the command profile that fixes actuator order and every other profile-owned interpretation required by the schema. |
+| `api.alpao.profile` node property | This repository and deployment configuration | Construction identity for the admitted command mapping and ALPAO configuration; it does not participate in ndarray format negotiation. |
 
 `BAX307` is a mirror serial number and configuration identity; it is not a
 schema name or a reusable model type. Manufacturer, model when available,
 serial number, transport, SDK version, and configuration location belong to
-device or node properties. Only information that changes the meaning of the
-command vector participates in format negotiation.
+device or node properties. The versioned schema must completely identify the
+meaning of the payload. Deployment-specific identity and provenance are checked
+by admission policy rather than format negotiation.
 
-The plugin currently requires an exact lowercase `sha256:` identifier but
-treats it as a trusted opaque deployment input. The profile fingerprint format,
-canonical profile manifest, and compatibility rules remain unresolved. They
-must be specified and covered by byte-stable test vectors before the ALPAO
-format is promoted as a stable contract. Hashing an incidental path, an
-unordered property map, or an entire SDK installation is not an acceptable
-profile definition.
+The plugin currently requires an exact lowercase `sha256:` identifier as
+`api.alpao.profile` but treats it as a trusted opaque deployment input. The
+normalization operator accepts the same identity in its construction object.
+The identity is exposed on the sink node, not on either ndarray port. Before
+actuation, deployment admission must compare the two configured identities.
+The profile fingerprint format, canonical manifest, and compatibility rules
+remain unresolved. They must be specified and covered by byte-stable test
+vectors before independently produced fingerprints are treated as
+interoperable. Hashing an incidental path, an unordered property map, or an
+entire SDK installation is not an acceptable profile definition.
 
 The `rate` property is present only when it expresses a negotiated command
 cadence. It SHALL NOT be used for an SDK polling frequency, a device capability
@@ -146,9 +148,12 @@ Calculon demanded physical-DM command in micrometres of wavefront
     -> ALPAO SPA sink
 ```
 
-The ALPAO plugin SHALL reject a missing or mismatched schema or profile during
-format negotiation. It SHALL NOT infer compatibility from vector length,
-scalar type, serial number, filename, or numerical magnitude.
+The ALPAO plugin SHALL reject a missing or mismatched schema during format
+negotiation and a missing or malformed local command-profile identity during
+construction. Deployment admission SHALL reject unequal normalization and sink
+profile identities before device activation. Neither layer SHALL infer
+compatibility from vector length, scalar type, serial number, filename, or
+numerical magnitude.
 
 ## Build and distribution contract
 
@@ -288,12 +293,12 @@ plugin.
 
 ### 1. PipeWireAO generic format support
 
-Add the generic ndarray semantic-schema and profile properties to PipeWireAO,
-including type information, builders, parsers, filtering behavior, ABI values,
-and negotiation tests.
+Add the generic ndarray semantic-schema property to PipeWireAO, including type
+information, builders, parsers, filtering behavior, ABI values, and negotiation
+tests.
 
 Completion evidence: two structurally identical ndarrays with different schema
-or profile values fail negotiation, while exact values link successfully.
+values fail negotiation, while exact values link successfully.
 
 ### 2. SDK-independent ALPAO contract
 
@@ -302,9 +307,9 @@ fixed input format, lifecycle state, and a test-only synthetic backend that
 never opens physical hardware. Canonical profile serialization and fingerprint
 generation remain a separate promotion requirement.
 
-Completion evidence: factory loading, format enumeration, schema/profile
-rejection, buffers, commands, start/pause, bounded empty processing, and safe
-teardown pass without the proprietary SDK.
+Completion evidence: factory loading, format enumeration, schema rejection,
+construction-profile validation, buffers, commands, start/pause, bounded empty
+processing, and safe teardown pass without the proprietary SDK.
 
 ### 3. Optional ALPAO SDK backend
 
@@ -318,7 +323,7 @@ no undeclared runtime dependency.
 
 ### 4. Connected-device qualification
 
-Qualify actuator ordering, normalization, profile matching, start/pause/reset,
+Qualify actuator ordering, normalization, deployment-profile matching, start/pause/reset,
 command pacing, failure behavior, safe state, shutdown, warmed allocations,
 locks, waits, and latency on the target host.
 
@@ -353,7 +358,7 @@ GenApi node map.
 
 | Layer | Required evidence |
 | --- | --- |
-| Vocabulary | Stable property IDs, schema strings, profile test vectors, C ABI and binding parity where applicable. |
+| Vocabulary | Stable property IDs, schema strings, deployment-profile test vectors, C ABI and binding parity where applicable. |
 | Build | Clean SDK-disabled build; explicit SDK-root build; install and load against a supported installed PipeWireAO. |
 | SPA contract | Factory enumeration, parameters, exact format filtering, ordinary buffer I/O, commands, and lifecycle. |
 | Failure | Missing SDK, missing configuration, mismatched profile, malformed payload, device rejection, timeout, and teardown with work active. |
@@ -380,7 +385,9 @@ PWAO-PLUGIN-001 is delivered when:
 2. The ALPAO plugin builds in this repository without a PipeWireAO source-tree
    dependency.
 3. SDK-disabled and SDK-enabled validation both pass at their declared levels.
-4. Schema and profile mismatches fail before device activation.
+4. Schema mismatch fails negotiation, malformed local profile configuration
+   fails construction, and unequal admitted profile identities fail before
+   device activation.
 5. Installed packaging contains no unauthorized proprietary or device-specific
    artifact.
 6. PipeWireAO documentation no longer requires source-tree placement for a

@@ -205,9 +205,6 @@ static struct spa_pod *build_fixed_format(struct impl *self,
 					SPA_TYPE_Int, self->format.rank, shape),
 			SPA_FORMAT_NDARRAY_layout,
 			SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR), 0);
-	if (self->profile[0] != '\0')
-		spa_pod_builder_add(builder, SPA_FORMAT_NDARRAY_profile,
-				SPA_POD_String(self->profile), 0);
 	return spa_pod_builder_pop(builder, &object);
 }
 
@@ -233,9 +230,6 @@ static struct spa_pod *build_create_format(struct impl *self,
 					SPA_ELEMENT_TYPE_COMPLEX_F64_LE),
 			SPA_FORMAT_NDARRAY_layout,
 			SPA_POD_Id(SPA_NDARRAY_LAYOUT_ROW_MAJOR), 0);
-	if (self->profile[0] != '\0')
-		spa_pod_builder_add(builder, SPA_FORMAT_NDARRAY_profile,
-				SPA_POD_String(self->profile), 0);
 	return spa_pod_builder_pop(builder, &object);
 }
 
@@ -333,18 +327,9 @@ static int validate_schema(struct impl *self, const struct spa_pod *format)
 	if (spa_ndarray_format_key_count(format, SPA_FORMAT_NDARRAY_schema) != 1)
 		return -EINVAL;
 	property = spa_pod_find_prop(format, NULL, SPA_FORMAT_NDARRAY_schema);
-	if (property == NULL || spa_pod_get_string(&property->value, &value) < 0 ||
-			!spa_streq(value, self->schema))
-		return -EINVAL;
-	if (self->profile[0] == '\0')
-		return spa_ndarray_format_key_count(format,
-				SPA_FORMAT_NDARRAY_profile) == 0 ? 0 : -EINVAL;
-	if (spa_ndarray_format_key_count(format, SPA_FORMAT_NDARRAY_profile) != 1)
-		return -EINVAL;
-	property = spa_pod_find_prop(format, NULL, SPA_FORMAT_NDARRAY_profile);
 	return property != NULL &&
 			spa_pod_get_string(&property->value, &value) == 0 &&
-			spa_streq(value, self->profile) ? 0 : -EINVAL;
+			spa_streq(value, self->schema) ? 0 : -EINVAL;
 }
 
 static int parse_selected_format(struct impl *self, const struct spa_pod *param,

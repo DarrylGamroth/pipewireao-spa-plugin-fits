@@ -158,9 +158,10 @@ api.fits.schema = org.calculon.ao.raw-pixel-row-block/1
 api.fits.profile = detector-profile-id
 ```
 
-The FGN input and output declarations use the same eight-row extent and exact
-profile. The filter-graph host rejects a mismatched extent, schema, profile, or
-rate before processing starts.
+The FGN input and output declarations use the same eight-row extent. The
+filter-graph host rejects a mismatched extent, schema, or rate before processing
+starts. The detector profile is source deployment identity that orchestration
+checks separately from ndarray negotiation.
 
 The FITS source preloads and converts the cube before activation. Its uniform
 block schedule is an experimental input, not a substitute for measured camera
@@ -255,7 +256,7 @@ A complete-frame input is already a complete artifact, so `offset` and
 forwarded without a payload copy when negotiated. The fallback is one direct
 copy and does not touch the assembly workspace. The factory accepts any
 prepared rank-two ndarray using a standard fixed-width element type and either
-native layout. It preserves element bytes, layout, profile, and complete-frame
+native layout. It preserves element bytes, layout, and complete-frame
 Header metadata while applying the configured row-block-to-frame schema
 mapping, extent, and rate.
 
@@ -267,7 +268,6 @@ api.ndarray.frame-rate = 500/1
 api.ndarray.row-block-rows = 8
 api.ndarray.row-block-schema = org.calculon.ao.calibrated-pixel-row-block/1
 api.ndarray.frame-schema = org.calculon.ao.calibrated-pixels/1
-api.ndarray.profile = detector-profile-id
 api.ndarray.element-type = F32_LE
 api.ndarray.layout = row-major
 ```
