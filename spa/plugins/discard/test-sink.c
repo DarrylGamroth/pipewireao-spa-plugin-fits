@@ -18,6 +18,7 @@
 #include <spa/param/ndarray-utils.h>
 #include <spa/param/video/raw-utils.h>
 #include <spa/pod/compare.h>
+#include <spa/pod/iter.h>
 #include <spa/support/plugin.h>
 
 #include <pipewireao-plugins/discard.h>
@@ -28,6 +29,7 @@ struct param_capture {
 	struct spa_pod *param;
 	const char *node_name;
 	const char *node_description;
+	const char *minimum_buffer_size;
 	const char *port_name;
 	uint64_t port_flags;
 };
@@ -41,6 +43,8 @@ static void on_info(void *data, const struct spa_node_info *info)
 	capture->node_name = spa_dict_lookup(info->props, SPA_KEY_NODE_NAME);
 	capture->node_description = spa_dict_lookup(info->props,
 			SPA_KEY_NODE_DESCRIPTION);
+	capture->minimum_buffer_size = spa_dict_lookup(info->props,
+			SPA_KEY_API_PIPEWIREAO_DISCARD_MINIMUM_BUFFER_SIZE);
 }
 
 static void on_port_info(void *data, enum spa_direction direction,
@@ -291,8 +295,13 @@ static void exercise(const struct spa_handle_factory *factory)
 	uint8_t props_storage[1024];
 	struct spa_pod *audio, *mandatory_audio, *video, *ndarray, *unfixed;
 	struct spa_pod *props, *node_io;
+	const struct spa_pod_prop *buffer_size_property;
+	const struct spa_pod *buffer_size_values;
+	uint32_t buffer_size_value_count = 0;
+	uint32_t buffer_size_choice = SPA_CHOICE_None;
 	uint32_t node_io_id = SPA_ID_INVALID;
 	int32_t node_io_size = 0;
+	int32_t buffer_size = -1;
 	struct test_buffer storage[2];
 	struct spa_buffer *buffers[2];
 	struct spa_io_buffers io = SPA_IO_BUFFERS_INIT;
@@ -305,6 +314,8 @@ static void exercise(const struct spa_handle_factory *factory)
 		SPA_DICT_ITEM_INIT(SPA_KEY_NODE_NAME, "discard-test"),
 		SPA_DICT_ITEM_INIT(SPA_KEY_NODE_DESCRIPTION,
 				"Format-independent test sink"),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_PIPEWIREAO_DISCARD_MINIMUM_BUFFER_SIZE,
+				"64"),
 	};
 	const struct spa_dict node_info = SPA_DICT_INIT_ARRAY(node_items);
 
@@ -318,6 +329,7 @@ static void exercise(const struct spa_handle_factory *factory)
 	spa_assert_se(spa_streq(capture.node_name, "discard-test"));
 	spa_assert_se(spa_streq(capture.node_description,
 			"Format-independent test sink"));
+	spa_assert_se(spa_streq(capture.minimum_buffer_size, "64"));
 	spa_assert_se(spa_streq(capture.port_name, "in"));
 	spa_assert_se(capture.port_flags ==
 			(SPA_PORT_FLAG_NO_REF | SPA_PORT_FLAG_TERMINAL));
@@ -378,6 +390,18 @@ static void exercise(const struct spa_handle_factory *factory)
 	advertised = enum_port_one(node, &capture, SPA_PARAM_Format, NULL);
 	spa_assert_se(advertised != NULL);
 	spa_assert_se(spa_pod_compare(advertised, video) == 0);
+	advertised = enum_port_one(node, &capture, SPA_PARAM_Buffers, NULL);
+	spa_assert_se(advertised != NULL);
+	buffer_size_property = spa_pod_find_prop(advertised, NULL,
+			SPA_PARAM_BUFFERS_size);
+	spa_assert_se(buffer_size_property != NULL);
+	buffer_size_values = spa_pod_get_values(&buffer_size_property->value,
+			&buffer_size_value_count, &buffer_size_choice);
+	spa_assert_se(buffer_size_values != NULL);
+	spa_assert_se(buffer_size_choice == SPA_CHOICE_Range);
+	spa_assert_se(buffer_size_value_count == 3);
+	spa_assert_se(spa_pod_get_int(buffer_size_values, &buffer_size) == 0);
+	spa_assert_se(buffer_size == 64);
 	spa_assert_se(spa_node_send_command(node, &start) == -EIO);
 
 	init_test_buffers(&storage[0], &storage[1]);

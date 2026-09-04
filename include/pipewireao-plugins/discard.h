@@ -7,6 +7,8 @@
 #include <spa/param/props.h>
 
 #define SPA_NAME_API_PIPEWIREAO_DISCARD "api.pipewireao.discard"
+#define SPA_KEY_API_PIPEWIREAO_DISCARD_MINIMUM_BUFFER_SIZE \
+	"api.pipewireao.discard.minimum-buffer-size"
 
 /** Read-only counters exposed through SPA_PARAM_Props. */
 enum spa_pipewireao_discard_prop {

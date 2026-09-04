@@ -239,6 +239,13 @@ memory type; the processing callback does not map, read, copy, or interpret
 payload memory. Each `SPA_STATUS_HAVE_DATA` buffer is returned immediately as
 `SPA_STATUS_NEED_DATA`.
 
+An optional `api.pipewireao.discard.minimum-buffer-size` construction property
+sets the minimum byte capacity advertised during buffer negotiation. Its value
+must be an unsigned decimal integer no larger than `INT32_MAX`. The default is
+zero for producers that allocate their own storage. Set it when a generic
+producer relies on its sink to select buffer capacity; it does not change how
+the sink interprets or counts payloads.
+
 The sink starts only after a format, buffer pool, and `SPA_IO_Buffers` area are
 installed. `Pause` and `Suspend` stop consumption without discarding the
 negotiated resources, so a later `Start` resumes processing. The sink has no

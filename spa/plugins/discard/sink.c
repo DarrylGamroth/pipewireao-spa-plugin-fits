@@ -20,12 +20,14 @@
 #include <spa/pod/iter.h>
 #include <spa/support/plugin.h>
 #include <spa/utils/keys.h>
+#include <spa/utils/string.h>
 
 #include <pipewireao-plugins/discard.h>
 
 #define MAX_BUFFERS 64u
 #define NODE_NAME_SIZE 256u
 #define NODE_DESCRIPTION_SIZE 256u
+#define BUFFER_SIZE_TEXT_SIZE 16u
 
 struct input_port {
 	uint64_t info_all;
@@ -56,11 +58,13 @@ struct impl {
 	struct spa_node_info info;
 	struct spa_param_info params[3];
 	struct spa_dict node_props;
-	struct spa_dict_item node_items[4];
+	struct spa_dict_item node_items[5];
 	char node_name[NODE_NAME_SIZE];
 	char node_description[NODE_DESCRIPTION_SIZE];
+	char minimum_buffer_size_text[BUFFER_SIZE_TEXT_SIZE];
 	struct input_port input;
 	struct metrics metrics;
+	uint32_t minimum_buffer_size;
 	bool started;
 };
 
@@ -376,7 +380,10 @@ static struct spa_pod *build_port_param(struct impl *self, uint32_t id,
 				SPA_PARAM_BUFFERS_blocks,
 				SPA_POD_CHOICE_RANGE_Int(1, 0, INT32_MAX),
 				SPA_PARAM_BUFFERS_size,
-				SPA_POD_CHOICE_RANGE_Int(0, 0, INT32_MAX),
+				SPA_POD_CHOICE_RANGE_Int(
+						(int32_t)self->minimum_buffer_size,
+						(int32_t)self->minimum_buffer_size,
+						INT32_MAX),
 				SPA_PARAM_BUFFERS_stride,
 				SPA_POD_CHOICE_RANGE_Int(0, 0, INT32_MAX),
 				SPA_PARAM_BUFFERS_align,
@@ -694,6 +701,10 @@ static int init(const struct spa_handle_factory *factory,
 			spa_dict_lookup(info, SPA_KEY_NODE_NAME);
 	const char *node_description = info == NULL ? NULL :
 			spa_dict_lookup(info, SPA_KEY_NODE_DESCRIPTION);
+	const char *minimum_buffer_size = info == NULL ? NULL :
+			spa_dict_lookup(info,
+					SPA_KEY_API_PIPEWIREAO_DISCARD_MINIMUM_BUFFER_SIZE);
+	uint32_t node_item_count = 0;
 	int res;
 
 	(void)factory;
@@ -724,6 +735,15 @@ static int init(const struct spa_handle_factory *factory,
 				"PipeWireAO format-agnostic discard sink" :
 				node_description)) < 0)
 		return res;
+	if (minimum_buffer_size != NULL &&
+			(!spa_atou32(minimum_buffer_size, &self->minimum_buffer_size, 10) ||
+			 self->minimum_buffer_size > INT32_MAX))
+		return -EINVAL;
+	if (self->minimum_buffer_size != 0 &&
+			(res = copy_string(self->minimum_buffer_size_text,
+				sizeof(self->minimum_buffer_size_text),
+				minimum_buffer_size)) < 0)
+		return res;
 
 	self->node.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Node,
 			SPA_VERSION_NODE, &node_methods, self);
@@ -738,14 +758,20 @@ static int init(const struct spa_handle_factory *factory,
 	self->params[2] = SPA_PARAM_INFO(SPA_PARAM_IO, SPA_PARAM_INFO_READ);
 	self->info.params = self->params;
 	self->info.n_params = SPA_N_ELEMENTS(self->params);
-	self->node_items[0] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_API, "discard");
-	self->node_items[1] = SPA_DICT_ITEM_INIT(SPA_KEY_MEDIA_ROLE, "Test");
-	self->node_items[2] = SPA_DICT_ITEM_INIT(SPA_KEY_NODE_NAME,
-			self->node_name);
-	self->node_items[3] = SPA_DICT_ITEM_INIT(SPA_KEY_NODE_DESCRIPTION,
-			self->node_description);
-	self->node_props = SPA_DICT_INIT(self->node_items,
-			SPA_N_ELEMENTS(self->node_items));
+	self->node_items[node_item_count++] =
+			SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_API, "discard");
+	self->node_items[node_item_count++] =
+			SPA_DICT_ITEM_INIT(SPA_KEY_MEDIA_ROLE, "Test");
+	self->node_items[node_item_count++] =
+			SPA_DICT_ITEM_INIT(SPA_KEY_NODE_NAME, self->node_name);
+	self->node_items[node_item_count++] =
+			SPA_DICT_ITEM_INIT(SPA_KEY_NODE_DESCRIPTION,
+					self->node_description);
+	if (self->minimum_buffer_size != 0)
+		self->node_items[node_item_count++] = SPA_DICT_ITEM_INIT(
+				SPA_KEY_API_PIPEWIREAO_DISCARD_MINIMUM_BUFFER_SIZE,
+				self->minimum_buffer_size_text);
+	self->node_props = SPA_DICT_INIT(self->node_items, node_item_count);
 	self->info.props = &self->node_props;
 
 	self->input.info_all = SPA_PORT_CHANGE_MASK_FLAGS |
