@@ -251,6 +251,11 @@ installed. `Pause` and `Suspend` stop consumption without discarding the
 negotiated resources, so a later `Start` resumes processing. The sink has no
 timer, driver, queue, background thread, or hardware authority.
 
+The library installs as
+`discard/libspa-pipewireao-discard.so` relative to PipeWireAO's configured SPA
+plugin directory. A core maps `api.pipewireao.discard` to
+`discard/libspa-pipewireao-discard` in `context.spa-libs`.
+
 The node exposes these cumulative, read-only `SPA_PARAM_Props` counters:
 
 | Property name | Meaning |
@@ -358,6 +363,7 @@ docs/                         maintained contracts and qualification records
 include/pipewireao-plugins/   public C vocabulary for plugin factories
 src/modules/                  out-of-tree PipeWire topology modules
 spa/plugins/alpao/            ALPAO SPA factories and optional SDK backend
+spa/plugins/discard/          format-agnostic discard sink factory
 spa/plugins/egrabber/         Euresys camera manager, device, and source factories
 spa/plugins/bgapi2/           Baumer GAPI camera source factory
 spa/plugins/edtpdv/           EDT PCI DV/PDV Camera Link source factory

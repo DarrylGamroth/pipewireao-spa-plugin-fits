@@ -6,7 +6,7 @@ discard_lib = shared_library(
   c_args: ['-Wno-pedantic'],
   gnu_symbol_visibility: 'hidden',
   install: true,
-  install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'pipewireao',
+  install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'discard',
 )
 
 if get_option('tests').allowed()
