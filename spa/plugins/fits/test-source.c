@@ -37,6 +37,7 @@ struct param_result {
 	size_t capacity;
 	struct spa_pod *param;
 	uint64_t node_flags;
+	bool node_params_advertised;
 	const char *readiness;
 	const char *output_mode;
 	const char *row_block_rows;
@@ -63,6 +64,7 @@ struct source_case {
 	const char *output_mode;
 	const char *row_block_rows;
 	const char *simulated_readout_time_ns;
+	const char *loop;
 	uint32_t sample_rank;
 	uint32_t format_index;
 	enum spa_element_type expected_element;
@@ -116,6 +118,10 @@ static void on_info(void *data, const struct spa_node_info *info)
 
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_FLAGS)
 		capture->node_flags = info->flags;
+	if (info->change_mask & SPA_NODE_CHANGE_MASK_PARAMS)
+		capture->node_params_advertised = info->n_params == 2 &&
+				info->params[0].id == SPA_PARAM_PropInfo &&
+				info->params[1].id == SPA_PARAM_Props;
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS)
 		capture->readiness = spa_dict_lookup(info->props,
 				SPA_KEY_API_FITS_READINESS);
@@ -158,6 +164,29 @@ static struct spa_pod *enum_one(struct spa_node *node,
 			id, index, 1, NULL) == 0);
 	spa_assert_se(capture->param != NULL);
 	return capture->param;
+}
+
+static struct spa_pod *enum_node_one(struct spa_node *node,
+		struct param_result *capture, uint32_t id, uint32_t index)
+{
+	capture->expected = id;
+	capture->param = NULL;
+	spa_assert_se(spa_node_enum_params(node, 1, id, index, 1, NULL) == 0);
+	spa_assert_se(capture->param != NULL);
+	return capture->param;
+}
+
+static bool source_completed(struct spa_node *node,
+		struct param_result *capture)
+{
+	struct spa_pod *props = enum_node_one(node, capture, SPA_PARAM_Props, 0);
+	bool completed = false;
+
+	spa_assert_se(spa_pod_parse_object(props,
+			SPA_TYPE_OBJECT_Props, NULL,
+			SPA_PROP_FITS_SOURCE_COMPLETED,
+			SPA_POD_Bool(&completed)) >= 0);
+	return completed;
 }
 
 static void init_buffer(struct test_buffer *storage, uint32_t size)
@@ -284,7 +313,8 @@ static int init_node(const struct spa_handle_factory *factory,
 	if (test->profile != NULL || test->output_mode == NULL)
 		ADD_ITEM(SPA_KEY_API_FITS_PROFILE,
 				test->profile == NULL ? TEST_PROFILE : test->profile);
-	ADD_ITEM(SPA_KEY_API_FITS_LOOP, "true");
+	ADD_ITEM(SPA_KEY_API_FITS_LOOP,
+			test->loop == NULL ? "true" : test->loop);
 	ADD_ITEM(SPA_KEY_API_FITS_READINESS, readiness);
 	if (test->output_mode != NULL)
 		ADD_ITEM(SPA_KEY_API_FITS_OUTPUT_MODE, test->output_mode);
@@ -351,6 +381,8 @@ static void run_source(const struct spa_handle_factory *factory,
 	uint8_t negotiated_storage[2048];
 	int32_t payload_size = 0;
 	uint32_t cycle, id, i, second_pass = 0;
+	uint32_t cycles = test->loop != NULL && spa_streq(test->loop, "false") ?
+			(test->sample_rank == 1 ? 3u : 2u) : N_BUFFERS * 2u;
 	int res;
 
 	if (spa_streq(readiness, "timerfd")) {
@@ -384,6 +416,7 @@ static void run_source(const struct spa_handle_factory *factory,
 			spa_streq(capture.output_mode, "frame"));
 	spa_assert_se(capture.row_block_rows == NULL);
 	spa_assert_se(capture.simulated_readout_time_ns == NULL);
+	spa_assert_se(capture.node_params_advertised);
 	spa_assert_se((capture.node_flags & SPA_NODE_FLAG_POLL_DRIVER) ==
 			(spa_streq(readiness, "poll") ?
 					SPA_NODE_FLAG_POLL_DRIVER : 0));
@@ -432,7 +465,8 @@ static void run_source(const struct spa_handle_factory *factory,
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, &io, sizeof(io)) == 0);
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
-	for (cycle = 0; cycle < N_BUFFERS * 2u; cycle++) {
+	spa_assert_se(!source_completed(node, &capture));
+	for (cycle = 0; cycle < cycles; cycle++) {
 		while (io.status != SPA_STATUS_HAVE_DATA) {
 			if (loop != NULL)
 				spa_assert_se(pw_loop_iterate(loop, 1000) >= 0);
@@ -463,7 +497,18 @@ static void run_source(const struct spa_handle_factory *factory,
 		}
 		io.status = SPA_STATUS_NEED_DATA;
 	}
-	spa_assert_se(second_pass == (1u << N_BUFFERS) - 1u);
+	if (test->loop != NULL && spa_streq(test->loop, "false")) {
+		spa_assert_se(!source_completed(node, &capture));
+		res = spa_node_process(node);
+		spa_assert_se(res == SPA_STATUS_OK);
+		spa_assert_se(source_completed(node, &capture));
+		spa_assert_se(io.status == SPA_STATUS_NEED_DATA);
+		io.status = SPA_STATUS_NEED_DATA;
+		spa_assert_se(spa_node_send_command(node, &start) == 0);
+		spa_assert_se(!source_completed(node, &capture));
+	} else {
+		spa_assert_se(second_pass == (1u << N_BUFFERS) - 1u);
+	}
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, NULL, 0) == 0);
@@ -807,6 +852,13 @@ int main(int argc, char *argv[])
 		.expected_element = SPA_ELEMENT_TYPE_F64_LE,
 		.expected_size = 4u * sizeof(double),
 	}, "timerfd");
+	run_source(factory, &(const struct source_case) {
+		.path = vector_path,
+		.loop = "false",
+		.sample_rank = 1,
+		.expected_element = SPA_ELEMENT_TYPE_F64_LE,
+		.expected_size = 4u * sizeof(double),
+	}, "poll");
 	run_row_source(factory, image_path, "poll", false, false);
 	run_row_source(factory, image_path, "timerfd", false, false);
 	run_row_source(factory, image_path, "poll", true, false);

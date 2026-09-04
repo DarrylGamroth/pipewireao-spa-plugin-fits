@@ -690,9 +690,11 @@ int main(int argc, char **argv)
 	struct pw_properties *properties;
 	char module_args[512];
 	uint32_t producer_id, observer_id, removals, sequence = 0;
+	bool serve;
 	int length;
 
-	CHECK(argc == 2);
+	serve = argc == 3 && strcmp(argv[2], "--serve-rtc-observer") == 0;
+	CHECK(argc == 2 || serve);
 	pw_init(&argc, &argv);
 	data.main_loop = pw_main_loop_new(NULL);
 	CHECK(data.main_loop != NULL);
@@ -708,11 +710,15 @@ int main(int argc, char **argv)
 	data.output.test = &data;
 	length = snprintf(module_args, sizeof(module_args),
 			"remote.name=%s queue.max-buffers=1 "
-			"queue.overflow=drop-oldest queue.storage=lease "
+			"queue.overflow=drop-oldest queue.storage=%s "
 			"queue.media=application/ndarray "
-			"capture.props={ node.name=test.remote-queue-input } "
-			"playback.props={ node.name=test.remote-queue-output }",
-			argv[1]);
+			"capture.props={ node.name=%s } "
+			"playback.props={ node.name=%s }",
+			argv[1], serve ? "copy" : "lease",
+			serve ? "pipewireao-rtc-observation-input" :
+				"test.remote-queue-input",
+			serve ? "pipewireao-rtc-observation-output" :
+				"test.remote-queue-output");
 	CHECK(length >= 0 && (size_t)length < sizeof(module_args));
 	data.module = pw_context_load_module(data.context,
 			"libpipewire-module-queue", module_args, NULL);
@@ -722,6 +728,10 @@ int main(int argc, char **argv)
 	CHECK(data.registry != NULL);
 	pw_registry_add_listener(data.registry, &data.registry_listener,
 			&registry_events, &data);
+	if (serve) {
+		pw_main_loop_run(data.main_loop);
+		return 0;
+	}
 	create_endpoint(&data, &data.producer, "test.remote-queue-producer",
 			PW_DIRECTION_OUTPUT, &producer_events);
 	create_endpoint(&data, &data.observer, "test.remote-queue-observer",

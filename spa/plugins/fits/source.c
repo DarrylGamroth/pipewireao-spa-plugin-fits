@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -106,6 +107,7 @@ struct impl {
 	struct spa_callbacks callbacks;
 	uint64_t info_all;
 	struct spa_node_info info;
+	struct spa_param_info params[2];
 	struct spa_dict props;
 	struct spa_dict_item prop_items[20];
 	char path[PATH_MAX];
@@ -138,6 +140,9 @@ struct impl {
 	bool discontinuity;
 	bool started;
 	bool timerfd_readiness;
+	bool completion_pending;
+	uint32_t completion_buffer_id;
+	_Atomic bool completed;
 };
 
 static int node_process(void *object);
@@ -495,11 +500,61 @@ static int node_set_callbacks(void *object,
 	return 0;
 }
 
-static int node_enum_params(void *object SPA_UNUSED, int seq SPA_UNUSED,
-		uint32_t id SPA_UNUSED, uint32_t start SPA_UNUSED,
-		uint32_t num SPA_UNUSED, const struct spa_pod *filter SPA_UNUSED)
+static struct spa_pod *build_node_param(struct impl *self, uint32_t id,
+		uint32_t index, struct spa_pod_builder *builder)
 {
-	return -ENOENT;
+	if (index > 0)
+		return NULL;
+	switch (id) {
+	case SPA_PARAM_PropInfo:
+		return spa_pod_builder_add_object(builder,
+				SPA_TYPE_OBJECT_PropInfo, SPA_PARAM_PropInfo,
+				SPA_PROP_INFO_id,
+				SPA_POD_Id(SPA_PROP_FITS_SOURCE_COMPLETED),
+				SPA_PROP_INFO_name,
+				SPA_POD_String(SPA_PROP_INFO_FITS_SOURCE_COMPLETED),
+				SPA_PROP_INFO_description,
+				SPA_POD_String("Finite FITS source reached normal end"),
+				SPA_PROP_INFO_type, SPA_POD_Bool(false),
+				SPA_PROP_INFO_params, SPA_POD_Bool(false));
+	case SPA_PARAM_Props:
+		return spa_pod_builder_add_object(builder,
+				SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
+				SPA_PROP_FITS_SOURCE_COMPLETED,
+				SPA_POD_Bool(atomic_load_explicit(&self->completed,
+						memory_order_acquire)));
+	default:
+		return NULL;
+	}
+}
+
+static int node_enum_params(void *object, int seq, uint32_t id,
+		uint32_t start, uint32_t num, const struct spa_pod *filter)
+{
+	struct impl *self = object;
+	struct spa_result_node_params result = { .id = id, .next = start };
+	uint8_t storage[512];
+	uint32_t count = 0;
+
+	spa_return_val_if_fail(self != NULL && num > 0, -EINVAL);
+	if (id != SPA_PARAM_PropInfo && id != SPA_PARAM_Props)
+		return -ENOENT;
+	while (count < num) {
+		struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
+				sizeof(storage));
+		struct spa_pod *param;
+
+		result.index = result.next++;
+		param = build_node_param(self, id, result.index, &builder);
+		if (param == NULL)
+			return 0;
+		if (spa_pod_filter(&builder, &result.param, param, filter) < 0)
+			continue;
+		spa_node_emit_result(&self->hooks, seq, 0,
+				SPA_RESULT_TYPE_NODE_PARAMS, &result);
+		count++;
+	}
+	return 0;
 }
 
 static int node_set_param(void *object SPA_UNUSED, uint32_t id SPA_UNUSED,
@@ -545,6 +600,14 @@ static uint64_t release_after(const struct cadence *cadence, uint64_t now)
 
 static uint64_t next_release(struct impl *self, uint64_t now)
 {
+	if (self->completion_pending) {
+		__uint128_t interval = (__uint128_t)SPA_NSEC_PER_SEC *
+				self->rate.denom / self->rate.num;
+		uint64_t delay = interval == 0 ? 1u :
+				interval > UINT64_MAX ? UINT64_MAX : (uint64_t)interval;
+
+		return now > UINT64_MAX - delay ? UINT64_MAX : now + delay;
+	}
 	return self->output_mode == OUTPUT_MODE_ROW_BLOCK ?
 			self->row_cadence.next_pts :
 			release_after(&self->cadence, now);
@@ -617,6 +680,7 @@ static int stop_source(struct impl *self)
 	if (!self->started)
 		return 0;
 	self->started = false;
+	self->completion_pending = false;
 	if (self->timerfd_readiness)
 		res = set_release_timer(self, UINT64_MAX);
 	return res;
@@ -643,6 +707,9 @@ static int node_send_command(void *object, const struct spa_command *command)
 					self->cube_info.height / self->row_block_rows, now);
 		else
 			cadence_start(&self->cadence, &self->rate, now);
+		atomic_store_explicit(&self->completed, false,
+				memory_order_release);
+		self->completion_pending = false;
 		self->started = true;
 		if (self->timerfd_readiness &&
 				(res = set_release_timer(self,
@@ -1145,7 +1212,7 @@ static int node_process(void *object)
 	struct buffer *output;
 	struct spa_data *data;
 	uint64_t now = 0, sequence, sample, pts;
-	uint32_t size;
+	uint32_t recycled_id, size;
 	bool discontinuity;
 	int res;
 
@@ -1153,15 +1220,25 @@ static int node_process(void *object)
 		return SPA_STATUS_OK;
 	if (self->port.io == NULL)
 		return -EIO;
+	recycled_id = self->port.io->buffer_id;
 	if ((res = recycle_buffer(self)) < 0)
 		return res;
+	if (res > 0 && self->completion_pending &&
+			recycled_id == self->completion_buffer_id) {
+		self->completion_pending = false;
+		atomic_store_explicit(&self->completed, true,
+				memory_order_release);
+		self->started = false;
+		return SPA_STATUS_OK;
+	}
 	if ((res = monotonic_nsec(&now)) < 0)
 		return res;
 	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK)
 		return process_row_block(self, now);
 	if (cadence_due(&self->cadence, now, self->cube_info.samples,
-			self->loop, &sequence, &sample, &pts, &discontinuity) == 0)
+			self->loop, &sequence, &sample, &pts, &discontinuity) == 0) {
 		return SPA_STATUS_OK;
+	}
 	if (self->port.io->status == SPA_STATUS_HAVE_DATA) {
 		self->discontinuity = true;
 		return SPA_STATUS_HAVE_DATA;
@@ -1205,6 +1282,13 @@ static int node_process(void *object)
 	self->port.io->status = SPA_STATUS_HAVE_DATA;
 	output->state = BUFFER_PUBLISHED;
 	self->discontinuity = false;
+	if (!self->loop && self->cadence.ended) {
+		/* Completion becomes observable only after this final buffer returns
+		 * from downstream.  A lifecycle owner can then stop the graph without
+		 * truncating work queued behind the source. */
+		self->completion_pending = true;
+		self->completion_buffer_id = output->id;
+	}
 	return SPA_STATUS_HAVE_DATA;
 }
 
@@ -1524,7 +1608,8 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	spa_hook_list_init(&self->hooks);
 	self->node.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Node,
 			SPA_VERSION_NODE, &node_methods, self);
-	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS;
+	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |
+			SPA_NODE_CHANGE_MASK_PARAMS;
 	self->info = SPA_NODE_INFO_INIT();
 	self->info.max_output_ports = 1;
 	self->info.flags = SPA_NODE_FLAG_RT;
@@ -1532,6 +1617,11 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 		self->info.flags |= SPA_NODE_FLAG_POLL_DRIVER;
 	configure_props(self);
 	self->info.props = &self->props;
+	self->params[0] = SPA_PARAM_INFO(SPA_PARAM_PropInfo,
+			SPA_PARAM_INFO_READ);
+	self->params[1] = SPA_PARAM_INFO(SPA_PARAM_Props, SPA_PARAM_INFO_READ);
+	self->info.params = self->params;
+	self->info.n_params = SPA_N_ELEMENTS(self->params);
 	self->port.info_all = SPA_PORT_CHANGE_MASK_FLAGS |
 			SPA_PORT_CHANGE_MASK_PROPS | SPA_PORT_CHANGE_MASK_PARAMS;
 	self->port.info = SPA_PORT_INFO_INIT();
