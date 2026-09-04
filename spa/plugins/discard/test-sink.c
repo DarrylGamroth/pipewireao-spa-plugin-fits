@@ -190,6 +190,7 @@ struct test_buffer {
 	struct spa_buffer buffer;
 	struct spa_data datas[2];
 	struct spa_chunk chunks[2];
+	uint8_t payload[46];
 };
 
 static void init_test_buffers(struct test_buffer *empty,
@@ -199,18 +200,30 @@ static void init_test_buffers(struct test_buffer *empty,
 	memset(multi, 0, sizeof(*multi));
 	multi->datas[0].type = SPA_DATA_DmaBuf;
 	multi->datas[0].fd = 123;
-	multi->datas[0].maxsize = 1;
-	multi->datas[0].data = NULL;
+	multi->datas[0].maxsize = 12;
+	multi->datas[0].data = multi->payload;
 	multi->datas[0].chunk = &multi->chunks[0];
 	multi->chunks[0].size = 12;
 	multi->datas[1].type = SPA_DATA_MemId;
 	multi->datas[1].fd = -1;
-	multi->datas[1].maxsize = 0;
-	multi->datas[1].data = NULL;
+	multi->datas[1].maxsize = 34;
+	multi->datas[1].data = &multi->payload[12];
 	multi->datas[1].chunk = &multi->chunks[1];
 	multi->chunks[1].size = 34;
 	multi->buffer.n_datas = SPA_N_ELEMENTS(multi->datas);
 	multi->buffer.datas = multi->datas;
+	for (uint32_t i = 0; i < SPA_N_ELEMENTS(multi->payload); i++)
+		multi->payload[i] = (uint8_t)i;
+}
+
+static uint64_t digest_payload(uint64_t digest, const uint8_t *payload,
+		size_t size)
+{
+	for (size_t i = 0; i < size; i++) {
+		digest ^= payload[i];
+		digest *= UINT64_C(1099511628211);
+	}
+	return digest;
 }
 
 static void expect_format_filter(struct spa_node *node,
@@ -254,7 +267,8 @@ static void expect_metric_info(struct spa_node *node,
 static void expect_metrics(struct spa_node *node,
 		struct param_capture *capture, int64_t expected_buffers,
 		int64_t expected_blocks, int64_t expected_bytes,
-		int64_t expected_errors, int64_t expected_process_calls)
+		int64_t expected_errors, int64_t expected_process_calls,
+		uint64_t expected_digest, int64_t expected_digest_bytes)
 {
 	struct spa_pod *props = enum_node_one(node, capture, SPA_PARAM_Props, 0);
 	int64_t buffers = -1;
@@ -262,6 +276,8 @@ static void expect_metrics(struct spa_node *node,
 	int64_t bytes = -1;
 	int64_t errors = -1;
 	int64_t process_calls = -1;
+	int64_t digest = 0;
+	int64_t digest_bytes = -1;
 
 	spa_assert_se(props != NULL);
 	spa_assert_se(spa_pod_parse_object(props,
@@ -272,12 +288,18 @@ static void expect_metrics(struct spa_node *node,
 			SPA_PROP_PIPEWIREAO_DISCARD_PROTOCOL_ERRORS,
 			SPA_POD_Long(&errors),
 			SPA_PROP_PIPEWIREAO_DISCARD_PROCESS_CALLS,
-			SPA_POD_Long(&process_calls)) >= 0);
+			SPA_POD_Long(&process_calls),
+			SPA_PROP_PIPEWIREAO_DISCARD_PAYLOAD_DIGEST,
+			SPA_POD_Long(&digest),
+			SPA_PROP_PIPEWIREAO_DISCARD_DIGEST_BYTES,
+			SPA_POD_Long(&digest_bytes)) >= 0);
 	spa_assert_se(buffers == expected_buffers);
 	spa_assert_se(blocks == expected_blocks);
 	spa_assert_se(bytes == expected_bytes);
 	spa_assert_se(errors == expected_errors);
 	spa_assert_se(process_calls == expected_process_calls);
+	spa_assert_se((uint64_t)digest == expected_digest);
+	spa_assert_se(digest_bytes == expected_digest_bytes);
 }
 
 static void exercise(const struct spa_handle_factory *factory)
@@ -318,6 +340,7 @@ static void exercise(const struct spa_handle_factory *factory)
 				"64"),
 	};
 	const struct spa_dict node_info = SPA_DICT_INIT_ARRAY(node_items);
+	uint64_t digest = UINT64_C(14695981039346656037);
 
 	spa_assert_se(handle != NULL);
 	spa_assert_se(spa_handle_factory_init(factory, handle, &node_info,
@@ -424,7 +447,9 @@ static void exercise(const struct spa_handle_factory *factory)
 	io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(node) == SPA_STATUS_NEED_DATA);
 	spa_assert_se(io.status == SPA_STATUS_NEED_DATA);
-	expect_metrics(node, &capture, 2, 2, 46, 0, 4);
+	digest = digest_payload(digest, storage[1].payload,
+			SPA_N_ELEMENTS(storage[1].payload));
+	expect_metrics(node, &capture, 2, 2, 46, 0, 4, digest, 46);
 
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	io.buffer_id = 1;
@@ -434,13 +459,15 @@ static void exercise(const struct spa_handle_factory *factory)
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
 	spa_assert_se(spa_node_process(node) == SPA_STATUS_NEED_DATA);
 	spa_assert_se(io.status == SPA_STATUS_NEED_DATA);
-	expect_metrics(node, &capture, 3, 4, 92, 0, 6);
+	digest = digest_payload(digest, storage[1].payload,
+			SPA_N_ELEMENTS(storage[1].payload));
+	expect_metrics(node, &capture, 3, 4, 92, 0, 6, digest, 92);
 
 	io.buffer_id = 99;
 	io.status = SPA_STATUS_HAVE_DATA;
 	spa_assert_se(spa_node_process(node) == -EPROTO);
 	spa_assert_se(io.status == -EPROTO);
-	expect_metrics(node, &capture, 3, 4, 92, 1, 7);
+	expect_metrics(node, &capture, 3, 4, 92, 1, 7, digest, 92);
 
 	expect_metric_info(node, &capture, 0,
 			SPA_PROP_PIPEWIREAO_DISCARD_BUFFERS,
@@ -457,7 +484,13 @@ static void exercise(const struct spa_handle_factory *factory)
 	expect_metric_info(node, &capture, 4,
 			SPA_PROP_PIPEWIREAO_DISCARD_PROCESS_CALLS,
 			SPA_PROP_INFO_PIPEWIREAO_DISCARD_PROCESS_CALLS);
-	spa_assert_se(enum_node_one(node, &capture, SPA_PARAM_PropInfo, 5) == NULL);
+	expect_metric_info(node, &capture, 5,
+			SPA_PROP_PIPEWIREAO_DISCARD_PAYLOAD_DIGEST,
+			SPA_PROP_INFO_PIPEWIREAO_DISCARD_PAYLOAD_DIGEST);
+	expect_metric_info(node, &capture, 6,
+			SPA_PROP_PIPEWIREAO_DISCARD_DIGEST_BYTES,
+			SPA_PROP_INFO_PIPEWIREAO_DISCARD_DIGEST_BYTES);
+	spa_assert_se(enum_node_one(node, &capture, SPA_PARAM_PropInfo, 7) == NULL);
 	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0, props) == -EPERM);
 
 	SPA_POD_OBJECT_ID(audio) = SPA_PARAM_Format;

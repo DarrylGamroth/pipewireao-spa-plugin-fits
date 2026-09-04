@@ -28,6 +28,7 @@
 #define NODE_NAME_SIZE 256u
 #define NODE_DESCRIPTION_SIZE 256u
 #define BUFFER_SIZE_TEXT_SIZE 16u
+#define FNV1A_OFFSET_BASIS UINT64_C(14695981039346656037)
 
 struct input_port {
 	uint64_t info_all;
@@ -47,6 +48,8 @@ struct metrics {
 	_Atomic uint64_t bytes;
 	_Atomic uint64_t protocol_errors;
 	_Atomic uint64_t process_calls;
+	_Atomic uint64_t payload_digest;
+	_Atomic uint64_t digest_bytes;
 };
 
 struct impl {
@@ -99,6 +102,16 @@ static const struct metric_description metric_descriptions[] = {
 		.id = SPA_PROP_PIPEWIREAO_DISCARD_PROCESS_CALLS,
 		.name = SPA_PROP_INFO_PIPEWIREAO_DISCARD_PROCESS_CALLS,
 		.description = "Processing callback calls since node construction",
+	},
+	{
+		.id = SPA_PROP_PIPEWIREAO_DISCARD_PAYLOAD_DIGEST,
+		.name = SPA_PROP_INFO_PIPEWIREAO_DISCARD_PAYLOAD_DIGEST,
+		.description = "Ordered FNV-1a digest of addressable discarded payload bytes",
+	},
+	{
+		.id = SPA_PROP_PIPEWIREAO_DISCARD_DIGEST_BYTES,
+		.name = SPA_PROP_INFO_PIPEWIREAO_DISCARD_DIGEST_BYTES,
+		.description = "Discarded payload bytes included in the digest",
 	},
 };
 
@@ -183,6 +196,12 @@ static uint64_t metric_value(const struct impl *self, uint32_t id)
 	case SPA_PROP_PIPEWIREAO_DISCARD_PROCESS_CALLS:
 		return atomic_load_explicit(&self->metrics.process_calls,
 				memory_order_relaxed);
+	case SPA_PROP_PIPEWIREAO_DISCARD_PAYLOAD_DIGEST:
+		return atomic_load_explicit(&self->metrics.payload_digest,
+				memory_order_relaxed);
+	case SPA_PROP_PIPEWIREAO_DISCARD_DIGEST_BYTES:
+		return atomic_load_explicit(&self->metrics.digest_bytes,
+				memory_order_relaxed);
 	default:
 		return 0;
 	}
@@ -226,7 +245,13 @@ static struct spa_pod *build_metrics(struct impl *self,
 					SPA_PROP_PIPEWIREAO_DISCARD_PROTOCOL_ERRORS)),
 			SPA_PROP_PIPEWIREAO_DISCARD_PROCESS_CALLS,
 			SPA_POD_Long((int64_t)metric_value(self,
-					SPA_PROP_PIPEWIREAO_DISCARD_PROCESS_CALLS)));
+					SPA_PROP_PIPEWIREAO_DISCARD_PROCESS_CALLS)),
+			SPA_PROP_PIPEWIREAO_DISCARD_PAYLOAD_DIGEST,
+			SPA_POD_Long((int64_t)metric_value(self,
+					SPA_PROP_PIPEWIREAO_DISCARD_PAYLOAD_DIGEST)),
+			SPA_PROP_PIPEWIREAO_DISCARD_DIGEST_BYTES,
+			SPA_POD_Long((int64_t)metric_value(self,
+					SPA_PROP_PIPEWIREAO_DISCARD_DIGEST_BYTES)));
 }
 
 static int enum_params(void *object, int seq, uint32_t id, uint32_t start,
@@ -605,17 +630,38 @@ static void metric_add(_Atomic uint64_t *counter, uint64_t value)
 static void record_buffer(struct impl *self, const struct spa_buffer *buffer)
 {
 	uint64_t bytes = 0;
+	uint64_t digest_bytes = 0;
+	uint64_t digest = atomic_load_explicit(&self->metrics.payload_digest,
+			memory_order_relaxed);
 	uint32_t i;
 
 	for (i = 0; i < buffer->n_datas; i++) {
 		const struct spa_data *data = &buffer->datas[i];
 
-		if (data->chunk != NULL)
+		if (data->chunk != NULL) {
+			uint32_t offset = data->maxsize == 0 ? 0 :
+					data->chunk->offset % data->maxsize;
+			uint32_t size = SPA_MIN(data->chunk->size,
+					data->maxsize - offset);
+			const uint8_t *payload = data->data;
+			uint32_t byte;
+
 			bytes = saturated_sum(bytes, data->chunk->size);
+			if (payload == NULL)
+				continue;
+			for (byte = 0; byte < size; byte++) {
+				digest ^= payload[offset + byte];
+				digest *= UINT64_C(1099511628211);
+			}
+			digest_bytes = saturated_sum(digest_bytes, size);
+		}
 	}
 	metric_add(&self->metrics.buffers, 1);
 	metric_add(&self->metrics.data_blocks, buffer->n_datas);
 	metric_add(&self->metrics.bytes, bytes);
+	atomic_store_explicit(&self->metrics.payload_digest, digest,
+			memory_order_relaxed);
+	metric_add(&self->metrics.digest_bytes, digest_bytes);
 }
 
 static int process(void *object)
@@ -721,11 +767,15 @@ static int init(const struct spa_handle_factory *factory,
 	atomic_init(&self->metrics.bytes, 0);
 	atomic_init(&self->metrics.protocol_errors, 0);
 	atomic_init(&self->metrics.process_calls, 0);
+	atomic_init(&self->metrics.payload_digest, FNV1A_OFFSET_BASIS);
+	atomic_init(&self->metrics.digest_bytes, 0);
 	if (!atomic_is_lock_free(&self->metrics.buffers) ||
 			!atomic_is_lock_free(&self->metrics.data_blocks) ||
 			!atomic_is_lock_free(&self->metrics.bytes) ||
 			!atomic_is_lock_free(&self->metrics.protocol_errors) ||
-			!atomic_is_lock_free(&self->metrics.process_calls))
+			!atomic_is_lock_free(&self->metrics.process_calls) ||
+			!atomic_is_lock_free(&self->metrics.payload_digest) ||
+			!atomic_is_lock_free(&self->metrics.digest_bytes))
 		return -ENOTSUP;
 	if ((res = copy_string(self->node_name, sizeof(self->node_name),
 				node_name == NULL ? "pipewireao_discard" : node_name)) < 0 ||
