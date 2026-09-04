@@ -265,11 +265,15 @@ The node exposes these cumulative, read-only `SPA_PARAM_Props` counters:
 | `discard.bytes` | Sum of the chunk sizes advertised by those data blocks. |
 | `discard.protocol-errors` | Invalid input buffer references rejected by the processing callback. |
 | `discard.process-calls` | Processing callback calls, including calls with no input available. |
+| `discard.payload-digest` | Ordered FNV-1a digest of addressable discarded payload bytes. |
+| `discard.digest-bytes` | Number of addressable payload bytes included in the digest. |
 
-The counters saturate at `INT64_MAX` and are not reset by pause or restart.
-They are snapshots obtained by ordinary parameter enumeration; the processing
-callback does not emit metric events, and observing metrics cannot pace the
-sink.
+The count and byte counters use saturating arithmetic and are not reset by
+pause or restart. The digest starts at the 64-bit FNV-1a offset basis and
+covers only the bounded chunk extent of data blocks mapped into the process
+address space. The values are snapshots obtained by ordinary parameter
+enumeration; the processing callback does not emit metric events, and observing
+metrics cannot pace the sink.
 
 ## Ownership boundary
 
