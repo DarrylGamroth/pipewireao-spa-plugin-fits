@@ -140,6 +140,8 @@ struct impl {
 	bool discontinuity;
 	bool started;
 	bool timerfd_readiness;
+	bool completion_pending;
+	uint32_t completion_buffer_id;
 	_Atomic bool completed;
 };
 
@@ -598,6 +600,14 @@ static uint64_t release_after(const struct cadence *cadence, uint64_t now)
 
 static uint64_t next_release(struct impl *self, uint64_t now)
 {
+	if (self->completion_pending) {
+		__uint128_t interval = (__uint128_t)SPA_NSEC_PER_SEC *
+				self->rate.denom / self->rate.num;
+		uint64_t delay = interval == 0 ? 1u :
+				interval > UINT64_MAX ? UINT64_MAX : (uint64_t)interval;
+
+		return now > UINT64_MAX - delay ? UINT64_MAX : now + delay;
+	}
 	return self->output_mode == OUTPUT_MODE_ROW_BLOCK ?
 			self->row_cadence.next_pts :
 			release_after(&self->cadence, now);
@@ -670,6 +680,7 @@ static int stop_source(struct impl *self)
 	if (!self->started)
 		return 0;
 	self->started = false;
+	self->completion_pending = false;
 	if (self->timerfd_readiness)
 		res = set_release_timer(self, UINT64_MAX);
 	return res;
@@ -698,6 +709,7 @@ static int node_send_command(void *object, const struct spa_command *command)
 			cadence_start(&self->cadence, &self->rate, now);
 		atomic_store_explicit(&self->completed, false,
 				memory_order_release);
+		self->completion_pending = false;
 		self->started = true;
 		if (self->timerfd_readiness &&
 				(res = set_release_timer(self,
@@ -1200,7 +1212,7 @@ static int node_process(void *object)
 	struct buffer *output;
 	struct spa_data *data;
 	uint64_t now = 0, sequence, sample, pts;
-	uint32_t size;
+	uint32_t recycled_id, size;
 	bool discontinuity;
 	int res;
 
@@ -1208,22 +1220,23 @@ static int node_process(void *object)
 		return SPA_STATUS_OK;
 	if (self->port.io == NULL)
 		return -EIO;
+	recycled_id = self->port.io->buffer_id;
 	if ((res = recycle_buffer(self)) < 0)
 		return res;
+	if (res > 0 && self->completion_pending &&
+			recycled_id == self->completion_buffer_id) {
+		self->completion_pending = false;
+		atomic_store_explicit(&self->completed, true,
+				memory_order_release);
+		self->started = false;
+		return SPA_STATUS_OK;
+	}
 	if ((res = monotonic_nsec(&now)) < 0)
 		return res;
 	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK)
 		return process_row_block(self, now);
 	if (cadence_due(&self->cadence, now, self->cube_info.samples,
 			self->loop, &sequence, &sample, &pts, &discontinuity) == 0) {
-		if (!self->loop && self->cadence.ended &&
-				self->port.io->status != SPA_STATUS_HAVE_DATA) {
-			atomic_store_explicit(&self->completed, true,
-					memory_order_release);
-			self->started = false;
-			self->port.io->status = SPA_STATUS_DRAINED;
-			return SPA_STATUS_DRAINED;
-		}
 		return SPA_STATUS_OK;
 	}
 	if (self->port.io->status == SPA_STATUS_HAVE_DATA) {
@@ -1269,6 +1282,13 @@ static int node_process(void *object)
 	self->port.io->status = SPA_STATUS_HAVE_DATA;
 	output->state = BUFFER_PUBLISHED;
 	self->discontinuity = false;
+	if (!self->loop && self->cadence.ended) {
+		/* Completion becomes observable only after this final buffer returns
+		 * from downstream.  A lifecycle owner can then stop the graph without
+		 * truncating work queued behind the source. */
+		self->completion_pending = true;
+		self->completion_buffer_id = output->id;
+	}
 	return SPA_STATUS_HAVE_DATA;
 }
 
@@ -1588,7 +1608,8 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	spa_hook_list_init(&self->hooks);
 	self->node.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Node,
 			SPA_VERSION_NODE, &node_methods, self);
-	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS;
+	self->info_all = SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |
+			SPA_NODE_CHANGE_MASK_PARAMS;
 	self->info = SPA_NODE_INFO_INIT();
 	self->info.max_output_ports = 1;
 	self->info.flags = SPA_NODE_FLAG_RT;

@@ -100,6 +100,12 @@ consumer lease is late, the source advances to the newest due plane; it never
 emits a complete-frame catch-up burst. The first plane and the first plane after
 skipped deadlines carry `DISCONT`.
 
+A non-looping complete-frame source exposes the read-only Boolean
+`fits.completed` through `SPA_PARAM_Props`. It becomes true only after the
+final published buffer returns from downstream, so a lifecycle owner does not
+interpret queueing the final frame as downstream completion. A new `Start`
+resets it to false.
+
 In `poll` readiness, the node reports `SPA_NODE_FLAG_POLL_DRIVER`. Each probe
 performs one monotonic clock read. A due probe performs one bounded pool
 acquisition and either a complete-frame CFITSIO read or a prepared row copy,

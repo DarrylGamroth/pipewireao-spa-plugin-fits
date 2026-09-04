@@ -37,6 +37,7 @@ struct param_result {
 	size_t capacity;
 	struct spa_pod *param;
 	uint64_t node_flags;
+	bool node_params_advertised;
 	const char *readiness;
 	const char *output_mode;
 	const char *row_block_rows;
@@ -117,6 +118,10 @@ static void on_info(void *data, const struct spa_node_info *info)
 
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_FLAGS)
 		capture->node_flags = info->flags;
+	if (info->change_mask & SPA_NODE_CHANGE_MASK_PARAMS)
+		capture->node_params_advertised = info->n_params == 2 &&
+				info->params[0].id == SPA_PARAM_PropInfo &&
+				info->params[1].id == SPA_PARAM_Props;
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS)
 		capture->readiness = spa_dict_lookup(info->props,
 				SPA_KEY_API_FITS_READINESS);
@@ -411,6 +416,7 @@ static void run_source(const struct spa_handle_factory *factory,
 			spa_streq(capture.output_mode, "frame"));
 	spa_assert_se(capture.row_block_rows == NULL);
 	spa_assert_se(capture.simulated_readout_time_ns == NULL);
+	spa_assert_se(capture.node_params_advertised);
 	spa_assert_se((capture.node_flags & SPA_NODE_FLAG_POLL_DRIVER) ==
 			(spa_streq(readiness, "poll") ?
 					SPA_NODE_FLAG_POLL_DRIVER : 0));
@@ -492,10 +498,11 @@ static void run_source(const struct spa_handle_factory *factory,
 		io.status = SPA_STATUS_NEED_DATA;
 	}
 	if (test->loop != NULL && spa_streq(test->loop, "false")) {
+		spa_assert_se(!source_completed(node, &capture));
 		res = spa_node_process(node);
-		spa_assert_se(res == SPA_STATUS_DRAINED);
-		spa_assert_se(io.status == SPA_STATUS_DRAINED);
+		spa_assert_se(res == SPA_STATUS_OK);
 		spa_assert_se(source_completed(node, &capture));
+		spa_assert_se(io.status == SPA_STATUS_NEED_DATA);
 		io.status = SPA_STATUS_NEED_DATA;
 		spa_assert_se(spa_node_send_command(node, &start) == 0);
 		spa_assert_se(!source_completed(node, &capture));
