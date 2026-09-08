@@ -13,20 +13,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     /usr/local/bin/pipewireao-apt-install \
       build-essential \
       ca-certificates \
-      cargo \
       dpkg-dev \
       meson \
       ninja-build \
       pkg-config \
       python3 \
-      rustc \
       ${APT_BUILD_PACKAGES}
 
-COPY --from=pipewire-rs . /src/pipewire-rs
-COPY . /src/pipewireao-spa-plugins
-WORKDIR /src/pipewireao-spa-plugins
+COPY . /src/pipewireao-spa-plugin-fits
+WORKDIR /src/pipewireao-spa-plugin-fits
 
-ARG COMPONENT=core
+ARG COMPONENT=fits
 ARG DEB_VERSION=""
 ARG HOST_DEPENDENCY=""
 ARG MAINTAINER=""
@@ -34,9 +31,7 @@ ARG EXTRA_DEPENDS_JSON="[]"
 ARG LIBRARY_DIRS_JSON="[]"
 ARG MESON_OPTIONS_JSON="[]"
 ARG SOURCE_DATE_EPOCH=946684800
-RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
-    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
-    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
+RUN SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
     python3 packaging/deb/build.py \
       --component "${COMPONENT}" \
       --output-dir /out \
