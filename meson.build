@@ -70,12 +70,18 @@ if get_option('tests').allowed()
   test('spa-genicam-feature', genicam_feature_test)
 endif
 
-subdir('spa/plugins/alpao')
-subdir('spa/plugins/discard')
-subdir('spa/plugins/ndarray')
-subdir('spa/plugins/nuvu')
-subdir('spa/plugins/pyrtc')
-subdir('src/modules/queue')
+foreach component_dir : [
+  'spa/plugins/alpao',
+  'spa/plugins/discard',
+  'spa/plugins/ndarray',
+  'spa/plugins/nuvu',
+  'spa/plugins/pyrtc',
+  'src/modules/queue',
+]
+  if fs.exists(component_dir / 'meson.build')
+    subdir(component_dir)
+  endif
+endforeach
 
 egrabber_found = false
 if get_option('egrabber').allowed()
@@ -87,7 +93,7 @@ if get_option('egrabber').allowed()
     required: get_option('egrabber'),
   )
 endif
-if egrabber_found
+if egrabber_found and fs.exists('spa/plugins/egrabber/meson.build')
   subdir('spa/plugins/egrabber')
 endif
 
@@ -110,7 +116,7 @@ if get_option('bgapi2').allowed()
     required: get_option('bgapi2'),
   )
 endif
-if bgapi2_found
+if bgapi2_found and fs.exists('spa/plugins/bgapi2/meson.build')
   subdir('spa/plugins/bgapi2')
 endif
 
@@ -156,7 +162,9 @@ if get_option('edtpdv').allowed()
     required: get_option('edtpdv'),
   )
 endif
-subdir('spa/plugins/edtpdv')
+if fs.exists('spa/plugins/edtpdv/meson.build')
+  subdir('spa/plugins/edtpdv')
+endif
 
 flisdk_found = false
 if get_option('flisdk').allowed()
@@ -205,7 +213,9 @@ if get_option('flisdk').allowed()
     flisdk_runtime_prefix / '3rdParty',
   ])
 endif
-subdir('spa/plugins/flisdk')
+if fs.exists('spa/plugins/flisdk/meson.build')
+  subdir('spa/plugins/flisdk')
+endif
 
 andor3_found = false
 if get_option('andor3').allowed()
@@ -241,7 +251,9 @@ if get_option('andor3').allowed()
     )
   endif
 endif
-subdir('spa/plugins/andor3')
+if fs.exists('spa/plugins/andor3/meson.build')
+  subdir('spa/plugins/andor3')
+endif
 
 hamamatsu_found = false
 if get_option('hamamatsu').allowed()
@@ -282,7 +294,9 @@ if get_option('hamamatsu').allowed()
     )
   endif
 endif
-subdir('spa/plugins/hamamatsu')
+if fs.exists('spa/plugins/hamamatsu/meson.build')
+  subdir('spa/plugins/hamamatsu')
+endif
 
 hermes_found = false
 if get_option('hermes').allowed()
@@ -310,7 +324,12 @@ if get_option('hermes').allowed()
       required: get_option('hermes'),
     ))
 endif
-subdir('spa/plugins/hermes')
+if fs.exists('spa/plugins/hermes/meson.build')
+  subdir('spa/plugins/hermes')
+endif
+if fs.exists('spa/plugins/hermes-decoder/meson.build')
+  subdir('spa/plugins/hermes-decoder')
+endif
 
 aravis_dep = dependency(
   'aravis-0.10',
@@ -328,13 +347,13 @@ aravis_dep = dependency(
   ],
 )
 aravis_found = aravis_dep.found()
-if aravis_found
+if aravis_found and fs.exists('spa/plugins/aravis/meson.build')
   subdir('spa/plugins/aravis')
 endif
 
 cfitsio_dep = dependency('cfitsio', required: get_option('fits'))
 fits_found = cfitsio_dep.found()
-if fits_found
+if fits_found and fs.exists('spa/plugins/fits/meson.build')
   subdir('spa/plugins/fits')
 endif
 
@@ -361,7 +380,7 @@ if get_option('imagestreamio').allowed()
     required: get_option('imagestreamio'),
   )
 endif
-if imagestreamio_found
+if imagestreamio_found and fs.exists('spa/plugins/imagestreamio/meson.build')
   subdir('spa/plugins/imagestreamio')
 endif
 

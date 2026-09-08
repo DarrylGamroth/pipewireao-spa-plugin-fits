@@ -56,7 +56,7 @@ if get_option('tests').allowed()
     pipewire_pkg_dep.get_variable(pkgconfig: 'confdatadir') / 'pipewire-ao',
     required: false,
   )
-  if pipewire_daemon.found()
+  if pipewire_daemon.found() and is_variable('discard_lib')
     python = import('python').find_installation('python3')
     fits_discard_live_test = executable(
       'spa-fits-discard-live-test',
