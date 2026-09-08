@@ -13,7 +13,7 @@ Supply the PipeWireAO build dependency through `APT_BUILD_PACKAGES` and its
 runtime package expression through `HOST_DEPENDENCY`:
 
 ```console
-export APT_BUILD_PACKAGES='pipewire-ao-dev'
+export APT_BUILD_PACKAGES='pipewire-ao-dev pipewireao-spa-plugins-dev'
 export HOST_DEPENDENCY='pipewire-ao (>= 1.7)'
 export MAINTAINER='Deployment Team <packages@example.org>'
 docker buildx bake debian-13-package
