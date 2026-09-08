@@ -22,6 +22,7 @@ nuvu_lib = custom_target(
   build_by_default: true,
   install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'nuvu',
+  install_tag: 'core',
 )
 
 if get_option('tests').allowed()

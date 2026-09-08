@@ -53,6 +53,7 @@ egrabber_lib = shared_library(
   cpp_args: egrabber_cpp_args,
   install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'egrabber',
+  install_tag: 'egrabber',
 )
 
 if get_option('tests').allowed()

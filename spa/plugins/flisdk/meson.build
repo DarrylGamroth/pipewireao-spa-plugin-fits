@@ -46,6 +46,7 @@ if flisdk_found
     install: true,
     install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'flisdk',
     install_rpath: flisdk_install_rpath,
+    install_tag: 'flisdk',
   )
 endif
 

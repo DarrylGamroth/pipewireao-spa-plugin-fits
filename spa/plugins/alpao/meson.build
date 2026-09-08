@@ -14,6 +14,7 @@ alpao_fgn_lib = shared_library(
   gnu_symbol_visibility: 'hidden',
   install: true,
   install_dir: get_option('libdir') / 'pipewire-ao/filter-graph',
+  install_tag: 'alpao',
 )
 
 alpao_sdk = get_option('alpao-sdk')
@@ -63,8 +64,10 @@ if alpao_sdk_enabled and alpao_sdk_root != ''
     include_directories: [plugin_include, alpao_sdk_include],
     c_args: alpao_c_args,
     gnu_symbol_visibility: 'hidden',
-    install: true,
+    build_by_default: alpao_sdk_enabled,
+    install: alpao_sdk_enabled,
     install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'alpao',
+    install_tag: 'alpao',
   )
 else
   alpao_lib = shared_library(
@@ -74,8 +77,10 @@ else
     include_directories: plugin_include,
     c_args: alpao_c_args,
     gnu_symbol_visibility: 'hidden',
-    install: true,
+    build_by_default: alpao_sdk_enabled,
+    install: alpao_sdk_enabled,
     install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'alpao',
+    install_tag: 'alpao',
   )
 endif
 
@@ -114,6 +119,7 @@ if get_option('tests').allowed()
     'spa-alpao-factory',
     alpao_test,
     args: [alpao_lib.full_path(), 'factory'],
+    depends: alpao_lib,
   )
   test(
     'spa-alpao-mock',

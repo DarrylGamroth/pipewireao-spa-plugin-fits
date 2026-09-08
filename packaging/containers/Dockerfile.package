@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE=debian:trixie
+FROM ${BASE_IMAGE} AS build
+
+COPY packaging/containers/apt-install.sh /usr/local/bin/pipewireao-apt-install
+
+ARG APT_BUILD_PACKAGES=""
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=secret,id=apt_sources \
+    --mount=type=secret,id=apt_auth \
+    --mount=type=secret,id=apt_keyring \
+    /usr/local/bin/pipewireao-apt-install \
+      build-essential \
+      ca-certificates \
+      cargo \
+      dpkg-dev \
+      meson \
+      ninja-build \
+      pkg-config \
+      python3 \
+      rustc \
+      ${APT_BUILD_PACKAGES}
+
+COPY --from=pipewire-rs . /src/pipewire-rs
+COPY . /src/pipewireao-spa-plugins
+WORKDIR /src/pipewireao-spa-plugins
+
+ARG COMPONENT=core
+ARG DEB_VERSION=""
+ARG HOST_DEPENDENCY=""
+ARG MAINTAINER=""
+ARG EXTRA_DEPENDS_JSON="[]"
+ARG LIBRARY_DIRS_JSON="[]"
+ARG MESON_OPTIONS_JSON="[]"
+ARG SOURCE_DATE_EPOCH=946684800
+RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
+    python3 packaging/deb/build.py \
+      --component "${COMPONENT}" \
+      --output-dir /out \
+      --version "${DEB_VERSION}" \
+      --host-dependency "${HOST_DEPENDENCY}" \
+      --maintainer "${MAINTAINER}" \
+      --extra-depends-json "${EXTRA_DEPENDS_JSON}" \
+      --library-dirs-json "${LIBRARY_DIRS_JSON}" \
+      --meson-options-json "${MESON_OPTIONS_JSON}"
+
+FROM scratch AS packages
+COPY --from=build /out/ /

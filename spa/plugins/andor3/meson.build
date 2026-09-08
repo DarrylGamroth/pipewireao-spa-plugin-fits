@@ -13,6 +13,7 @@ if andor3_found
     install: true,
     install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'andor3',
     install_rpath: andor3_library_dir,
+    install_tag: 'andor3',
   )
 endif
 

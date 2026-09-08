@@ -8,6 +8,7 @@ imagestreamio_lib = shared_library(
   install_rpath: imagestreamio_install_rpath,
   install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'imagestreamio',
+  install_tag: 'imagestreamio',
 )
 
 if get_option('tests').allowed()

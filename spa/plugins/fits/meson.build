@@ -8,6 +8,7 @@ fits_lib = shared_library(
   c_args: ['-Wno-pedantic'],
   install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'fits',
+  install_tag: 'fits',
 )
 
 if get_option('tests').allowed()

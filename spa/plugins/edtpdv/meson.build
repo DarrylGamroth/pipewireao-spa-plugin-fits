@@ -7,6 +7,7 @@ if edtpdv_found
     install: true,
     install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'edtpdv',
     install_rpath: edtpdv_install_rpath,
+    install_tag: 'edtpdv',
   )
 endif
 

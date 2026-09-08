@@ -16,6 +16,7 @@ queue_module = shared_library(
   gnu_symbol_visibility: 'hidden',
   install: true,
   install_dir: pipewire_pkg_dep.get_variable(pkgconfig: 'moduledir'),
+  install_tag: 'core',
 )
 
 if get_option('tests').allowed()

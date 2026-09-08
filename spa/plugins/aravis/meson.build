@@ -6,6 +6,7 @@ aravis_lib = shared_library(
   c_args: ['-Wno-pedantic'],
   install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'aravis',
+  install_tag: 'aravis',
 )
 
 if get_option('tests').allowed()

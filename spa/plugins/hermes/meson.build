@@ -14,6 +14,7 @@ if hermes_found
     install: true,
     install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'hermes',
     install_rpath: hermes_library_dir,
+    install_tag: 'hermes',
   )
 endif
 
@@ -37,9 +38,10 @@ hermes_decoder_lib = custom_target(
     '--package', 'hermes-spa-decoder',
   ],
   build_always_stale: true,
-  build_by_default: hermes_found,
-  install: hermes_found,
+  build_by_default: true,
+  install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'hermes',
+  install_tag: 'core',
 )
 
 if get_option('tests').allowed()

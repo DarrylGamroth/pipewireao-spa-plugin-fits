@@ -21,6 +21,7 @@ bgapi2_lib = shared_library(
   install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'bgapi2',
   install_rpath: bgapi2_install_rpath,
+  install_tag: 'bgapi2',
 )
 
 if get_option('tests').allowed()

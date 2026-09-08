@@ -1,0 +1,7 @@
+.git
+build*
+!packaging/deb/build.py
+dist
+target
+__pycache__
+*.pyc

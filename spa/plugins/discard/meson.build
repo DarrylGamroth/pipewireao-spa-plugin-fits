@@ -7,6 +7,7 @@ discard_lib = shared_library(
   gnu_symbol_visibility: 'hidden',
   install: true,
   install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'discard',
+  install_tag: 'core',
 )
 
 if get_option('tests').allowed()

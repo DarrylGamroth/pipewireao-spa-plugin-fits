@@ -12,6 +12,7 @@ if hamamatsu_found
     install: true,
     install_dir: spa_pkg_dep.get_variable(pkgconfig: 'plugindir') / 'hamamatsu',
     install_rpath: hamamatsu_library_dir,
+    install_tag: 'hamamatsu',
   )
 endif
 

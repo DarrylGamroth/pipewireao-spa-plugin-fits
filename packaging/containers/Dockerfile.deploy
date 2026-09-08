@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.7
+
+ARG BASE_IMAGE=debian:trixie
+FROM ${BASE_IMAGE} AS runtime
+
+COPY packaging/containers/apt-install.sh /usr/local/bin/pipewireao-apt-install
+COPY --from=packages / /tmp/pipewireao-packages/
+
+ARG APT_RUNTIME_PACKAGES=""
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=secret,id=apt_sources \
+    --mount=type=secret,id=apt_auth \
+    --mount=type=secret,id=apt_keyring \
+    /usr/local/bin/pipewireao-apt-install \
+      ${APT_RUNTIME_PACKAGES} \
+      /tmp/pipewireao-packages/*.deb && \
+    rm -rf /tmp/pipewireao-packages /usr/local/bin/pipewireao-apt-install

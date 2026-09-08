@@ -35,6 +35,9 @@ The generic bounded handoff for isolating telemetry, GUI, and recorder graphs
 is specified in [Bounded queue module](docs/queue.md).
 The complete-frame and row-block topology is described in
 [Scheduled node and row-block migration](docs/scheduled-node-migration.md).
+Debian/Ubuntu binary package boundaries, private SDK repository handling,
+container builders, and deployment-image targets are documented in
+[Debian and Ubuntu packages](docs/debian-packaging.md).
 
 ## Build
 
