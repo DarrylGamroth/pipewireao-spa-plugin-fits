@@ -1,26 +1,34 @@
-# pipewireao-spa-plugin-fits
+# PipeWireAO FITS plugin
 
-Standalone source and Debian/Ubuntu packaging for the `fits` PipeWireAO SPA component.
+This repository provides `api.fits.source`, a CFITSIO-backed PipeWireAO source
+for complete FITS planes and simulated row-block camera readout. Include it in
+deployments that need repeatable file-backed camera or vector input.
 
-This repository was split from
-[`pipewireao-spa-plugins`](https://github.com/DarrylGamroth/pipewireao-spa-plugins)
-at commit `8d2edcf`. The common public headers continue to be released
-as the `pipewireao-spa-plugins-dev` binary package from the core repository.
+The repository is an independent build unit. It depends on PipeWireAO, the
+public headers installed by
+[`pipewireao-spa-plugins-core`](https://github.com/DarrylGamroth/pipewireao-spa-plugins-core),
+and CFITSIO. It has no vendor SDK dependency.
 
-## Package build
-
-Supply the PipeWireAO build dependency through `APT_BUILD_PACKAGES` and its
-runtime package expression through `HOST_DEPENDENCY`:
+## Build and stage
 
 ```console
-export APT_BUILD_PACKAGES='pipewire-ao-dev pipewireao-spa-plugins-dev'
-export HOST_DEPENDENCY='pipewire-ao (>= 1.7)'
-export MAINTAINER='Deployment Team <packages@example.org>'
-docker buildx bake debian-13-package
-docker buildx bake ubuntu-26-04-package
+meson setup build --prefix=/usr -Dfits=enabled
+meson compile -C build
+meson test -C build 'spa-fits*' --print-errorlogs
+DESTDIR="$PWD/stage" meson install -C build
 ```
 
-Vendor repositories also require the SDK development package in
-`APT_BUILD_PACKAGES` and the corresponding runtime package in
-`EXTRA_DEPENDS_JSON`. Private APT sources and credentials are passed with the
-BuildKit secrets `apt_sources`, `apt_auth`, and `apt_keyring`.
+The staged tree can be copied into a target root filesystem or consumed by a
+site-specific image or package build. See
+[`spa/plugins/fits/README.md`](spa/plugins/fits/README.md) for source properties,
+formats, cadence, and overload behavior.
+
+## Container and package recipes
+
+The Docker Bake file offers `debian-13-deploy` and `ubuntu-26-04-deploy` image
+targets. `debian-13-package` and `ubuntu-26-04-package` export `.deb` files when
+that deployment format is wanted. The supplied image recipes use the package
+artifact internally; Meson builds are not restricted to Debian or Ubuntu.
+
+The container build must be given authorized sources for PipeWireAO and the
+core development files through its build arguments or BuildKit secrets.
