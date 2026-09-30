@@ -107,7 +107,7 @@ struct impl {
 	struct spa_callbacks callbacks;
 	uint64_t info_all;
 	struct spa_node_info info;
-	struct spa_param_info params[2];
+	struct spa_param_info params[3];
 	struct spa_dict props;
 	struct spa_dict_item prop_items[20];
 	char path[PATH_MAX];
@@ -523,6 +523,11 @@ static struct spa_pod *build_node_param(struct impl *self, uint32_t id,
 				SPA_PROP_FITS_SOURCE_COMPLETED,
 				SPA_POD_Bool(atomic_load_explicit(&self->completed,
 						memory_order_acquire)));
+	case SPA_PARAM_IO:
+		return spa_pod_builder_add_object(builder,
+				SPA_TYPE_OBJECT_ParamIO, SPA_PARAM_IO,
+				SPA_PARAM_IO_id, SPA_POD_Id(SPA_IO_Position),
+				SPA_PARAM_IO_size, SPA_POD_Int(sizeof(struct spa_io_position)));
 	default:
 		return NULL;
 	}
@@ -537,7 +542,7 @@ static int node_enum_params(void *object, int seq, uint32_t id,
 	uint32_t count = 0;
 
 	spa_return_val_if_fail(self != NULL && num > 0, -EINVAL);
-	if (id != SPA_PARAM_PropInfo && id != SPA_PARAM_Props)
+	if (id != SPA_PARAM_PropInfo && id != SPA_PARAM_Props && id != SPA_PARAM_IO)
 		return -ENOENT;
 	while (count < num) {
 		struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage,
@@ -563,10 +568,16 @@ static int node_set_param(void *object SPA_UNUSED, uint32_t id SPA_UNUSED,
 	return -ENOENT;
 }
 
-static int node_set_io(void *object SPA_UNUSED, uint32_t id SPA_UNUSED,
-		void *data SPA_UNUSED, size_t size SPA_UNUSED)
+static int node_set_io(void *object SPA_UNUSED, uint32_t id,
+		void *data, size_t size)
 {
-	return -ENOENT;
+	if (id != SPA_IO_Position)
+		return -ENOENT;
+	if (data != NULL && size < sizeof(struct spa_io_position))
+		return -ENOSPC;
+	/* Acknowledge graph driver association without consuming Position. The
+	 * source owns its cadence and does not report a separate driver clock. */
+	return 0;
 }
 
 static int set_release_timer(struct impl *self, uint64_t release)
@@ -1620,6 +1631,7 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 	self->params[0] = SPA_PARAM_INFO(SPA_PARAM_PropInfo,
 			SPA_PARAM_INFO_READ);
 	self->params[1] = SPA_PARAM_INFO(SPA_PARAM_Props, SPA_PARAM_INFO_READ);
+	self->params[2] = SPA_PARAM_INFO(SPA_PARAM_IO, SPA_PARAM_INFO_READ);
 	self->info.params = self->params;
 	self->info.n_params = SPA_N_ELEMENTS(self->params);
 	self->port.info_all = SPA_PORT_CHANGE_MASK_FLAGS |

@@ -14,6 +14,14 @@ every file page during construction.
 
 ## Factory properties
 
+The source advertises and acknowledges graph `SPA_IO_Position` setup and
+withdrawal. A non-null area must be at least `sizeof(struct spa_io_position)`;
+undersized areas return `ENOSPC`. The source does not retain or read Position,
+and this acknowledgement does not change its own monotonic cadence or Header
+timestamps. It lets the host associate the local node with its graph driver.
+`SPA_IO_Clock` and unknown IO IDs remain unsupported (`ENOENT`); the source
+does not claim a separately populated driver clock.
+
 | Property | Requirement | Meaning |
 | --- | --- | --- |
 | `api.fits.path` | required | FITS file path; extended-filename parsing is not used |

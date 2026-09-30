@@ -119,9 +119,10 @@ static void on_info(void *data, const struct spa_node_info *info)
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_FLAGS)
 		capture->node_flags = info->flags;
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_PARAMS)
-		capture->node_params_advertised = info->n_params == 2 &&
+		capture->node_params_advertised = info->n_params == 3 &&
 				info->params[0].id == SPA_PARAM_PropInfo &&
-				info->params[1].id == SPA_PARAM_Props;
+				info->params[1].id == SPA_PARAM_Props &&
+				info->params[2].id == SPA_PARAM_IO;
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS)
 		capture->readiness = spa_dict_lookup(info->props,
 				SPA_KEY_API_FITS_READINESS);
@@ -371,6 +372,7 @@ static void run_source(const struct spa_handle_factory *factory,
 	struct spa_command pause = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Pause);
 	struct spa_ndarray_info ndarray = SPA_NDARRAY_INFO_INIT();
 	struct spa_video_info_raw video = { 0 };
+	struct spa_io_position position = { 0 };
 	struct spa_hook listener;
 	struct pw_loop *loop = NULL;
 	struct spa_support support[2];
@@ -400,6 +402,13 @@ static void run_source(const struct spa_handle_factory *factory,
 	}
 	node = make_node(factory, test, readiness,
 			support, n_support, &handle);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position,
+			&position, sizeof(position)) == 0);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position,
+			&position, sizeof(position) - 1) == -ENOSPC);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Position, NULL, 0) == 0);
+	spa_assert_se(spa_node_set_io(node, SPA_IO_Clock,
+			&position, sizeof(position)) == -ENOENT);
 	spa_assert_se(spa_node_set_callbacks(node, &node_callbacks,
 			&readiness_state) == 0);
 
@@ -417,6 +426,16 @@ static void run_source(const struct spa_handle_factory *factory,
 	spa_assert_se(capture.row_block_rows == NULL);
 	spa_assert_se(capture.simulated_readout_time_ns == NULL);
 	spa_assert_se(capture.node_params_advertised);
+	{
+		uint32_t io_id = SPA_ID_INVALID;
+		int32_t io_size = 0;
+		struct spa_pod *param = enum_node_one(node, &capture, SPA_PARAM_IO, 0);
+		spa_assert_se(spa_pod_parse_object(param, SPA_TYPE_OBJECT_ParamIO, NULL,
+				SPA_PARAM_IO_id, SPA_POD_Id(&io_id),
+				SPA_PARAM_IO_size, SPA_POD_Int(&io_size)) >= 0);
+		spa_assert_se(io_id == SPA_IO_Position &&
+				io_size == (int32_t)sizeof(struct spa_io_position));
+	}
 	spa_assert_se((capture.node_flags & SPA_NODE_FLAG_POLL_DRIVER) ==
 			(spa_streq(readiness, "poll") ?
 					SPA_NODE_FLAG_POLL_DRIVER : 0));
