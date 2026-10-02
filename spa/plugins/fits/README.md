@@ -27,6 +27,7 @@ does not claim a separately populated driver clock.
 | `api.fits.path` | required | FITS file path; extended-filename parsing is not used |
 | `api.fits.hdu` | default `1` | one-based image HDU |
 | `api.fits.sample-rank` | default `2` | FITS axes in one sample: `1` for vectors or `2` for images |
+| `api.fits.layout` | optional | ndarray axis order: `column-major` by default for image frames; `row-major` by default for vectors and row blocks |
 | `api.fits.rate` | required | positive `numerator/denominator` frame or vector rate |
 | `api.fits.schema` | required | exact ndarray semantic schema |
 | `api.fits.profile` | optional in frame mode, required in row mode | source deployment identity published as a node property; not part of ndarray negotiation |
@@ -45,8 +46,16 @@ The file axes define repeated values without a separate shape property:
   directly with `api.alpao.sink`.
 - `sample-rank=2` accepts `(width, height)` or `(width, height, frames)`. In
   frame mode it publishes the native FITS element type as a column-major
-  ndarray and also offers raw `GRAY16_LE` video; CFITSIO converts directly into
-  the selected output buffer.
+  `[width, height]` ndarray by default. Setting `api.fits.layout=row-major`
+  publishes `[height, width]` with the same contiguous, width-fast pixel bytes.
+  This reverses the axis declaration without transposing or copying pixels.
+  It also offers raw `GRAY16_LE` video; the layout option applies only to ndarray
+  negotiation. CFITSIO converts directly into the selected output buffer.
+
+The node publishes its effective `api.fits.layout` property. Vectors and row
+blocks require canonical row-major layout: explicit `column-major` is rejected
+for either mode. Unknown layout values are rejected. The option changes neither
+CFITSIO conversion nor the complete-frame file-I/O ownership boundary.
 
 Element type, shape, layout, rate, and schema are exact constraints. A
 mismatched consumer is rejected during negotiation rather than at playback.
@@ -108,26 +117,34 @@ consumer lease is late, the source advances to the newest due plane; it never
 emits a complete-frame catch-up burst. The first plane and the first plane after
 skipped deadlines carry `DISCONT`.
 
-A non-looping complete-frame source exposes the read-only Boolean
+A non-looping source exposes the read-only Boolean
 `fits.completed` through `SPA_PARAM_Props`. It becomes true only after the
-final published buffer returns from downstream, so a lifecycle owner does not
-interpret queueing the final frame as downstream completion. A new `Start`
+final published buffer (including the terminal row block) returns from downstream.
+This observes return of the source loan, not completion of every later
+scientific operation. A new `Start`
 resets it to false.
 
 In `poll` readiness, the node reports `SPA_NODE_FLAG_POLL_DRIVER`. Each probe
 performs one monotonic clock read. A due probe performs one bounded pool
 acquisition and either a complete-frame CFITSIO read or a prepared row copy,
 then returns `SPA_STATUS_HAVE_DATA` to start a regular graph cycle. The source
-is not probed again until that cycle completes. If the ordinary output is still
-held, the current sample or partial frame is abandoned and the next publication
-is discontinuous.
+is not probed again until that cycle completes. An existing output loan remains
+available on process re-entry; a pending row loan does not advance its frame
+cursor. An exhausted row output pool abandons the partial frame discontinuously.
 
 In `timerfd` readiness, the node does not report `POLL_DRIVER`. An absolute
 monotonic timerfd invokes the same publication path and calls the ordinary SPA
-ready callback. If a previous buffer is still pending at a deadline, the source
-does not spin on an already-expired timer: it marks a discontinuity and arms a
-future release. This mode needs `DataLoop` and `DataSystem` SPA support and
+ready callback. Row mode admits one timer publication per graph cycle. The timer
+is disarmed while that loan is pending; the host's process pass returns the loan
+and rearms the next scheduled row deadline. That pass does not publish a second
+row. Delayed row deadlines retain their original timestamps and drain one block
+per completed cycle, without an expired-timer retry loop. Complete-frame mode
+marks a discontinuity and arms a future release when its previous output is
+still pending. This mode needs `DataLoop` and `DataSystem` SPA support and
 fails with `ENOTSUP` when they are absent.
+
+[Row handoff evidence](ROW_HANDOFF.md) records the pending-loan and timer-cycle
+regressions and their focused source-to-discard checks.
 
 In frame mode, CFITSIO and filesystem service time remain part of the deployment
 contract. Cache misses, page faults, storage faults, and library internals

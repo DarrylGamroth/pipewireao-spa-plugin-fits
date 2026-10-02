@@ -136,15 +136,19 @@ struct impl {
 	uint64_t simulated_readout_time_ns;
 	uint32_t row_block_rows;
 	enum output_mode output_mode;
+	enum spa_ndarray_layout layout;
 	bool loop;
 	bool discontinuity;
 	bool started;
 	bool timerfd_readiness;
+	bool row_cycle_pending;
+	uint32_t row_cycle_buffer_id;
 	bool completion_pending;
 	uint32_t completion_buffer_id;
 	_Atomic bool completed;
 };
 
+static int process_source(struct impl *self, bool timer_release);
 static int node_process(void *object);
 
 static int copy_text(char *destination, size_t size, const char *source)
@@ -646,6 +650,10 @@ static void timer_ready(struct spa_source *source)
 	}
 	if (!self->started)
 		return;
+	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK && self->row_cycle_pending) {
+		(void) set_release_timer(self, UINT64_MAX);
+		return;
+	}
 	if (self->port.io != NULL &&
 			self->port.io->status == SPA_STATUS_HAVE_DATA) {
 		self->discontinuity = true;
@@ -659,15 +667,24 @@ static void timer_ready(struct spa_source *source)
 		}
 		return;
 	}
-	res = node_process(self);
+	res = process_source(self, true);
 	if (res < 0) {
 		spa_log_error(self->log, "timed FITS publication failed: %s",
 				spa_strerror(res));
 		(void) set_release_timer(self, UINT64_MAX);
 		return;
 	}
-	if (res != SPA_STATUS_OK)
+	if (res != SPA_STATUS_OK) {
+		if (self->output_mode == OUTPUT_MODE_ROW_BLOCK) {
+			self->row_cycle_pending = true;
+			self->row_cycle_buffer_id = self->port.io->buffer_id;
+		}
 		spa_node_call_ready(&self->callbacks, res);
+	}
+	if (self->output_mode == OUTPUT_MODE_ROW_BLOCK && self->row_cycle_pending) {
+		(void) set_release_timer(self, UINT64_MAX);
+		return;
+	}
 	if (monotonic_nsec(&now) == 0)
 		(void) set_release_timer(self,
 				next_release(self, now));
@@ -692,6 +709,7 @@ static int stop_source(struct impl *self)
 		return 0;
 	self->started = false;
 	self->completion_pending = false;
+	self->row_cycle_pending = false;
 	if (self->timerfd_readiness)
 		res = set_release_timer(self, UINT64_MAX);
 	return res;
@@ -721,6 +739,7 @@ static int node_send_command(void *object, const struct spa_command *command)
 		atomic_store_explicit(&self->completed, false,
 				memory_order_release);
 		self->completion_pending = false;
+		self->row_cycle_pending = false;
 		self->started = true;
 		if (self->timerfd_readiness &&
 				(res = set_release_timer(self,
@@ -768,12 +787,14 @@ static struct spa_pod *build_ndarray_format(struct impl *self,
 		layout = SPA_NDARRAY_LAYOUT_ROW_MAJOR;
 		n_dimensions = 2;
 	} else {
-		shape[0] = (int32_t)self->cube_info.width;
-		shape[1] = (int32_t)self->cube_info.height;
+		/* FITS keeps width contiguous. Row-major changes only the axis declaration. */
+		shape[0] = (int32_t)(self->cube_info.sample_rank == 2 &&
+				self->layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR ?
+				self->cube_info.height : self->cube_info.width);
+		shape[1] = (int32_t)(self->layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR ?
+				self->cube_info.width : self->cube_info.height);
 		element_type = self->cube_info.element_type;
-		layout = self->cube_info.sample_rank == 1 ?
-				SPA_NDARRAY_LAYOUT_ROW_MAJOR :
-				SPA_NDARRAY_LAYOUT_COLUMN_MAJOR;
+		layout = self->layout;
 		n_dimensions = self->cube_info.sample_rank;
 	}
 
@@ -934,12 +955,12 @@ static int validate_ndarray_format(struct impl *self,
 		shape[1] = self->cube_info.width;
 	} else {
 		element_type = self->cube_info.element_type;
-		layout = self->cube_info.sample_rank == 1 ?
-				SPA_NDARRAY_LAYOUT_ROW_MAJOR :
-				SPA_NDARRAY_LAYOUT_COLUMN_MAJOR;
+		layout = self->layout;
 		n_dimensions = self->cube_info.sample_rank;
-		shape[0] = self->cube_info.width;
-		shape[1] = self->cube_info.height;
+		shape[0] = n_dimensions == 2 && layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR ?
+				self->cube_info.height : self->cube_info.width;
+		shape[1] = layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR ?
+				self->cube_info.width : self->cube_info.height;
 	}
 
 	if (spa_format_ndarray_parse(param, &format) < 0 ||
@@ -1151,6 +1172,9 @@ static int process_row_block(struct impl *self, uint64_t now)
 	uint32_t block, first_row, size, header_flags = 0;
 	int due, res;
 
+	if (self->port.io->status == SPA_STATUS_HAVE_DATA)
+		return SPA_STATUS_HAVE_DATA;
+
 	if (row_cadence_select_latest(&self->row_cadence, now,
 			self->cube_info.samples, self->loop))
 		self->discontinuity = true;
@@ -1159,12 +1183,6 @@ static int process_row_block(struct impl *self, uint64_t now)
 			&block, &pts);
 	if (due == 0)
 		return SPA_STATUS_OK;
-	if (self->port.io->status == SPA_STATUS_HAVE_DATA) {
-		row_cadence_abandon(&self->row_cadence, now,
-				self->cube_info.samples, self->loop);
-		self->discontinuity = true;
-		return SPA_STATUS_HAVE_DATA;
-	}
 	output = take_buffer(self);
 	if (output == NULL) {
 		row_cadence_abandon(&self->row_cadence, now,
@@ -1212,13 +1230,16 @@ static int process_row_block(struct impl *self, uint64_t now)
 	self->port.io->buffer_id = output->id;
 	self->port.io->status = SPA_STATUS_HAVE_DATA;
 	output->state = BUFFER_PUBLISHED;
+	if (self->row_cadence.ended) {
+		self->completion_pending = true;
+		self->completion_buffer_id = output->id;
+	}
 	self->discontinuity = false;
 	return SPA_STATUS_HAVE_DATA;
 }
 
-static int node_process(void *object)
+static int process_source(struct impl *self, bool timer_release)
 {
-	struct impl *self = object;
 	struct pwao_image_frame publication;
 	struct buffer *output;
 	struct spa_data *data;
@@ -1237,10 +1258,27 @@ static int node_process(void *object)
 	if (res > 0 && self->completion_pending &&
 			recycled_id == self->completion_buffer_id) {
 		self->completion_pending = false;
+		self->row_cycle_pending = false;
 		atomic_store_explicit(&self->completed, true,
 				memory_order_release);
 		self->started = false;
 		return SPA_STATUS_OK;
+	}
+	if (self->timerfd_readiness && self->output_mode == OUTPUT_MODE_ROW_BLOCK &&
+			!timer_release) {
+		/* ready() accepts the output loan before the driven graph finishes.
+		 * Only its return authorizes another timed row publication. The host
+		 * process pass must not publish a second row in the same graph cycle. */
+		if (self->row_cycle_pending && res > 0 &&
+				recycled_id == self->row_cycle_buffer_id) {
+			self->row_cycle_pending = false;
+			if ((res = monotonic_nsec(&now)) < 0)
+				return res;
+			if ((res = set_release_timer(self, next_release(self, now))) < 0)
+				return res;
+		}
+		return self->port.io->status == SPA_STATUS_HAVE_DATA ?
+				SPA_STATUS_HAVE_DATA : SPA_STATUS_OK;
 	}
 	if ((res = monotonic_nsec(&now)) < 0)
 		return res;
@@ -1301,6 +1339,11 @@ static int node_process(void *object)
 		self->completion_buffer_id = output->id;
 	}
 	return SPA_STATUS_HAVE_DATA;
+}
+
+static int node_process(void *object)
+{
+	return process_source(object, false);
 }
 
 static const struct spa_node_methods node_methods = {
@@ -1426,6 +1469,8 @@ static void configure_props(struct impl *self)
 	ADD_ITEM(SPA_KEY_API_FITS_PATH, self->path);
 	ADD_ITEM(SPA_KEY_API_FITS_HDU, self->hdu_text);
 	ADD_ITEM(SPA_KEY_API_FITS_SAMPLE_RANK, self->sample_rank_text);
+	ADD_ITEM(SPA_KEY_API_FITS_LAYOUT, self->layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR ?
+			"row-major" : "column-major");
 	ADD_ITEM(SPA_KEY_API_FITS_RATE, self->rate_text);
 	ADD_ITEM(SPA_KEY_API_FITS_SCHEMA, self->schema);
 	if (self->profile[0] != '\0')
@@ -1518,6 +1563,18 @@ static int init(const struct spa_handle_factory *factory SPA_UNUSED,
 			&options.sample_rank) < 0 ||
 			(options.sample_rank != 1 && options.sample_rank != 2))
 		return -EINVAL;
+	self->layout = options.sample_rank == 1 || self->output_mode == OUTPUT_MODE_ROW_BLOCK ?
+			SPA_NDARRAY_LAYOUT_ROW_MAJOR : SPA_NDARRAY_LAYOUT_COLUMN_MAJOR;
+	value = spa_dict_lookup(info, SPA_KEY_API_FITS_LAYOUT);
+	if (value != NULL) {
+		if (spa_streq(value, "row-major"))
+			self->layout = SPA_NDARRAY_LAYOUT_ROW_MAJOR;
+		else if (spa_streq(value, "column-major") && options.sample_rank == 2 &&
+				self->output_mode == OUTPUT_MODE_FRAME)
+			self->layout = SPA_NDARRAY_LAYOUT_COLUMN_MAJOR;
+		else
+			return -EINVAL;
+	}
 	value = spa_dict_lookup(info, SPA_KEY_API_FITS_IO_MODE);
 	if (value != NULL) {
 		if (spa_streq(value, "file"))

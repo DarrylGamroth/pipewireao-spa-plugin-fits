@@ -40,6 +40,7 @@ struct param_result {
 	bool node_params_advertised;
 	const char *readiness;
 	const char *output_mode;
+	const char *layout;
 	const char *row_block_rows;
 	const char *simulated_readout_time_ns;
 	const char *node_name;
@@ -62,6 +63,7 @@ struct source_case {
 	const char *schema;
 	const char *profile;
 	const char *output_mode;
+	const char *layout;
 	const char *row_block_rows;
 	const char *simulated_readout_time_ns;
 	const char *loop;
@@ -129,6 +131,7 @@ static void on_info(void *data, const struct spa_node_info *info)
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS) {
 		capture->node_name = spa_dict_lookup(info->props,
 				PW_KEY_NODE_NAME);
+		capture->layout = spa_dict_lookup(info->props, SPA_KEY_API_FITS_LAYOUT);
 		capture->output_mode = spa_dict_lookup(info->props,
 				SPA_KEY_API_FITS_OUTPUT_MODE);
 		capture->row_block_rows = spa_dict_lookup(info->props,
@@ -307,6 +310,8 @@ static int init_node(const struct spa_handle_factory *factory,
 		ADD_ITEM(PW_KEY_NODE_NAME, test->node_name);
 	ADD_ITEM(SPA_KEY_API_FITS_PATH, test->path);
 	ADD_ITEM(SPA_KEY_API_FITS_SAMPLE_RANK, rank_text);
+	if (test->layout != NULL)
+		ADD_ITEM(SPA_KEY_API_FITS_LAYOUT, test->layout);
 	ADD_ITEM(SPA_KEY_API_FITS_RATE,
 			test->rate == NULL ? "1000/1" : test->rate);
 	ADD_ITEM(SPA_KEY_API_FITS_SCHEMA,
@@ -454,11 +459,49 @@ static void run_source(const struct spa_handle_factory *factory,
 		spa_assert_se(spa_format_ndarray_parse_string(format,
 				SPA_FORMAT_NDARRAY_schema, &schema) == 0);
 		spa_assert_se(spa_streq(schema, TEST_SCHEMA));
+	} else if (test->format_index == 0) {
+		uint8_t rejected_storage[2048];
+		struct spa_pod_builder rejected_builder;
+		struct spa_pod *rejected;
+		enum spa_ndarray_layout layout = spa_streq(test->layout, "row-major") ?
+				SPA_NDARRAY_LAYOUT_ROW_MAJOR : SPA_NDARRAY_LAYOUT_COLUMN_MAJOR;
+		int32_t shape[2];
+		uint32_t violation;
+
+		spa_assert_se(spa_format_ndarray_parse(format, &ndarray) == 0);
+		spa_assert_se(ndarray.element_type == test->expected_element);
+		spa_assert_se(ndarray.n_dimensions == 2);
+		spa_assert_se(ndarray.shape[0] == (layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR ? 3u : 4u));
+		spa_assert_se(ndarray.shape[1] == (layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR ? 4u : 3u));
+		spa_assert_se(ndarray.layout == layout);
+		spa_assert_se(spa_streq(format_string(format, SPA_FORMAT_NDARRAY_schema), TEST_SCHEMA));
+		spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
+				SPA_PARAM_Format, SPA_NODE_PARAM_FLAG_TEST_ONLY, format) == 0);
+		for (violation = 0; violation < 2; violation++) {
+			shape[0] = (int32_t)ndarray.shape[violation == 0 ? 0 : 1];
+			shape[1] = (int32_t)ndarray.shape[violation == 0 ? 1 : 0];
+			spa_pod_builder_init(&rejected_builder, rejected_storage, sizeof(rejected_storage));
+			rejected = spa_pod_builder_add_object(&rejected_builder,
+					SPA_TYPE_OBJECT_Format, SPA_PARAM_Format,
+					SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_application),
+					SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_ndarray),
+					SPA_FORMAT_NDARRAY_schema, SPA_POD_String(TEST_SCHEMA),
+					SPA_FORMAT_NDARRAY_elementType, SPA_POD_Id(ndarray.element_type),
+					SPA_FORMAT_NDARRAY_shape, SPA_POD_Array(sizeof(int32_t), SPA_TYPE_Int, 2, shape),
+					SPA_FORMAT_NDARRAY_layout, SPA_POD_Id(violation == 0 ?
+						(layout == SPA_NDARRAY_LAYOUT_ROW_MAJOR ? SPA_NDARRAY_LAYOUT_COLUMN_MAJOR : SPA_NDARRAY_LAYOUT_ROW_MAJOR) : layout),
+					SPA_FORMAT_NDARRAY_rate, SPA_POD_Fraction(&ndarray.rate));
+			spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
+					SPA_PARAM_Format, SPA_NODE_PARAM_FLAG_TEST_ONLY, rejected) == -EINVAL);
+		}
 	} else if (test->format_index == 1) {
 		spa_assert_se(spa_format_video_raw_parse(format, &video) >= 0);
 		spa_assert_se(video.format == SPA_VIDEO_FORMAT_GRAY16_LE);
 		spa_assert_se(video.size.width == 4 && video.size.height == 3);
 	}
+	spa_assert_se(capture.layout != NULL && spa_streq(capture.layout,
+			test->sample_rank == 1 ? "row-major" :
+			(test->layout == NULL ? "column-major" : test->layout)));
 	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_PARAM_Format, 0, format) == 0);
 	buffers_param = enum_one(node, &capture, SPA_PARAM_Buffers, 0);
@@ -549,7 +592,7 @@ static void run_source(const struct spa_handle_factory *factory,
 
 static void run_row_source(const struct spa_handle_factory *factory,
 		const char *path, const char *readiness, bool force_overload,
-		bool force_backlog)
+		bool force_backlog, const char *layout, bool finite)
 {
 	const struct source_case test = {
 		.path = path,
@@ -557,6 +600,8 @@ static void run_row_source(const struct spa_handle_factory *factory,
 		.schema = SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK,
 		.profile = TEST_PROFILE,
 		.output_mode = "row-block",
+		.layout = layout,
+		.loop = finite ? "false" : NULL,
 		.row_block_rows = "1",
 		.simulated_readout_time_ns = "30000000",
 		.sample_rank = 2,
@@ -613,6 +658,7 @@ static void run_row_source(const struct spa_handle_factory *factory,
 	spa_assert_se(capture.simulated_readout_time_ns != NULL &&
 			spa_streq(capture.simulated_readout_time_ns, "30000000"));
 
+	spa_assert_se(capture.layout != NULL && spa_streq(capture.layout, "row-major"));
 	format = enum_one(node, &capture, SPA_PARAM_EnumFormat, 0);
 	spa_assert_se(spa_format_ndarray_parse(format, &ndarray) == 0);
 	spa_assert_se(ndarray.element_type == SPA_ELEMENT_TYPE_U16_LE);
@@ -659,6 +705,15 @@ static void run_row_source(const struct spa_handle_factory *factory,
 		}
 		id = io.buffer_id;
 		spa_assert_se(id < N_BUFFERS);
+		spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
+		spa_assert_se(io.buffer_id == id);
+		if (loop == NULL && cycle == 0 && !force_overload && !force_backlog) {
+			const struct timespec delay = { .tv_nsec = 25000000 };
+
+			spa_assert_se(nanosleep(&delay, NULL) == 0);
+			spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
+			spa_assert_se(io.buffer_id == id);
+		}
 		sequence = storage[id].header.seq;
 		first_row = storage[id].header.offset;
 		if (force_backlog) {
@@ -708,18 +763,52 @@ static void run_row_source(const struct spa_handle_factory *factory,
 			spa_assert_se(values[i] ==
 					(sequence % 2u) * 100u + first_row * 10u + i);
 		previous_pts = storage[id].header.pts;
-		if (force_overload && cycle == 0) {
-			const struct timespec delay = {
-				.tv_nsec = 25000000,
-			};
+		if (finite)
+			spa_assert_se(!source_completed(node, &capture));
+		if (loop != NULL && cycle == 0) {
+			const struct timespec delay = { .tv_nsec = 25000000 };
+			uint32_t calls = readiness_state.ready_calls;
 
+			/* A graph process re-entry still reports its existing loan,
+			 * including before the next block deadline. */
+			spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
 			spa_assert_se(nanosleep(&delay, NULL) == 0);
-			res = spa_node_process(node);
-			spa_assert_se(res >= SPA_STATUS_OK);
-			spa_assert_se(io.status == SPA_STATUS_HAVE_DATA &&
-					io.buffer_id == id);
+			spa_assert_se(pw_loop_iterate(loop, 0) >= 0);
+			spa_assert_se(readiness_state.ready_calls == calls);
+			spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
+			spa_assert_se(io.buffer_id == id && storage[id].header.offset == 0);
+			/* ready() may accept the loan before the graph returns it.
+			 * NEED_DATA alone must not authorize another publication. */
+			io.status = SPA_STATUS_NEED_DATA;
+			io.buffer_id = SPA_ID_INVALID;
+			spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
+			spa_assert_se(pw_loop_iterate(loop, 0) >= 0);
+			spa_assert_se(readiness_state.ready_calls == calls);
+			io.buffer_id = id;
+		}
+		if (force_overload && cycle == 0) {
+			/* Lease the remaining pool without returning earlier loans. */
+			for (i = 1; i < N_BUFFERS; i++) {
+				io.status = SPA_STATUS_NEED_DATA;
+				io.buffer_id = SPA_ID_INVALID;
+				do {
+					spa_assert_se(spa_node_process(node) >= SPA_STATUS_OK);
+				} while (io.status != SPA_STATUS_HAVE_DATA);
+				spa_assert_se(io.buffer_id != id);
+			}
+			io.status = SPA_STATUS_NEED_DATA;
+			io.buffer_id = SPA_ID_INVALID;
+			{
+				const struct timespec delay = { .tv_nsec = 15000000 };
+				spa_assert_se(nanosleep(&delay, NULL) == 0);
+			}
+			spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
+			spa_assert_se(io.status == SPA_STATUS_NEED_DATA);
+			io.buffer_id = id;
 		}
 		io.status = SPA_STATUS_NEED_DATA;
+		if (loop != NULL && (!finite || cycle + 1u < cycles))
+			spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
 		if (force_backlog && (cycle == 0 || cycle == 2)) {
 			const struct timespec delay = {
 				.tv_nsec = cycle == 0 ? 25000000 : 80000000,
@@ -727,6 +816,21 @@ static void run_row_source(const struct spa_handle_factory *factory,
 
 			spa_assert_se(nanosleep(&delay, NULL) == 0);
 		}
+	}
+	if (finite) {
+		const struct timespec delay = { .tv_nsec = 25000000 };
+
+		/* Queuing the terminal row is not downstream completion. */
+		spa_assert_se(!source_completed(node, &capture));
+		io.status = SPA_STATUS_HAVE_DATA;
+		spa_assert_se(nanosleep(&delay, NULL) == 0);
+		spa_assert_se(spa_node_process(node) == SPA_STATUS_HAVE_DATA);
+		spa_assert_se(!source_completed(node, &capture));
+		io.status = SPA_STATUS_NEED_DATA;
+		spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
+		spa_assert_se(source_completed(node, &capture));
+		spa_assert_se(spa_node_send_command(node, &start) == 0);
+		spa_assert_se(!source_completed(node, &capture));
 	}
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
@@ -832,6 +936,28 @@ static void test_row_options(const struct spa_handle_factory *factory,
 	assert_init_fails(factory, &test, -EINVAL);
 }
 
+static void test_layout_options(const struct spa_handle_factory *factory,
+		const char *vector_path, const char *image_path)
+{
+	struct source_case test = { .path = image_path, .sample_rank = 2 };
+
+	test.layout = "rowMajor";
+	assert_init_fails(factory, &test, -EINVAL);
+	test.layout = "";
+	assert_init_fails(factory, &test, -EINVAL);
+	test.path = vector_path;
+	test.sample_rank = 1;
+	test.layout = "column-major";
+	assert_init_fails(factory, &test, -EINVAL);
+	test = (struct source_case) {
+		.path = image_path, .sample_rank = 2, .layout = "column-major",
+		.output_mode = "row-block", .row_block_rows = "1",
+		.simulated_readout_time_ns = "30000000", .rate = "20/1",
+		.schema = SPA_NDARRAY_SCHEMA_RAW_PIXEL_ROW_BLOCK, .profile = TEST_PROFILE,
+	};
+	assert_init_fails(factory, &test, -EINVAL);
+}
+
 int main(int argc, char *argv[])
 {
 	spa_handle_factory_enum_func_t enumerate;
@@ -852,6 +978,32 @@ int main(int argc, char *argv[])
 	spa_assert_se(enumerate(&factory, &index) == 1);
 	spa_assert_se(factory != NULL &&
 			spa_streq(factory->name, SPA_NAME_API_FITS_SOURCE));
+	/* A non-square plane detects descriptor axis reversal without a pixel transpose. */
+	run_source(factory, &(const struct source_case) {
+		.path = image_path, .sample_rank = 2, .layout = "row-major",
+		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
+		.expected_size = 4u * 3u * sizeof(uint16_t),
+	}, "poll");
+	run_source(factory, &(const struct source_case) {
+		.path = image_path, .sample_rank = 2,
+		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
+		.expected_size = 4u * 3u * sizeof(uint16_t),
+	}, "poll");
+	run_source(factory, &(const struct source_case) {
+		.path = image_path, .sample_rank = 2, .layout = "column-major",
+		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
+		.expected_size = 4u * 3u * sizeof(uint16_t),
+	}, "poll");
+	run_source(factory, &(const struct source_case) {
+		.path = image_path, .sample_rank = 2, .layout = "row-major",
+		.expected_element = SPA_ELEMENT_TYPE_U16_LE,
+		.expected_size = 4u * 3u * sizeof(uint16_t),
+	}, "timerfd");
+	run_source(factory, &(const struct source_case) {
+		.path = vector_path, .sample_rank = 1, .layout = "row-major",
+		.expected_element = SPA_ELEMENT_TYPE_F64_LE,
+		.expected_size = 4u * sizeof(double),
+	}, "poll");
 	run_source(factory, &(const struct source_case) {
 		.path = vector_path,
 		.sample_rank = 1,
@@ -878,10 +1030,14 @@ int main(int argc, char *argv[])
 		.expected_element = SPA_ELEMENT_TYPE_F64_LE,
 		.expected_size = 4u * sizeof(double),
 	}, "poll");
-	run_row_source(factory, image_path, "poll", false, false);
-	run_row_source(factory, image_path, "timerfd", false, false);
-	run_row_source(factory, image_path, "poll", true, false);
-	run_row_source(factory, image_path, "poll", false, true);
+	run_row_source(factory, image_path, "poll", false, false, NULL, false);
+	run_row_source(factory, image_path, "timerfd", false, false, NULL, false);
+	run_row_source(factory, image_path, "poll", true, false, NULL, false);
+	run_row_source(factory, image_path, "poll", false, true, NULL, false);
+	run_row_source(factory, image_path, "poll", false, false, "row-major", false);
+	run_row_source(factory, image_path, "poll", false, false, NULL, true);
+	run_row_source(factory, image_path, "timerfd", false, false, NULL, true);
+	test_layout_options(factory, vector_path, image_path);
 	test_row_options(factory, vector_path, image_path);
 	test_distinct_node_names(factory, image_path);
 	spa_assert_se(dlclose(library) == 0);
