@@ -109,7 +109,7 @@ struct impl {
 	struct spa_node_info info;
 	struct spa_param_info params[3];
 	struct spa_dict props;
-	struct spa_dict_item prop_items[20];
+	struct spa_dict_item prop_items[22];
 	char path[PATH_MAX];
 	char schema[TEXT_SIZE];
 	char profile[TEXT_SIZE];
@@ -887,7 +887,8 @@ static int build_port_param(struct impl *self, uint32_t id, uint32_t index,
 					SPA_TYPE_OBJECT_ParamMeta, id,
 					SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
 					SPA_PARAM_META_size,
-					SPA_POD_Int(sizeof(struct spa_meta_header)));
+					SPA_POD_Int(sizeof(struct spa_meta_header)),
+					SPA_PARAM_META_required, SPA_POD_Bool(true));
 		else
 			return 0;
 		return *param == NULL ? -ENOSPC : 1;
@@ -1466,6 +1467,8 @@ static void configure_props(struct impl *self)
 	ADD_ITEM(SPA_KEY_NODE_NAME, self->node_name);
 	ADD_ITEM(SPA_KEY_NODE_DESCRIPTION, self->description);
 	ADD_ITEM(SPA_KEY_NODE_DRIVER, "true");
+	ADD_ITEM("pipewireao.header.pts.clock", "monotonic");
+	ADD_ITEM("pipewireao.header.pts.absolute-conversion", "unavailable");
 	ADD_ITEM(SPA_KEY_API_FITS_PATH, self->path);
 	ADD_ITEM(SPA_KEY_API_FITS_HDU, self->hdu_text);
 	ADD_ITEM(SPA_KEY_API_FITS_SAMPLE_RANK, self->sample_rank_text);

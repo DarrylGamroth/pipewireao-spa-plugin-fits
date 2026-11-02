@@ -53,7 +53,9 @@ if get_option('tests').allowed()
   )
 
   pipewire_daemon = find_program(
-    pipewire_pkg_dep.get_variable(pkgconfig: 'confdatadir') / 'pipewire-ao',
+    pipewire_pkg_dep.get_variable(pkgconfig: 'prefix') / 'bin' / 'pipewire-ao',
+    pipewire_pkg_dep.get_variable(pkgconfig: 'confdatadir',
+      default_value: pipewire_pkg_dep.get_variable(pkgconfig: 'prefix') / 'share' / 'pipewire-ao') / 'pipewire-ao',
     required: false,
   )
   if pipewire_daemon.found() and is_variable('discard_lib')
@@ -74,7 +76,8 @@ if get_option('tests').allowed()
     )
     fits_discard_live_env.set(
       'PIPEWIREAO_CONFIG_DIR',
-      pipewire_pkg_dep.get_variable(pkgconfig: 'confdatadir'),
+      pipewire_pkg_dep.get_variable(pkgconfig: 'confdatadir',
+        default_value: pipewire_pkg_dep.get_variable(pkgconfig: 'prefix') / 'share' / 'pipewire-ao'),
     )
     fits_discard_live_env.set(
       'PIPEWIREAO_MODULE_DIR',

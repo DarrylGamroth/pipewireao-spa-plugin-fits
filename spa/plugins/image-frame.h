@@ -14,7 +14,6 @@
 
 enum pwao_image_frame_requirement {
 	PWAO_IMAGE_FRAME_REQUIRE_HEADER = (1u << 0),
-	PWAO_IMAGE_FRAME_REQUIRE_ACQUISITION = (1u << 1),
 };
 
 struct pwao_image_frame {
@@ -27,96 +26,62 @@ struct pwao_image_frame {
 	uint32_t header_offset;
 	uint64_t sequence;
 	int64_t pts;
-	const struct spa_meta_acquisition *acquisition;
+	const struct spa_meta *metas;
+	uint32_t n_metas;
+	const struct spa_meta_requirement *required_records;
+	uint32_t n_required_records;
 };
-
-static inline bool pwao_image_frame_acquisition_valid(
-		const struct spa_meta_acquisition *acquisition)
-{
-	struct spa_meta meta = {
-		.type = SPA_META_Acquisition,
-		.size = sizeof(*acquisition),
-		.data = (void *) acquisition,
-	};
-
-	return acquisition != NULL && spa_meta_acquisition_is_valid(&meta);
-}
 
 static inline int pwao_image_frame_write(struct spa_buffer *buffer,
 		const struct pwao_image_frame *frame, uint32_t requirements)
 {
-	struct spa_meta_acquisition *acquisition;
 	struct spa_meta_header *header;
 	struct spa_data *data;
-	uint64_t sequence, end;
-	int64_t pts;
+	uint64_t end;
 	const uint32_t valid_header_flags = SPA_META_HEADER_FLAG_DISCONT |
 		SPA_META_HEADER_FLAG_CORRUPTED | SPA_META_HEADER_FLAG_MARKER |
 		SPA_META_HEADER_FLAG_HEADER | SPA_META_HEADER_FLAG_GAP |
 		SPA_META_HEADER_FLAG_DELTA_UNIT;
 	const uint32_t valid_chunk_flags = SPA_CHUNK_FLAG_CORRUPTED |
 		SPA_CHUNK_FLAG_EMPTY;
-	const uint32_t valid_requirements = PWAO_IMAGE_FRAME_REQUIRE_HEADER |
-		PWAO_IMAGE_FRAME_REQUIRE_ACQUISITION;
+	const uint32_t valid_requirements = PWAO_IMAGE_FRAME_REQUIRE_HEADER;
 
 	if (buffer == NULL || frame == NULL ||
 			(requirements & ~valid_requirements) != 0 ||
 			(frame->header_flags & ~valid_header_flags) != 0 ||
 			(frame->chunk_flags & ~valid_chunk_flags) != 0 ||
 			(frame->pts < 0 && frame->pts != SPA_TIME_INVALID) ||
-			frame->data_index >= buffer->n_datas)
+			buffer->datas == NULL || frame->data_index >= buffer->n_datas ||
+			!spa_meta_records_layout_validate(buffer->metas, buffer->n_metas))
 		return -EINVAL;
 	data = &buffer->datas[frame->data_index];
 	end = (uint64_t) frame->offset + frame->size;
 	if (data->chunk == NULL || end > data->maxsize)
 		return -ENOSPC;
-	if (frame->acquisition != NULL &&
-			!pwao_image_frame_acquisition_valid(frame->acquisition))
+	if (!spa_meta_records_validate(frame->metas, frame->n_metas,
+			frame->required_records, frame->n_required_records))
 		return -EINVAL;
 
 	header = (struct spa_meta_header *) spa_buffer_find_meta_data(buffer,
 			SPA_META_Header, sizeof(*header));
-	if (header == NULL &&
-			(requirements & PWAO_IMAGE_FRAME_REQUIRE_HEADER) != 0)
+	if (header == NULL)
 		return -ENOTSUP;
-	acquisition = (struct spa_meta_acquisition *) spa_buffer_find_meta_data(
-			buffer, SPA_META_Acquisition, sizeof(*acquisition));
-	if (acquisition == NULL &&
-			((requirements & PWAO_IMAGE_FRAME_REQUIRE_ACQUISITION) != 0 ||
-			 frame->acquisition != NULL))
-		return -ENOTSUP;
-	if (acquisition != NULL && !SPA_IS_ALIGNED(acquisition, 8))
-		return -EINVAL;
+	/* Copy preflights every record before touching the owned output. Missing
+	 * slots and stale facts cannot silently disappear during publication. */
+	if (!spa_meta_records_copy(buffer->metas, buffer->n_metas,
+			frame->metas, frame->n_metas))
+		return -ENOSPC;
 
 	data->chunk->offset = frame->offset;
 	data->chunk->size = frame->size;
 	data->chunk->stride = frame->stride;
 	data->chunk->flags = frame->chunk_flags;
 
-	if (acquisition != NULL) {
-		if (frame->acquisition == NULL) {
-			if (!spa_meta_acquisition_init(acquisition))
-				return -EINVAL;
-		} else if (acquisition != frame->acquisition) {
-			memcpy(acquisition, frame->acquisition, sizeof(*acquisition));
-		}
-	}
-
-	sequence = frame->sequence;
-	pts = frame->pts;
-	if (frame->acquisition != NULL) {
-		if (SPA_FLAG_IS_SET(frame->acquisition->flags,
-				SPA_META_ACQUISITION_FLAG_IDENTITY_VALID))
-			sequence = frame->acquisition->sequence;
-		if (SPA_FLAG_IS_SET(frame->acquisition->flags,
-				SPA_META_ACQUISITION_FLAG_EXPOSURE_START_VALID))
-			pts = frame->acquisition->exposure_start_nsec;
-	}
 	if (header != NULL) {
 		header->flags = frame->header_flags;
 		header->offset = frame->header_offset;
-		header->seq = sequence;
-		header->pts = pts;
+		header->seq = frame->sequence;
+		header->pts = frame->pts;
 		header->dts_offset = 0;
 	}
 	return 0;

@@ -5,6 +5,10 @@ readout made of complete row-block ndarrays. It is a regular PipeWire graph
 driver with selectable polling or timerfd readiness. Neither readiness mode
 creates a private thread.
 
+Buffers require standard Header metadata. Header PTS describes the generated
+monotonic playback/readout schedule; absolute conversion is unavailable. File
+readout does not invent physical acquisition identity or absolute event facts.
+
 In complete-frame mode, CFITSIO reads each due plane directly into an ordinary
 PipeWire output buffer. Buffered file access is the default. FITS values may
 require byte-order, scaling, or type conversion, so mapping the file does not

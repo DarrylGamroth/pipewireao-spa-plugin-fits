@@ -129,6 +129,10 @@ static void on_info(void *data, const struct spa_node_info *info)
 		capture->readiness = spa_dict_lookup(info->props,
 				SPA_KEY_API_FITS_READINESS);
 	if (info->change_mask & SPA_NODE_CHANGE_MASK_PROPS) {
+		spa_assert_se(spa_streq(spa_dict_lookup(info->props,
+				PW_KEY_HEADER_PTS_CLOCK), "monotonic"));
+		spa_assert_se(spa_streq(spa_dict_lookup(info->props,
+				PW_KEY_HEADER_PTS_ABSOLUTE_CONVERSION), "unavailable"));
 		capture->node_name = spa_dict_lookup(info->props,
 				PW_KEY_NODE_NAME);
 		capture->layout = spa_dict_lookup(info->props, SPA_KEY_API_FITS_LAYOUT);
