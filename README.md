@@ -1,5 +1,8 @@
 # PipeWireAO FITS plugin
 
+[![CI](https://github.com/DarrylGamroth/pipewireao-spa-plugin-fits/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DarrylGamroth/pipewireao-spa-plugin-fits/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/github/DarrylGamroth/pipewireao-spa-plugin-fits/branch/main/graph/badge.svg)](https://app.codecov.io/github/DarrylGamroth/pipewireao-spa-plugin-fits)
+
 This repository provides `api.fits.source`, a CFITSIO-backed PipeWireAO source
 for complete FITS planes and simulated row-block camera readout. Include it in
 deployments that need repeatable file-backed camera or vector input.
@@ -41,3 +44,27 @@ helper and tests from core revision `86e8544`, requires native 3.0.0, and keeps
 FITS publication Header-only. Four focused Meson tests pass against the staged
 3.0 SDK, including complete-frame/row-block source checks and truthful monotonic
 Header labels. No device, simulator or service was started.
+
+## CI and coverage
+
+GitHub Actions builds and tests against PipeWireAO 4.0.5 on Debian 13.
+FITS cube I/O, the factory, and the SPA source with generated FITS fixtures.
+
+CI requires more than 90% line coverage for the code compiled in this
+configuration. The workflow saves the LCOV report as an artifact and uses
+GitHub OIDC to upload coverage to Codecov. Fork pull requests run the
+same local gate.
+
+With the workflow dependencies installed, run the same native tests locally.
+
+```sh
+CC=gcc CXX=g++ meson setup build-coverage -Dtests=enabled -Db_coverage=true \
+  -Dfits=enabled
+meson test -C build-coverage --print-errorlogs
+```
+
+Collect a native coverage report from that build.
+
+```sh
+gcovr --root . --lcov build-coverage/coverage-c.info --print-summary build-coverage
+```

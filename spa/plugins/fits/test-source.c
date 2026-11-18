@@ -23,6 +23,7 @@
 #include <spa/pod/filter.h>
 #include <spa/pod/parser.h>
 #include <spa/support/plugin.h>
+#include <spa/support/log.h>
 
 #include "fits.h"
 
@@ -366,6 +367,53 @@ static struct spa_node *make_node(const struct spa_handle_factory *factory,
 	return node;
 }
 
+static void check_node_contract(struct spa_handle *handle, struct spa_node *node,
+		struct param_result *capture)
+{
+	const struct spa_command start = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Start);
+	const struct spa_command flush = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Flush);
+	uint32_t id;
+	bool required = false;
+	void *unused;
+
+	spa_assert_se(spa_handle_get_interface(handle, SPA_TYPE_INTERFACE_Log, &unused) == -ENOENT);
+	spa_assert_se(spa_node_add_port(node, SPA_DIRECTION_OUTPUT, 1, NULL) == -ENOTSUP);
+	spa_assert_se(spa_node_remove_port(node, SPA_DIRECTION_OUTPUT, 0) == -ENOTSUP);
+	spa_assert_se(spa_node_port_reuse_buffer(node, 0, 0) == -ENOTSUP);
+	spa_assert_se(spa_node_process(node) == SPA_STATUS_OK);
+	spa_assert_se(spa_node_send_command(node, &start) == -EIO);
+	spa_assert_se(spa_node_send_command(node, &flush) == -ENOTSUP);
+	spa_assert_se(spa_node_set_param(node, SPA_PARAM_Props, 0, NULL) == -ENOENT);
+	spa_assert_se(spa_node_enum_params(node, 0, SPA_PARAM_Buffers, 0, 1, NULL) == -ENOENT);
+	spa_assert_se(spa_pod_parse_object(enum_node_one(node, capture, SPA_PARAM_PropInfo, 0),
+			SPA_TYPE_OBJECT_PropInfo, NULL, SPA_PROP_INFO_id, SPA_POD_Id(&id)) >= 0);
+	spa_assert_se(id == SPA_PROP_FITS_SOURCE_COMPLETED);
+	spa_assert_se(spa_pod_parse_object(enum_one(node, capture, SPA_PARAM_Meta, 0),
+			SPA_TYPE_OBJECT_ParamMeta, NULL, SPA_PARAM_META_type, SPA_POD_Id(&id),
+			SPA_PARAM_META_required, SPA_POD_Bool(&required)) >= 0);
+	spa_assert_se(id == SPA_META_Header && required);
+	spa_assert_se(spa_pod_parse_object(enum_one(node, capture, SPA_PARAM_IO, 0),
+			SPA_TYPE_OBJECT_ParamIO, NULL, SPA_PARAM_IO_id, SPA_POD_Id(&id)) >= 0);
+	spa_assert_se(id == SPA_IO_Buffers);
+	spa_assert_se(spa_node_port_enum_params(node, 0, SPA_DIRECTION_OUTPUT, 0,
+			SPA_PARAM_Props, 0, 1, NULL) == -ENOENT);
+	static const uint32_t unconfigured[] = { SPA_PARAM_Format, SPA_PARAM_Buffers };
+	for (size_t i = 0; i < SPA_N_ELEMENTS(unconfigured); i++) {
+		capture->expected = unconfigured[i];
+		capture->param = NULL;
+		spa_assert_se(spa_node_port_enum_params(node, 0, SPA_DIRECTION_OUTPUT, 0,
+				unconfigured[i], 0, 1, NULL) == 0);
+		spa_assert_se(capture->param == NULL);
+	}
+	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_PARAM_Props, 0, NULL) == -ENOENT);
+	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_IO_Clock, NULL, 0) == -ENOENT);
+	struct spa_io_buffers invalid = SPA_IO_BUFFERS_INIT;
+	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_IO_Buffers, &invalid, sizeof(invalid) - 1) == -EINVAL);
+}
+
 static void run_source(const struct spa_handle_factory *factory,
 		const struct source_case *test, const char *readiness)
 {
@@ -435,6 +483,7 @@ static void run_source(const struct spa_handle_factory *factory,
 	spa_assert_se(capture.row_block_rows == NULL);
 	spa_assert_se(capture.simulated_readout_time_ns == NULL);
 	spa_assert_se(capture.node_params_advertised);
+	check_node_contract(handle, node, &capture);
 	{
 		uint32_t io_id = SPA_ID_INVALID;
 		int32_t io_size = 0;
@@ -513,6 +562,7 @@ static void run_source(const struct spa_handle_factory *factory,
 			SPA_TYPE_OBJECT_ParamBuffers, NULL,
 			SPA_PARAM_BUFFERS_size, SPA_POD_Int(&payload_size)) >= 0);
 	spa_assert_se(payload_size == (int32_t)test->expected_size);
+	spa_assert_se(enum_one(node, &capture, SPA_PARAM_Format, 0) != NULL);
 	for (i = 0; i < N_BUFFERS; i++) {
 		init_buffer(&storage[i], (uint32_t)payload_size);
 		buffers[i] = &storage[i].buffer;
@@ -531,6 +581,18 @@ static void run_source(const struct spa_handle_factory *factory,
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, &io, sizeof(io)) == 0);
 	spa_assert_se(spa_node_send_command(node, &start) == 0);
+	spa_assert_se(spa_node_send_command(node, &start) == 0);
+	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_PARAM_Format, 0, NULL) == -EBUSY);
+	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
+			NULL, 0) == -EBUSY);
+	if (loop == NULL) {
+		io.buffer_id = N_BUFFERS;
+		spa_assert_se(spa_node_process(node) == -EPROTO);
+		io.buffer_id = 0;
+		spa_assert_se(spa_node_process(node) == -EPROTO);
+		io.buffer_id = SPA_ID_INVALID;
+	}
 	spa_assert_se(!source_completed(node, &capture));
 	for (cycle = 0; cycle < cycles; cycle++) {
 		while (io.status != SPA_STATUS_HAVE_DATA) {
@@ -561,6 +623,10 @@ static void run_source(const struct spa_handle_factory *factory,
 				spa_assert_se(values[i] ==
 						frame * 100u + (i / 4u) * 10u + i % 4u);
 		}
+		if (cycle == 0 && loop != NULL) {
+			spa_assert_se(pw_loop_iterate(loop, 250) > 0);
+			spa_assert_se(io.status == SPA_STATUS_HAVE_DATA && io.buffer_id == id);
+		}
 		io.status = SPA_STATUS_NEED_DATA;
 	}
 	if (test->loop != NULL && spa_streq(test->loop, "false")) {
@@ -575,12 +641,40 @@ static void run_source(const struct spa_handle_factory *factory,
 	} else {
 		spa_assert_se(second_pass == (1u << N_BUFFERS) - 1u);
 	}
+	if (loop == NULL && test->loop == NULL && test->sample_rank == 2) {
+		spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
+				SPA_IO_Buffers, NULL, 0) == 0);
+		spa_assert_se(spa_node_process(node) == -EIO);
+		spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
+				SPA_IO_Buffers, &io, sizeof(io)) == 0);
+
+		for (uint32_t i = 0; i < N_BUFFERS; i++)
+			storage[i].buffer.n_datas = 0;
+		usleep(2000);
+		spa_assert_se(spa_node_process(node) == -EPROTO);
+		for (uint32_t i = 0; i < N_BUFFERS; i++) {
+			storage[i].buffer.n_datas = 1;
+			storage[i].data.maxsize--;
+		}
+		usleep(2000);
+		spa_assert_se(spa_node_process(node) == -ENOSPC);
+		for (uint32_t i = 0; i < N_BUFFERS; i++) {
+			storage[i].data.maxsize++;
+			storage[i].buffer.n_metas = 0;
+		}
+		usleep(2000);
+		spa_assert_se(spa_node_process(node) == -ENOTSUP);
+		for (uint32_t i = 0; i < N_BUFFERS; i++)
+			storage[i].buffer.n_metas = SPA_N_ELEMENTS(storage[i].metas);
+	}
 	spa_assert_se(spa_node_send_command(node, &pause) == 0);
 	spa_assert_se(spa_node_port_set_io(node, SPA_DIRECTION_OUTPUT, 0,
 			SPA_IO_Buffers, NULL, 0) == 0);
 	spa_assert_se(spa_node_port_use_buffers(node, SPA_DIRECTION_OUTPUT, 0, 0,
 			NULL, 0) == 0);
 
+	spa_assert_se(spa_node_port_set_param(node, SPA_DIRECTION_OUTPUT, 0,
+			SPA_PARAM_Format, 0, NULL) == 0);
 	spa_hook_remove(&listener);
 	spa_assert_se(handle->clear(handle) == 0);
 	free(handle);
@@ -865,6 +959,56 @@ static void assert_init_fails(const struct spa_handle_factory *factory,
 	spa_assert_se(handle == NULL && node == NULL);
 }
 
+static void test_properties(const struct spa_handle_factory *factory, const char *path)
+{
+	static const struct {
+		const char *key;
+		const char *value;
+		int status;
+	} cases[] = {
+		{ SPA_KEY_API_FITS_HDU, "0", -EINVAL },
+		{ SPA_KEY_API_FITS_HDU, "99", -EBADMSG },
+		{ SPA_KEY_API_FITS_SAMPLE_RANK, "3", -EINVAL },
+		{ SPA_KEY_API_FITS_RATE, "100", 0 },
+		{ SPA_KEY_API_FITS_RATE, "0/1", -EINVAL },
+		{ SPA_KEY_API_FITS_RATE, "bad", -EINVAL },
+		{ SPA_KEY_API_FITS_READINESS, "timerfd", -ENOTSUP },
+		{ SPA_KEY_API_FITS_READINESS, "unknown", -EINVAL },
+		{ SPA_KEY_API_FITS_OUTPUT_MODE, "unknown", -EINVAL },
+		{ SPA_KEY_API_FITS_ROW_BLOCK_ROWS, "0", -EINVAL },
+		{ SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS, "", -EINVAL },
+		{ SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS, "12ns", -EINVAL },
+		{ SPA_KEY_API_FITS_SIMULATED_READOUT_TIME_NS, "18446744073709551616", -EINVAL },
+		{ SPA_KEY_API_FITS_IO_MODE, "file", 0 },
+		{ SPA_KEY_API_FITS_IO_MODE, "mmap", 0 },
+		{ SPA_KEY_API_FITS_IO_MODE, "unknown", -EINVAL },
+		{ SPA_KEY_API_FITS_PREFAULT, "true", -EINVAL },
+		{ SPA_KEY_API_FITS_PREFAULT, "maybe", -EINVAL },
+		{ SPA_KEY_API_FITS_LOOP, "false", 0 },
+		{ SPA_KEY_API_FITS_LOOP, "bad", -EINVAL },
+	};
+	struct spa_dict_item items[] = {
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_PATH, path),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_SCHEMA, TEST_SCHEMA),
+		SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_RATE, "1000/1"),
+		{ 0 },
+	};
+	struct spa_dict info = SPA_DICT_INIT(items, SPA_N_ELEMENTS(items));
+	struct spa_handle *handle = calloc(1, factory->get_size(factory, &info));
+
+	spa_assert_se(handle != NULL);
+	for (size_t i = 0; i < SPA_N_ELEMENTS(cases); i++) {
+		items[2] = SPA_DICT_ITEM_INIT(SPA_KEY_API_FITS_RATE, "1000/1");
+		info.n_items = spa_streq(cases[i].key, SPA_KEY_API_FITS_RATE) ? 3 : 4;
+		items[info.n_items - 1] = SPA_DICT_ITEM_INIT(cases[i].key, cases[i].value);
+		int res = factory->init(factory, handle, &info, NULL, 0);
+		spa_assert_se(res == cases[i].status);
+		if (res == 0)
+			spa_assert_se(spa_handle_clear(handle) == 0);
+	}
+	free(handle);
+}
+
 static void test_distinct_node_names(const struct spa_handle_factory *factory,
 		const char *image_path)
 {
@@ -1041,6 +1185,7 @@ int main(int argc, char *argv[])
 	run_row_source(factory, image_path, "poll", false, false, "row-major", false);
 	run_row_source(factory, image_path, "poll", false, false, NULL, true);
 	run_row_source(factory, image_path, "timerfd", false, false, NULL, true);
+	test_properties(factory, image_path);
 	test_layout_options(factory, vector_path, image_path);
 	test_row_options(factory, vector_path, image_path);
 	test_distinct_node_names(factory, image_path);
