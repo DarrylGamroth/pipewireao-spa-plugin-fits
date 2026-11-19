@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: DarrylGamroth/pipewireao-spa-plugins-core
-          ref: d98cb4f367da807d0a0a16c6e03a0d7d646c119b
+          ref: 01df204f30f463308add6a2bc3f7ad649bd66382
           path: core-headers
           persist-credentials: false
 
